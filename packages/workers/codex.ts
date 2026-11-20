@@ -11,8 +11,7 @@ export async function runCodex(worker: WorkerCommand, root: string, job: JobCont
   let nextId = 0;
   let threadId: string | undefined;
   let turnId: string | undefined;
-  let text = '';
-  let ended: { id: string; status: string } | undefined;
+  const turns = new Map<string, { text: string; status?: string }>();
   const pending = new Map<number, (value: any) => void>();
   const turnDone = Promise.withResolvers<void>();
   function send(packet: object) {
@@ -56,11 +55,22 @@ export async function runCodex(worker: WorkerCommand, root: string, job: JobCont
     }
     const params = packet.params;
     if (!threadId || params?.threadId !== threadId) return;
-    if (packet.method === 'item/agentMessage/delta' && typeof params.delta === 'string') {
-      text += params.delta.slice(0, Math.max(0, 4_000 - text.length));
-    } else if (packet.method === 'turn/completed' && typeof params.turn?.id === 'string') {
-      ended = params.turn;
-      turnDone.resolve();
+    const delta = packet.method === 'item/agentMessage/delta';
+    const completed = packet.method === 'turn/completed';
+    if (!delta && !completed) return;
+    const id = delta ? params.turnId : params.turn?.id;
+    if (typeof id !== 'string' || (turnId && turnId !== id)) return;
+    let output = turns.get(id);
+    if (!output) {
+      if (!turnId && turns.size >= 16) return;
+      output = { text: '' };
+      turns.set(id, output);
+    }
+    if (delta && typeof params.delta === 'string' && output.status === undefined) {
+      output.text += params.delta.slice(0, Math.max(0, 4_000 - output.text.length));
+    } else if (completed && typeof params.turn.status === 'string') {
+      output.status = params.turn.status;
+      if (id === turnId) turnDone.resolve();
     }
   });
 
@@ -76,13 +86,15 @@ export async function runCodex(worker: WorkerCommand, root: string, job: JobCont
       threadId,
       input: [{ type: 'text', text: jobPrompt(job), text_elements: [] }],
     });
-    turnId = turn.turn?.id;
-    await Promise.race([turnDone.promise, interrupted]);
+    if (typeof turn.turn?.id !== 'string') throw new Error('Codex returned no turn ID');
+    turnId = turn.turn.id as string;
+    if (turns.get(turnId)?.status === undefined) await Promise.race([turnDone.promise, interrupted]);
     active.throwIfAborted();
-    if (!turnId || ended?.id !== turnId || ended.status !== 'completed' || !text.trim()) {
+    const output = turns.get(turnId);
+    if (output?.status !== 'completed' || !output.text.trim()) {
       throw new Error('Codex did not return a completed response');
     }
-    return text.toWellFormed();
+    return output.text.toWellFormed();
   } finally {
     active.removeEventListener('abort', interrupt);
     lines.close();
