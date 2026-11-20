@@ -1,5 +1,6 @@
 import { realpathSync } from 'node:fs';
-import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { setTimeout as delay } from 'node:timers/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { resolveWorker } from '../../packages/workers/registry.ts';
@@ -53,12 +54,25 @@ test('ACP starts a subprocess, initializes a session, and assembles streamed tex
   assert.deepEqual(progress, ['Worker is using a tool', 'Worker completed a tool call']);
 });
 
-test('ACP cancels a worker that does not return a turn result', async () => {
-  const signal = AbortSignal.timeout(250);
-  await assert.rejects(runAcp(worker, process.cwd(), {
+test('ACP sends native cancellation to a worker that has an active prompt', async t => {
+  const root = mkdtempSync(join(tmpdir(), 'blazar-acp-cancel-'));
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  const stop = new AbortController();
+  const signal = AbortSignal.any([stop.signal, AbortSignal.timeout(3_000)]);
+  const cancellable = { ...worker, args: ['-e', fixture
+    .replace("if (input.goal === 'wait') return;", "if (input.goal === 'wait') return require('node:fs').writeFileSync('ready', '');")
+    .replace("if (method === 'session/prompt')", `if (method === 'session/cancel') {
+      require('node:fs').writeFileSync('cancelled', params.sessionId);
+      process.exit(0);
+    }
+    if (method === 'session/prompt')`)] };
+  const done = assert.rejects(runAcp(cancellable, root, {
     goal: 'wait', instructions: [], predecessors: [],
   }, signal));
-  assert.equal(signal.aborted, true);
+  while (!existsSync(join(root, 'ready'))) await delay(10, undefined, { signal });
+  stop.abort();
+  await done;
+  assert.equal(readFileSync(join(root, 'cancelled'), 'utf8'), 'session');
 });
 
 test('a local ACP manifest launches through the same adapter and cannot opt into Router credentials', async t => {

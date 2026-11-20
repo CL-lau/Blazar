@@ -1012,9 +1012,12 @@ export class TaskStore {
   progress(runId: string, device: string, now: number, seq: number, message: string) {
     return this.transaction(() => {
       const run = this.db.prepare(`SELECT r.taskId FROM run r JOIN task t ON t.id=r.taskId
-        WHERE r.id=? AND r.device=? AND r.expires>? AND t.status='running' AND t.version=r.version
+        WHERE r.id=? AND r.device=? AND r.expires>? AND t.version=r.version
+        AND (t.status='running' OR (t.status='waiting_user' AND EXISTS(
+          SELECT 1 FROM approval a WHERE a.runId=r.id AND a.version=r.version AND a.decision IS NULL AND a.expires>?
+        )))
         AND NOT EXISTS(SELECT 1 FROM invalid_workflow_run i WHERE i.id=r.id)`)
-        .get(runId, device, now);
+        .get(runId, device, now, now);
       if (!run) return false;
       const receipt = this.db.prepare('SELECT message FROM run_progress WHERE run_id=? AND device_seq=?')
         .get(runId, seq);

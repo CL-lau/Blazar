@@ -78,6 +78,8 @@ test('approvals bind decisions to the current run, owner, and task version', t =
   const { run } = db.claim('owner', 'project', 'device', now, 45_000)!;
   const pending = db.requestApproval(run.id, 'device', 'Release the prepared draft for review', now)!;
   const approvalId = String(pending.id);
+  assert.equal(db.progress(run.id, 'device', now + 1, 1, 'Worker completed a tool call'), true);
+  assert.equal(db.get('owner', task.id)?.status, 'waiting_user');
   assert.equal(db.requestApproval(run.id, 'device', 'A different action', now), undefined);
   assert.equal(db.snapshot('owner').approvals.length, 1);
   assert.equal(db.snapshot('other').approvals.length, 0);

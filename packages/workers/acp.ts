@@ -3,6 +3,7 @@ import { isAbsolute, relative, sep } from 'node:path';
 import { jobPrompt, type JobContext } from './prompt.ts';
 import { spawnWorker, type WorkerCommand } from './process.ts';
 import { Readable, Writable } from 'node:stream';
+import { setTimeout as delay } from 'node:timers/promises';
 import { client, methods, ndJsonStream, PROTOCOL_VERSION } from '@agentclientprotocol/sdk';
 
 export type AcpWorker = WorkerCommand;
@@ -37,7 +38,7 @@ export async function runAcp(worker: AcpWorker, root: string, job: JobContext, s
                              report?: (message: string, signal: AbortSignal) => Promise<void>): Promise<string> {
   const active = AbortSignal.any([signal, AbortSignal.timeout(10 * 60_000)]);
   active.throwIfAborted();
-  const { child, stop } = spawnWorker(worker, root);
+  const { child, closed, stop } = spawnWorker(worker, root);
   let sessionId: string | undefined;
   let text = '';
   let reports = Promise.resolve();
@@ -100,8 +101,11 @@ export async function runAcp(worker: AcpWorker, root: string, job: JobContext, s
   try {
     return await peer.connectWith(ndJsonStream(Writable.toWeb(child.stdin), Readable.toWeb(child.stdout)), async ctx => {
       const options = { cancellationSignal: active, stopWaitingOnCancel: true };
+      let cancelling: Promise<void> | undefined;
       const cancel = () => {
-        if (sessionId) void ctx.notify(methods.agent.session.cancel, { sessionId }).catch(() => {});
+        if (sessionId) {
+          cancelling = ctx.notify(methods.agent.session.cancel, { sessionId }).catch(() => {});
+        }
       };
       active.addEventListener('abort', cancel, { once: true });
       try {
@@ -121,6 +125,9 @@ export async function runAcp(worker: AcpWorker, root: string, job: JobContext, s
         return text.toWellFormed();
       } finally {
         active.removeEventListener('abort', cancel);
+        if (cancelling) {
+          await Promise.race([cancelling.then(() => closed), delay(150, undefined, { ref: false })]);
+        }
       }
     });
   } finally {
