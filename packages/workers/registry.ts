@@ -1,11 +1,12 @@
 import type { CustomJsonlWorker } from './custom-jsonl.ts';
+import type { PiWorker } from './pi.ts';
 import type { JsonWorker } from './jsonl.ts';
 import type { WorkerCommand } from './process.ts';
 import { access, constants, readFile, stat } from 'node:fs/promises';
 import { delimiter, isAbsolute, join } from 'node:path';
 import { deepSeekWorker, type AcpWorker } from './acp.ts';
 
-export type Worker = (WorkerCommand & { protocol: 'codex' | 'aider' }) | (AcpWorker & { protocol?: 'acp' }) | JsonWorker | CustomJsonlWorker;
+export type Worker = (WorkerCommand & { protocol: 'codex' | 'aider' }) | (AcpWorker & { protocol?: 'acp' }) | JsonWorker | PiWorker | CustomJsonlWorker;
 
 const builtInWorkers = new Map<string, Worker>([
   ['codex', { executable: 'codex', args: ['app-server'], label: 'Codex', protocol: 'codex', env: ['OPENAI_API_KEY', 'CODEX_HOME'] }],
@@ -18,7 +19,7 @@ const builtInWorkers = new Map<string, Worker>([
     args: ['-p', '--verbose', '--output-format', 'stream-json', '--tools', '', '--strict-mcp-config', '--no-session-persistence'],
     env: ['ANTHROPIC_API_KEY', 'CLAUDE_CODE_OAUTH_TOKEN', 'CLAUDE_CONFIG_DIR'] }],
   ['pi', { executable: 'pi', label: 'Pi', protocol: 'pi',
-    args: ['--mode', 'json', '--no-tools', '--no-extensions', '--no-mcp', '--no-session',
+    args: ['--mode', 'rpc', '--no-tools', '--no-extensions', '--no-mcp', '--no-session',
       '--no-context-files', '--no-prompt-templates', '--no-skills'],
     env: ['ANTHROPIC_API_KEY', 'OPENAI_API_KEY', 'OPENROUTER_API_KEY', 'PI_CODING_AGENT_DIR'] }],
   ['deepseek', deepSeekWorker],

@@ -2,7 +2,7 @@ import { createInterface } from 'node:readline';
 import { spawnWorker, type WorkerCommand } from './process.ts';
 import { jobPrompt, type JobContext } from './prompt.ts';
 
-export type JsonWorker = WorkerCommand & { protocol: 'claude' | 'pi' };
+export type JsonWorker = WorkerCommand & { protocol: 'claude' };
 
 export async function runJsonWorker(worker: JsonWorker, root: string, job: JobContext, signal: AbortSignal) {
   const active = AbortSignal.any([signal, AbortSignal.timeout(10 * 60_000)]);
@@ -19,19 +19,10 @@ export async function runJsonWorker(worker: JsonWorker, root: string, job: JobCo
     let event;
     try { event = JSON.parse(line); } catch { invalid = true; return; }
     if (!event || typeof event !== 'object') return;
-    if (worker.protocol === 'claude' && event.type === 'result') {
+    if (event.type === 'result') {
       settled = event.subtype === 'success' && !event.is_error;
       answer = typeof event.result === 'string' ? event.result.slice(0, 4_000) : undefined;
     }
-    if (worker.protocol === 'pi' && event.type === 'message_end' && event.message?.role === 'assistant') {
-      const message = event.message;
-      answer = message.stopReason === 'stop' && Array.isArray(message.content)
-        ? message.content.reduce((text: string, part: { type?: string; text?: unknown } | null) =>
-          part?.type === 'text' && typeof part.text === 'string'
-            ? text + part.text.slice(0, Math.max(0, 4_000 - text.length)) : text, '')
-        : undefined;
-    }
-    if (worker.protocol === 'pi' && event.type === 'agent_settled') settled = event.aborted === false;
   });
 
   try {

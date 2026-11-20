@@ -3,6 +3,7 @@ import { clickApp, observeApp, type ObservationConfig } from '../../packages/com
 import { DeviceSocket } from './socket.ts';
 import { runAider } from '../../packages/workers/aider.ts';
 import { runCustomJsonl } from '../../packages/workers/custom-jsonl.ts';
+import { runPi } from '../../packages/workers/pi.ts';
 import { runJsonWorker } from '../../packages/workers/jsonl.ts';
 import { runCodex, type CodexSteer } from '../../packages/workers/codex.ts';
 import type { Worker } from '../../packages/workers/registry.ts';
@@ -247,7 +248,9 @@ export class DeviceClient {
           };
           const result = this.worker.protocol === 'jsonl'
             ? await runCustomJsonl(this.worker, this.root, job, active, report)
-            : this.worker.protocol === 'claude' || this.worker.protocol === 'pi'
+            : this.worker.protocol === 'pi'
+            ? await runPi(this.worker, this.root, job, active)
+            : this.worker.protocol === 'claude'
             ? await runJsonWorker(this.worker, this.root, job, active)
             : this.worker.protocol === 'codex'
               ? await this.runCodexWorker(this.worker, prefix, job, stop, active)
