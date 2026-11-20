@@ -5,7 +5,8 @@ import { runAider } from '../../packages/workers/aider.ts';
 import { runCustomJsonl } from '../../packages/workers/custom-jsonl.ts';
 import { runPi } from '../../packages/workers/pi.ts';
 import { runJsonWorker } from '../../packages/workers/jsonl.ts';
-import { runCodex, type CodexSteer } from '../../packages/workers/codex.ts';
+import type { JobContext, WorkerSteer } from '../../packages/workers/prompt.ts';
+import { runCodex } from '../../packages/workers/codex.ts';
 import type { Worker } from '../../packages/workers/registry.ts';
 import { runAcp } from '../../packages/workers/acp.ts';
 import { createHash, createHmac, randomUUID } from 'node:crypto';
@@ -97,7 +98,7 @@ export class DeviceClient {
     return response.ok;
   }
 
-  private async steerCodex(prefix: string, steer: CodexSteer, finished: AbortSignal,
+  private async steerWorker(prefix: string, steer: WorkerSteer, finished: AbortSignal,
                            stop: AbortController, active: AbortSignal) {
     const polling = AbortSignal.any([finished, active]);
     let appliedVersion: number | undefined;
@@ -129,13 +130,14 @@ export class DeviceClient {
     }
   }
 
-  private async runCodexWorker(worker: Worker, prefix: string, job: Parameters<typeof runCodex>[2],
+  private async runSteerableWorker(worker: Worker, prefix: string, job: JobContext,
                                stop: AbortController, active: AbortSignal) {
     const finished = new AbortController();
     let steering: Promise<void> | undefined;
     try {
-      return await runCodex(worker, this.root, job, active, steer => {
-        steering = this.steerCodex(prefix, steer, finished.signal, stop, active);
+      const run = worker.protocol === 'pi' ? runPi : runCodex;
+      return await run(worker, this.root, job, active, steer => {
+        steering = this.steerWorker(prefix, steer, finished.signal, stop, active);
         return () => finished.abort();
       });
     } finally {
@@ -248,12 +250,10 @@ export class DeviceClient {
           };
           const result = this.worker.protocol === 'jsonl'
             ? await runCustomJsonl(this.worker, this.root, job, active, report)
-            : this.worker.protocol === 'pi'
-            ? await runPi(this.worker, this.root, job, active)
+            : this.worker.protocol === 'pi' || this.worker.protocol === 'codex'
+            ? await this.runSteerableWorker(this.worker, prefix, job, stop, active)
             : this.worker.protocol === 'claude'
             ? await runJsonWorker(this.worker, this.root, job, active)
-            : this.worker.protocol === 'codex'
-              ? await this.runCodexWorker(this.worker, prefix, job, stop, active)
               : this.worker.protocol === 'aider'
                 ? await runAider(this.worker, this.root, job, active)
                 : await runAcp(this.worker, this.root, job, active, async (summary, signal) => {

@@ -1,11 +1,9 @@
 import { createInterface } from 'node:readline';
 import { spawnWorker, type WorkerCommand } from './process.ts';
-import { jobPrompt, type JobContext } from './prompt.ts';
-
-export type CodexSteer = (text: string, messageId: string) => Promise<boolean>;
+import { jobPrompt, type JobContext, type OnSteerReady } from './prompt.ts';
 
 export async function runCodex(worker: WorkerCommand, root: string, job: JobContext, signal: AbortSignal,
-                               onSteerReady?: (steer: CodexSteer) => (() => void)) {
+                               onSteerReady?: OnSteerReady) {
   const active = AbortSignal.any([signal, AbortSignal.timeout(10 * 60_000)]);
   active.throwIfAborted();
   const { child, closed, stop } = spawnWorker(worker, root);

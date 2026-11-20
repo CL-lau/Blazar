@@ -1,5 +1,8 @@
 import type { PredecessorInput } from '../protocol/task.ts';
 
+export type WorkerSteer = (text: string, messageId: string) => Promise<boolean>;
+export type OnSteerReady = (steer: WorkerSteer) => () => void;
+
 export type JobContext = {
   goal: string;
   instructions: string[];

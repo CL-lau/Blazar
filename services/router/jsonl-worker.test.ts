@@ -47,3 +47,31 @@ test('Pi RPC requires a correlated prompt acknowledgment and a settled run', asy
     'Summarize the notes: Use bullets' + String.fromCodePoint(0x2028) + 'done');
   await assert.rejects(runPi(worker(false), process.cwd(), job, AbortSignal.timeout(2_000)), /exited before/);
 });
+
+test('Pi only acknowledges steering after the queued message enters the run', async () => {
+  const worker = {
+    label: 'Pi steering fixture', executable: process.execPath,
+    args: ['-e', `
+      const emit = record => console.log(JSON.stringify(record));
+      require('node:readline').createInterface({input:process.stdin}).on('line', line => {
+        const { id, type, message } = JSON.parse(line);
+        if (type === 'prompt') {
+          emit({id,type:'response',command:'prompt',success:true,data:{disposition:'started'}});
+        }
+        if (type === 'steer') {
+          emit({type:'message_end',message:{role:'user',content:message}});
+          emit({id,type:'response',command:'steer',success:true,data:{disposition:'queued'}});
+          emit({type:'message_end',message:{role:'assistant',stopReason:'stop',content:[{type:'text',text:message}]}});
+          emit({type:'agent_settled',aborted:false});
+        }
+      });
+    `],
+  };
+  const accepted = Promise.withResolvers<boolean>();
+  const result = await runPi(worker, process.cwd(), job, AbortSignal.timeout(3_000), steer => {
+    accepted.resolve(steer('Use the latest instructions', 'revision-2'));
+    return () => {};
+  });
+  assert.equal(await accepted.promise, true);
+  assert.equal(result, 'Use the latest instructions');
+});
