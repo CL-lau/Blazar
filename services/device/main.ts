@@ -1,5 +1,6 @@
 import { observationConfig } from '../../packages/computer-use/observe.ts';
 import { resolveWorker } from '../../packages/workers/registry.ts';
+import { probeAcp } from '../../packages/workers/acp.ts';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
 import { DeviceLedger } from './ledger.ts';
@@ -19,6 +20,13 @@ const observation = mode === 'observe' ? observationConfig(process.env, join(sta
 const worker = observation ? undefined : await resolveWorker(mode, process.env.BLAZAR_WORKER_MANIFEST, process.env.BLAZAR_WORKER_EXECUTABLE);
 const workspaceLock = lockWorkspace(workspace, stateDirectory);
 try {
+  if (worker && (worker.protocol ?? 'acp') === 'acp') {
+    try {
+      await probeAcp(worker, workspaceLock.root, AbortSignal.timeout(5_000));
+    } catch (error) {
+      throw new Error(worker.label + ' failed the ACP startup handshake. Run npm run device:probe for diagnostics.', { cause: error });
+    }
+  }
   const ledger = new DeviceLedger(join(stateDirectory, 'ledger.sqlite'));
   try {
     const interrupted = ledger.interrupted(workspaceLock.identity);
