@@ -124,6 +124,9 @@ export class TaskStore {
       CREATE TABLE IF NOT EXISTS run_deadline (
         run_id TEXT PRIMARY KEY REFERENCES run(id) ON DELETE CASCADE, deadline INTEGER NOT NULL
       );
+      CREATE TABLE IF NOT EXISTS run_steering (
+        run_id TEXT PRIMARY KEY REFERENCES run(id) ON DELETE CASCADE
+      );
       CREATE INDEX IF NOT EXISTS run_device ON run(device);
       CREATE TABLE IF NOT EXISTS run_dependency (
         run_id TEXT NOT NULL REFERENCES run(id) ON DELETE CASCADE,
@@ -537,9 +540,9 @@ export class TaskStore {
 
   private appendInstruction(taskId: string, text: string, previousStatus: string, metadata: Record<string, string> = {}) {
     const run = this.db.prepare('SELECT id FROM run WHERE taskId=?').get(taskId);
-    this.db.prepare('UPDATE task SET status=?,version=version+1,result=NULL WHERE id=?')
-      .run(run ? 'running' : 'queued', taskId);
-    this.event(taskId, 'task.instruction_added', { text, ...metadata });
+    const updated = this.db.prepare('UPDATE task SET status=?,version=version+1,result=NULL WHERE id=? RETURNING version')
+      .get(run ? 'running' : 'queued', taskId)!;
+    this.event(taskId, 'task.instruction_added', { text, ...metadata, version: updated.version });
     if (previousStatus === 'succeeded') this.invalidateCompletedDescendants(taskId);
   }
 
@@ -1031,12 +1034,45 @@ export class TaskStore {
     });
   }
 
+  steering(runId: string, device: string, now: number, appliedVersion?: number) {
+    return this.transaction(() => {
+      const run = this.db.prepare(`SELECT r.taskId,r.version,t.version AS latest FROM run r
+        JOIN task t ON t.id=r.taskId WHERE r.id=? AND r.device=? AND r.expires>? AND t.status='running'
+        AND NOT EXISTS(SELECT 1 FROM invalid_workflow_run i WHERE i.id=r.id)`).get(runId, device, now);
+      if (!run) return undefined;
+      let version = Number(run.version);
+      const registered = this.db.prepare('SELECT 1 FROM run_steering WHERE run_id=?').get(runId);
+      if (!registered) {
+        if (version !== Number(run.latest) || appliedVersion !== undefined) return undefined;
+        this.db.prepare('INSERT INTO run_steering VALUES(?)').run(runId);
+        this.event(String(run.taskId), 'run.steering_ready', { runId });
+      }
+      const instructionAfter = (prior: number) => this.db.prepare(`SELECT seq,
+        json_extract(data,'$.version') AS version,json_extract(data,'$.text') AS text FROM event
+        WHERE taskId=? AND type='task.instruction_added' AND json_extract(data,'$.version')=?`)
+        .get(run.taskId!, prior + 1);
+      if (appliedVersion !== undefined && appliedVersion !== version) {
+        const applied = instructionAfter(version);
+        if (!applied || appliedVersion !== applied.version) return undefined;
+        this.db.prepare('UPDATE run SET version=? WHERE id=?').run(appliedVersion, runId);
+        this.event(String(run.taskId), 'run.instruction_applied', { runId, version: appliedVersion });
+        version = appliedVersion;
+      }
+      const instruction = instructionAfter(version);
+      return { instruction: instruction ? {
+        version: Number(instruction.version), text: String(instruction.text), messageId: runId + ':' + instruction.seq,
+      } : null };
+    });
+  }
+
   renew(runId: string, device: string, now: number, leaseMs: number) {
     const lease = this.db.prepare(`UPDATE run SET expires=MIN(?, (
       SELECT deadline FROM run_deadline WHERE run_id=run.id
     )) WHERE id=? AND device=? AND expires>?
       AND NOT EXISTS(SELECT 1 FROM invalid_workflow_run i WHERE i.id=run.id)
-      AND EXISTS(SELECT 1 FROM task WHERE task.id=run.taskId AND task.version=run.version AND (task.status='running' OR (task.status='waiting_user' AND EXISTS(
+      AND EXISTS(SELECT 1 FROM task WHERE task.id=run.taskId AND (task.version=run.version OR EXISTS(
+        SELECT 1 FROM run_steering s WHERE s.run_id=run.id
+      )) AND (task.status='running' OR (task.status='waiting_user' AND EXISTS(
         SELECT 1 FROM approval WHERE approval.runId=run.id AND decision IS NULL AND approval.expires>?)))) RETURNING expires`)
       .get(now + leaseMs, runId, device, now, now);
     return lease ? Number(lease.expires) : undefined;
@@ -1046,6 +1082,7 @@ export class TaskStore {
     return this.db.prepare(`SELECT r.id AS runId,r.device FROM run r JOIN task t ON t.id=r.taskId
       WHERE t.owner=? AND t.id=? AND (t.status IN ('pausing','cancelling') OR (
           t.status='running' AND r.version<>t.version
+          AND NOT EXISTS(SELECT 1 FROM run_steering s WHERE s.run_id=r.id)
           AND NOT EXISTS(SELECT 1 FROM invalid_workflow_run i WHERE i.id=r.id)))`).get(owner, taskId) as
       { runId: string; device: string } | undefined;
   }
@@ -1054,6 +1091,7 @@ export class TaskStore {
     return this.db.prepare(`SELECT r.id FROM run r JOIN task t ON t.id=r.taskId
       WHERE r.device=? AND (t.status IN ('pausing','cancelling') OR (
           t.status='running' AND r.version<>t.version
+          AND NOT EXISTS(SELECT 1 FROM run_steering s WHERE s.run_id=r.id)
           AND NOT EXISTS(SELECT 1 FROM invalid_workflow_run i WHERE i.id=r.id)))`).all(device);
   }
 

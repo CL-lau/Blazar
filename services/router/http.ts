@@ -306,7 +306,7 @@ function deviceOperation(store: TaskStore, bearer: string, pathname: string, dat
     store.clearInterruption(device.id);
     return { status: 200, body: { assignment: assignment ?? null, ...(assignment && { leaseRemainingMs: Math.max(0, assignment.run.expires - Date.now()) }) } };
   }
-  const run = /^\/v1\/device\/runs\/([a-f0-9-]{36})\/(renew|finish|stopped|request-approval|approval|consume-approval|progress|input-artifact)$/.exec(pathname);
+  const run = /^\/v1\/device\/runs\/([a-f0-9-]{36})\/(renew|finish|stopped|request-approval|approval|consume-approval|progress|input-artifact|steer)$/.exec(pathname);
   if (!run) throw new RequestError(404, 'Route not found');
   if (run[2] === 'input-artifact') {
     const artifactId = requiredText(data.artifactId, 'artifact ID', 36);
@@ -319,6 +319,14 @@ function deviceOperation(store: TaskStore, bearer: string, pathname: string, dat
   if (run[2] === 'stopped') {
     const accepted = store.acknowledgeStop(run[1], device.id, now);
     return { status: accepted ? 200 : 409, body: { accepted } };
+  }
+  if (run[2] === 'steer') {
+    const version = data.appliedVersion;
+    if (version !== undefined && (typeof version !== 'number' || !Number.isSafeInteger(version) || version < 1)) {
+      throw new RequestError(400, 'Invalid instruction version');
+    }
+    const result = store.steering(run[1], device.id, now, version);
+    return { status: result ? 200 : 409, body: result ?? { accepted: false } };
   }
   if (run[2] === 'progress') {
     const seq = data.seq;

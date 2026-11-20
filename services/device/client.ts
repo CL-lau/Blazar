@@ -4,7 +4,7 @@ import { DeviceSocket } from './socket.ts';
 import { runAider } from '../../packages/workers/aider.ts';
 import { runCustomJsonl } from '../../packages/workers/custom-jsonl.ts';
 import { runJsonWorker } from '../../packages/workers/jsonl.ts';
-import { runCodex } from '../../packages/workers/codex.ts';
+import { runCodex, type CodexSteer } from '../../packages/workers/codex.ts';
 import type { Worker } from '../../packages/workers/registry.ts';
 import { runAcp } from '../../packages/workers/acp.ts';
 import { createHash, createHmac, randomUUID } from 'node:crypto';
@@ -94,6 +94,53 @@ export class DeviceClient {
     const response = await this.post(prefix + 'consume-approval', { approvalId }, signal);
     await response.body?.cancel();
     return response.ok;
+  }
+
+  private async steerCodex(prefix: string, steer: CodexSteer, finished: AbortSignal,
+                           stop: AbortController, active: AbortSignal) {
+    const polling = AbortSignal.any([finished, active]);
+    let appliedVersion: number | undefined;
+    try {
+      while (!polling.aborted || (appliedVersion !== undefined && !active.aborted)) {
+        const response = await this.post(prefix + 'steer', { appliedVersion }, appliedVersion === undefined ? polling : active);
+        if (!response.ok) {
+          await response.body?.cancel();
+          if (!finished.aborted) stop.abort();
+          return;
+        }
+        const { instruction } = await response.json() as {
+          instruction: { version: number; text: string; messageId: string } | null;
+        };
+        appliedVersion = undefined;
+        if (polling.aborted) return;
+        if (instruction) {
+          if (!await steer(instruction.text, instruction.messageId)) {
+            if (!finished.aborted) stop.abort();
+            return;
+          }
+          appliedVersion = instruction.version;
+        } else {
+          await delay(250, undefined, { signal: polling });
+        }
+      }
+    } catch {
+      if (!polling.aborted) stop.abort();
+    }
+  }
+
+  private async runCodexWorker(worker: Worker, prefix: string, job: Parameters<typeof runCodex>[2],
+                               stop: AbortController, active: AbortSignal) {
+    const finished = new AbortController();
+    let steering: Promise<void> | undefined;
+    try {
+      return await runCodex(worker, this.root, job, active, steer => {
+        steering = this.steerCodex(prefix, steer, finished.signal, stop, active);
+        return () => finished.abort();
+      });
+    } finally {
+      finished.abort();
+      await steering;
+    }
   }
 
   private async completeInputArtifacts(inputs: PredecessorInput[], prefix: string, signal: AbortSignal) {
@@ -203,7 +250,7 @@ export class DeviceClient {
             : this.worker.protocol === 'claude' || this.worker.protocol === 'pi'
             ? await runJsonWorker(this.worker, this.root, job, active)
             : this.worker.protocol === 'codex'
-              ? await runCodex(this.worker, this.root, job, active)
+              ? await this.runCodexWorker(this.worker, prefix, job, stop, active)
               : this.worker.protocol === 'aider'
                 ? await runAider(this.worker, this.root, job, active)
                 : await runAcp(this.worker, this.root, job, active, async (summary, signal) => {
