@@ -10,6 +10,7 @@ export class DeviceSocket {
   private pending = new Map<number, Pending>();
   private id = 0;
   private stopListeners = new Map<string, () => void>();
+  private pendingStops = new Set<string>();
 
   constructor(base: URL, token: string) {
     this.endpoint = new URL('/v1/devices/connect', base);
@@ -49,7 +50,9 @@ export class DeviceSocket {
       try {
         const reply = JSON.parse(data.toString());
         if (reply.type === 'run.stop' && typeof reply.runId === 'string' && /^[a-f0-9-]{36}$/.test(reply.runId)) {
-          this.stopListeners.get(reply.runId)?.();
+          const handler = this.stopListeners.get(reply.runId);
+          if (handler) handler();
+          else if (this.pendingStops.size < 32) this.pendingStops.add(reply.runId);
           return;
         }
         if (!Number.isSafeInteger(reply.id) || !Number.isInteger(reply.status) ||
@@ -95,6 +98,7 @@ export class DeviceSocket {
 
   onStop(runId: string, handler: () => void) {
     this.stopListeners.set(runId, handler);
+    if (this.pendingStops.delete(runId)) handler();
     return () => this.stopListeners.delete(runId);
   }
 

@@ -40,6 +40,15 @@ test('device WebSocket reconnects under the existing lease and enforces revocati
   assert.equal(conflict.status, 409);
   const renew = await connection.request('runs/' + assignment.run.id + '/renew', {}, signal);
   assert.equal(renew.status, 200);
+  connection.close();
+  const updated = store.command('owner', task.id, 1, { action: 'append', text: 'Use the latest notes' });
+  assert.equal(updated?.version, 2);
+  const staleRenewal = await connection.request('runs/' + assignment.run.id + '/renew', {}, signal);
+  assert.equal(staleRenewal.status, 409);
+  let replayed = false;
+  const unwatch = connection.onStop(assignment.run.id, () => { replayed = true; });
+  assert.equal(replayed, true);
+  unwatch();
   assert.equal(store.revokeDevice('owner', device.id), true);
   const denied = await connection.request('runs/' + assignment.run.id + '/renew', {}, signal);
   assert.equal(denied.status, 401);

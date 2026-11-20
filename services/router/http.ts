@@ -731,6 +731,9 @@ export function routerServer(store: TaskStore, config: { owner: string; token: s
           peers.delete(connection);
           if (!peers.size) stopSubscribers.delete(device.id);
         });
+        for (const row of store.deviceStopTargets(device.id)) {
+          connection.send(JSON.stringify({ type: 'run.stop', runId: row.id }));
+        }
       }
       connection.on('message', (raw, binary) => {
         let id: number | undefined;
