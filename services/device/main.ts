@@ -15,7 +15,7 @@ const router = new URL(process.env.BLAZAR_ROUTER_URL ?? 'http://127.0.0.1:4199')
 const stateDirectory = join(homedir(), '.blazar-device');
 await mkdir(stateDirectory, { recursive: true, mode: 0o700 });
 const mode = process.env.BLAZAR_DEVICE_WORKER ?? 'preview';
-const observation = mode === 'observe' ? observationConfig(process.env) : undefined;
+const observation = mode === 'observe' ? observationConfig(process.env, join(stateDirectory, 'desktop-lock.sqlite')) : undefined;
 const worker = observation ? undefined : await resolveWorker(mode, process.env.BLAZAR_WORKER_MANIFEST, process.env.BLAZAR_WORKER_EXECUTABLE);
 const workspaceLock = lockWorkspace(workspace, stateDirectory);
 try {

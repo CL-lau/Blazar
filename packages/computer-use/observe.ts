@@ -1,9 +1,15 @@
 import { isAbsolute } from 'node:path';
+import { lockDatabaseFile } from '../storage/exclusive.ts';
 import { spawnWorker } from '../workers/process.ts';
 
-export type ObservationConfig = { executable: string; apps: ReadonlyMap<string, string>; buttons?: ReadonlyMap<string, ReadonlySet<string>> };
+export type ObservationConfig = {
+  executable: string;
+  apps: ReadonlyMap<string, string>;
+  buttons?: ReadonlyMap<string, ReadonlySet<string>>;
+  desktopLockPath?: string;
+};
 
-export function observationConfig(env: NodeJS.ProcessEnv): ObservationConfig {
+export function observationConfig(env: NodeJS.ProcessEnv, desktopLockPath?: string): ObservationConfig {
   const executable = env.BLAZAR_COMPUTER_DRIVER;
   if (!executable || !isAbsolute(executable)) throw new Error('Set an absolute computer driver executable path');
   const raw = JSON.parse(env.BLAZAR_COMPUTER_APPS ?? '{}');
@@ -25,7 +31,7 @@ export function observationConfig(env: NodeJS.ProcessEnv): ObservationConfig {
     }
     buttons.set(alias, new Set(values as string[]));
   }
-  return { executable, apps, buttons };
+  return { executable, apps, buttons, desktopLockPath };
 }
 
 function describeTree(input: unknown) {
@@ -66,10 +72,32 @@ async function windowsFor(config: ObservationConfig, root: string, app: string, 
       id: String(window.id),
       title: typeof window.title === 'string' ? window.title.replace(/[\x00-\x1f\x7f]/g, ' ').slice(0, 120).toWellFormed() : '',
       accessible: window.accessible === true,
+      instance: typeof window.process_instance === 'string' && window.process_instance.length <= 256
+        ? window.process_instance : undefined,
     }));
 }
 
-export async function observeApp(config: ObservationConfig, root: string, goal: string, signal: AbortSignal) {
+async function accessibleWindow(config: ObservationConfig, root: string, app: string, id: string, signal: AbortSignal) {
+  const windows = await windowsFor(config, root, app, signal);
+  const found = windows.filter(window => window.id === id && window.accessible);
+  if (found.length !== 1) throw new Error('The selected window is unavailable or inaccessible.');
+  return found[0];
+}
+
+async function withDesktopLock<T>(config: ObservationConfig, signal: AbortSignal, operation: () => Promise<T>) {
+  signal.throwIfAborted();
+  const unlock = config.desktopLockPath
+    ? lockDatabaseFile(config.desktopLockPath, 'Another Blazar run is using the desktop. Retry this action.')
+    : undefined;
+  try { return await operation(); }
+  finally { unlock?.(); }
+}
+
+export function observeApp(config: ObservationConfig, root: string, goal: string, signal: AbortSignal) {
+  return withDesktopLock(config, signal, () => observeWindow(config, root, goal, signal));
+}
+
+async function observeWindow(config: ObservationConfig, root: string, goal: string, signal: AbortSignal) {
   const match = /^\/observe ([a-z0-9_-]{1,32})(?: (--windows)| --window (w-[0-9]{1,20}))?$/.exec(goal);
   const app = match && config.apps.get(match[1]);
   if (!app || !match) throw new Error('Choose a configured application alias for /observe.');
@@ -80,12 +108,7 @@ export async function observeApp(config: ObservationConfig, root: string, goal: 
     ).join('\n') || 'No visible windows found.';
   }
   const windowId = match[3];
-  if (windowId) {
-    const windows = await windowsFor(config, root, app, signal);
-    if (!windows.some(window => window.id === windowId && window.accessible)) {
-      throw new Error('The selected window is unavailable or inaccessible.');
-    }
-  }
+  if (windowId) await accessibleWindow(config, root, app, windowId, signal);
   const snapshot = await readSnapshot(config, root, app, signal, windowId);
   const description = describeTree(snapshot.tree);
   if (!description) throw new Error('No accessible elements were found.');
@@ -151,24 +174,37 @@ function buttonIn(tree: unknown, label: string) {
 
 export async function clickApp(config: ObservationConfig, root: string, goal: string, signal: AbortSignal,
                                authorize: (summary: string, signal: AbortSignal) => Promise<(() => Promise<boolean>) | undefined>) {
-  const match = /^\/click ([a-z0-9_-]{1,32}) (.{1,120})$/.exec(goal);
+  const match = /^\/click ([a-z0-9_-]{1,32})(?: --window (w-[0-9]{1,20}))? (.{1,120})$/.exec(goal);
   const app = match && config.apps.get(match[1]);
-  if (!app || !match || !config.buttons?.get(match[1])?.has(match[2])) throw new Error('Choose a configured application button.');
-  const label = match[2];
-  const initial = await readSnapshot(config, root, app, signal);
-  const button = buttonIn(initial.tree, label);
-  const summary = describeTree(initial.tree);
-  const consume = await authorize(`Click "${label}" in ${app}.`, signal);
+  if (!app || !match || !config.buttons?.get(match[1])?.has(match[3])) throw new Error('Choose a configured application button.');
+  const windowId = match[2];
+  const label = match[3];
+  const { initialWindow, initial, button, summary } = await withDesktopLock(config, signal, async () => {
+    const initialWindow = windowId ? await accessibleWindow(config, root, app, windowId, signal) : undefined;
+    if (initialWindow && !initialWindow.instance) throw new Error('The driver cannot identify the selected window process.');
+    const initial = await readSnapshot(config, root, app, signal, windowId);
+    return { initialWindow, initial, button: buttonIn(initial.tree, label), summary: describeTree(initial.tree) };
+  });
+  const consume = await authorize(`Click "${label}" in ${app}${windowId ? ` window ${windowId}` : ''}.`, signal);
   if (!consume) throw new Error('Desktop action was not approved.');
-  const current = await readSnapshot(config, root, app, signal);
-  const latest = buttonIn(current.tree, label);
-  if (describeTree(current.tree) !== summary || latest.path !== button.path ||
-      initial.window_id !== current.window_id || initial.pid !== current.pid) {
-    throw new Error('The application changed after review. Request a new action.');
-  }
-  signal.throwIfAborted();
-  if (!await consume()) throw new Error('Desktop approval is no longer valid.');
-  await runDriver(config, root, ['click', latest.ref], signal);
-  const refreshed = await readSnapshot(config, root, app, signal).catch(() => undefined);
-  return refreshed ? describeTree(refreshed.tree) : 'Click completed; the application could not be observed afterward.';
+  return withDesktopLock(config, signal, async () => {
+    if (windowId) {
+      const currentWindow = await accessibleWindow(config, root, app, windowId, signal);
+      if (currentWindow.instance !== initialWindow?.instance) {
+        throw new Error('The application changed after review. Request a new action.');
+      }
+    }
+    const current = await readSnapshot(config, root, app, signal, windowId);
+    const latest = buttonIn(current.tree, label);
+    if (describeTree(current.tree) !== summary || latest.path !== button.path ||
+        initial.window_id !== current.window_id || initial.pid !== current.pid) {
+      throw new Error('The application changed after review. Request a new action.');
+    }
+    signal.throwIfAborted();
+    if (!await consume()) throw new Error('Desktop approval is no longer valid.');
+    signal.throwIfAborted();
+    await runDriver(config, root, ['click', latest.ref], signal);
+    const refreshed = await readSnapshot(config, root, app, signal, windowId).catch(() => undefined);
+    return refreshed ? describeTree(refreshed.tree) : 'Click completed; the application could not be observed afterward.';
+  });
 }

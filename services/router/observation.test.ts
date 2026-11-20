@@ -1,3 +1,4 @@
+import { lockDatabaseFile } from '../../packages/storage/exclusive.ts';
 import assert from 'node:assert/strict';
 import { once } from 'node:events';
 import { mkdtempSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
@@ -69,7 +70,12 @@ test('configured clicks use a newly observed reference after review and consume 
   writeFileSync(driver, `#!${process.execPath}
 const fs = require('node:fs');
 const op = process.argv[2];
-if (op === 'snapshot') {
+if (op === 'list-windows') {
+  console.log(JSON.stringify({ok:true,command:op,data:[{
+    id:'w-10',app_name:'Calculator',title:'Calculator',visible:true,accessible:true,
+    process_instance:fs.existsSync('replaced')?'replacement':'original'
+  }]}));
+} else if (op === 'snapshot') {
   const clicked = fs.existsSync('clicked');
   const ref = fs.existsSync('reviewed') ? '@s2:e1' : '@s1:e1';
   console.log(JSON.stringify({ok:true,command:op,data:{window_id:'window',pid:42,tree:{
@@ -82,21 +88,38 @@ if (op === 'snapshot') {
   console.log(JSON.stringify({ok:true,command:op,data:{}}));
 } else process.exit(2);
 `, { mode: 0o700 });
+  const lockPath = join(directory, 'desktop-lock.sqlite');
   const config = observationConfig({
     BLAZAR_COMPUTER_DRIVER: driver, BLAZAR_COMPUTER_APPS: '{"calc":"Calculator"}',
     BLAZAR_COMPUTER_BUTTONS: '{"calc":["Add"]}',
-  });
+  }, lockPath);
   const signal = AbortSignal.timeout(5_000);
+  const release = lockDatabaseFile(lockPath, 'Desktop already occupied');
+  try {
+    await assert.rejects(clickApp(config, directory, '/click calc Add', signal, async () => {
+      assert.fail('A competing action must not request approval');
+    }), /using the desktop/);
+  } finally {
+    release();
+  }
   await assert.rejects(clickApp(config, directory, '/click calc Delete', signal, async () => undefined), /configured/);
   await assert.rejects(clickApp(config, directory, '/click calc Add', signal, async () => {
     writeFileSync(join(directory, 'changed'), '');
     return async () => { assert.fail('Changed windows must not consume approval'); };
   }), /changed after review/);
   rmSync(join(directory, 'changed'));
-  const result = await clickApp(config, directory, '/click calc Add', signal, async summary => {
+  await assert.rejects(clickApp(config, directory, '/click calc --window w-10 Add', signal, async summary => {
+    assert.match(summary, /window w-10/);
+    writeFileSync(join(directory, 'replaced'), '');
+    return async () => { assert.fail('A replacement process must not consume approval'); };
+  }), /changed after review/);
+  rmSync(join(directory, 'replaced'));
+  const result = await clickApp(config, directory, '/click calc --window w-10 Add', signal, async summary => {
     assert.match(summary, /Click "Add" in Calculator/);
+    lockDatabaseFile(lockPath, 'Desktop locked while awaiting review')();
     writeFileSync(join(directory, 'reviewed'), '');
     return async () => {
+      assert.throws(() => lockDatabaseFile(lockPath, 'Desktop busy'), /Desktop busy/);
       writeFileSync(join(directory, 'consumed'), '');
       return true;
     };
