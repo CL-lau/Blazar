@@ -1,5 +1,6 @@
 import { observationConfig, probeComputer } from '../../packages/computer-use/observe.ts';
 import { realpath, stat } from 'node:fs/promises';
+import { probePi } from '../../packages/workers/pi.ts';
 import { probeAcp } from '../../packages/workers/acp.ts';
 import { resolveWorker } from '../../packages/workers/registry.ts';
 
@@ -23,10 +24,10 @@ if (!mode || mode === 'preview' || extra.length) {
         .filter(name => /KEY|TOKEN|CREDENTIAL/i.test(name))
         .map(name => [name, Boolean(process.env[name])]));
       let handshake;
-      if (protocol === 'acp') {
+      if (protocol === 'acp' || protocol === 'pi') {
         const root = await realpath(process.env.BLAZAR_WORKSPACE_PATH ?? process.cwd());
         if (!(await stat(root)).isDirectory()) throw new Error('Workspace must be a directory');
-        handshake = await probeAcp(worker, root, AbortSignal.timeout(5000));
+        handshake = await (protocol === 'pi' ? probePi : probeAcp)(worker, root, AbortSignal.timeout(5000));
       }
       console.log(JSON.stringify({
         label: worker.label, protocol, executable: worker.executable, credentials,

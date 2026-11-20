@@ -85,7 +85,7 @@ The ACP presets follow the [ACP Registry](https://agentclientprotocol.com/get-st
 
 For DeepSeek Harness, install the official [`@deepseek-ai/dsh` package](https://www.npmjs.com/package/@deepseek-ai/dsh). Version `0.2.2-rc.5` requires Node.js 24.9 or newer on the execution device. Blazar launches `dsh --profile acp` and forwards `DEEPSEEK_API_KEY` and an optional `DSH_HOME` from the device environment. On macOS arm64, Blazar verified the ACP v1 handshake and new-session creation with this release using Node.js 24.22.3.
 
-Run `npm run device:probe -- <preset>` with the same configuration as the execution device to check executable discovery and, for ACP Workers, the protocol handshake. The probe reports only whether expected credential environment variables are present. Provider login and model access require a successful authenticated task.
+Run `npm run device:probe -- <preset>` with the same configuration as the execution device to check executable discovery. For ACP Workers, the probe performs a protocol handshake. For Pi, it verifies the RPC `get_state` response and reports whether a model is configured. Credential reporting is limited to environment variable presence. Provider login and model access require a successful authenticated task.
 
 Use `BLAZAR_DEVICE_WORKER=custom` and `BLAZAR_WORKER_MANIFEST` to point to an absolute path containing a version 1 ACP manifest:
 
