@@ -25,7 +25,11 @@ test('a registered JSONL extension executes a real subprocess through Router and
       console.log(JSON.stringify({version:1,type:'completed',result:'Complete input verified'}));
       return;
     }
-    if (request.input.goal === 'Wait for pause') {
+    if (request.input.goal === 'Wait for follow-up' && request.input.instructions.length) {
+      console.log(JSON.stringify({version:1,type:'completed',result:request.input.instructions.join(' ')}));
+      return;
+    }
+    if (request.input.goal === 'Wait for pause' || request.input.goal === 'Wait for follow-up') {
       console.log(JSON.stringify({version:1,type:'progress',message:'Ready to pause'}));
       setInterval(() => {}, 1000);
       return;
@@ -108,6 +112,23 @@ test('a registered JSONL extension executes a real subprocess through Router and
   await executing;
   assert.equal(store.get('owner', pausable.id)?.status, 'paused');
 
+  const revisable = store.create('owner', 'fixture', 'revisable', 'project', 'Wait for follow-up');
+  const revisionSignal = AbortSignal.timeout(5_000);
+  const oldRun = assert.rejects(client.runOnce(revisionSignal), /aborted/i);
+  while (!store.timeline('owner', revisable.id)?.events.some(event => event.data.message === 'Ready to pause')) {
+    await delay(10, undefined, { signal: revisionSignal });
+  }
+  const appended = await fetch('http://127.0.0.1:' + address.port + '/v1/tasks/' + revisable.id + '/commands', {
+    method: 'POST', signal: revisionSignal, headers: {
+      Authorization: 'Bearer local', 'Content-Type': 'application/json', 'Idempotency-Key': 'append',
+    },
+    body: JSON.stringify({ action: 'append', expectedVersion: 1, text: 'Use the updated instructions' }),
+  });
+  assert.equal(appended.status, 200);
+  await oldRun;
+  assert.equal(store.get('owner', revisable.id)?.status, 'queued');
+  assert.equal(await client.runOnce(revisionSignal), true);
+  assert.equal(store.get('owner', revisable.id)?.result, 'Use the updated instructions');
 });
 
 test('JSONL rejects duplicate terminal events and stops a cancelled subprocess', async () => {
