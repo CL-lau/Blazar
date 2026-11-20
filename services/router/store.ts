@@ -1033,7 +1033,7 @@ export class TaskStore {
       SELECT deadline FROM run_deadline WHERE run_id=run.id
     )) WHERE id=? AND device=? AND expires>?
       AND NOT EXISTS(SELECT 1 FROM invalid_workflow_run i WHERE i.id=run.id)
-      AND EXISTS(SELECT 1 FROM task WHERE task.id=run.taskId AND (task.status='running' OR (task.status='waiting_user' AND EXISTS(
+      AND EXISTS(SELECT 1 FROM task WHERE task.id=run.taskId AND task.version=run.version AND (task.status='running' OR (task.status='waiting_user' AND EXISTS(
         SELECT 1 FROM approval WHERE approval.runId=run.id AND decision IS NULL AND approval.expires>?)))) RETURNING expires`)
       .get(now + leaseMs, runId, device, now, now);
     return lease ? Number(lease.expires) : undefined;
@@ -1041,23 +1041,36 @@ export class TaskStore {
 
   stopTarget(owner: string, taskId: string) {
     return this.db.prepare(`SELECT r.id AS runId,r.device FROM run r JOIN task t ON t.id=r.taskId
-      WHERE t.owner=? AND t.id=? AND t.status IN ('pausing','cancelling')`).get(owner, taskId) as
+      WHERE t.owner=? AND t.id=? AND (t.status IN ('pausing','cancelling') OR (
+          t.status='running' AND r.version<>t.version
+          AND NOT EXISTS(SELECT 1 FROM invalid_workflow_run i WHERE i.id=r.id)))`).get(owner, taskId) as
       { runId: string; device: string } | undefined;
   }
 
   deviceStopTargets(device: string) {
     return this.db.prepare(`SELECT r.id FROM run r JOIN task t ON t.id=r.taskId
-      WHERE r.device=? AND t.status IN ('pausing','cancelling')`).all(device);
+      WHERE r.device=? AND (t.status IN ('pausing','cancelling') OR (
+          t.status='running' AND r.version<>t.version
+          AND NOT EXISTS(SELECT 1 FROM invalid_workflow_run i WHERE i.id=r.id)))`).all(device);
   }
 
   acknowledgeStop(runId: string, device: string, now: number) {
     return this.transaction(() => {
       const run = this.db.prepare(`SELECT r.taskId,t.status FROM run r JOIN task t ON t.id=r.taskId
-        WHERE r.id=? AND r.device=? AND r.expires>? AND t.status IN ('pausing','cancelling')`).get(runId, device, now);
+        WHERE r.id=? AND r.device=? AND r.expires>? AND (t.status IN ('pausing','cancelling') OR (
+          t.status='running' AND r.version<>t.version
+          AND NOT EXISTS(SELECT 1 FROM invalid_workflow_run i WHERE i.id=r.id)))`).get(runId, device, now);
       if (!run) return false;
-      this.finishStoppedRun(runId, String(run.taskId), run.status === 'pausing');
+      if (run.status === 'running') this.finishSupersededRun(runId, String(run.taskId));
+      else this.finishStoppedRun(runId, String(run.taskId), run.status === 'pausing');
       return true;
     });
+  }
+
+  private finishSupersededRun(runId: string, taskId: string) {
+    this.db.prepare('DELETE FROM run WHERE id=?').run(runId);
+    this.db.prepare("UPDATE task SET status='queued' WHERE id=?").run(taskId);
+    this.event(taskId, 'run.superseded', { runId });
   }
 
   private finishStoppedRun(runId: string, taskId: string, paused: boolean) {
@@ -1091,16 +1104,15 @@ export class TaskStore {
         this.db.prepare(`INSERT INTO review_input SELECT ?,predecessor,version FROM run_dependency WHERE run_id=?`)
           .run(taskId, runId);
       }
+      if (!row.staleInputs && row.runVersion !== row.version) {
+        this.finishSupersededRun(runId, taskId);
+        return false;
+      }
       this.db.prepare('DELETE FROM run WHERE id=?').run(runId);
       if (row.staleInputs) {
         this.db.prepare("UPDATE task SET status='waiting_user',result=? WHERE id=?")
           .run('An upstream result changed during execution. Review the run before retrying.', taskId);
         this.event(taskId, 'run.inputs_changed', { runId, status: 'waiting_user' });
-        return false;
-      }
-      if (row.runVersion !== row.version) {
-        this.db.prepare("UPDATE task SET status='queued' WHERE id=?").run(taskId);
-        this.event(taskId, 'run.superseded', { runId });
         return false;
       }
       const finalStatus = pendingReview ? 'waiting_review' : outcome.status;

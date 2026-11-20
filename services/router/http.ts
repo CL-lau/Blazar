@@ -688,7 +688,7 @@ export function routerServer(store: TaskStore, config: { owner: string; token: s
         } else throw new RequestError(400, 'Invalid action');
         const result = store.command(owner, taskId, version, command, key);
         if (result) {
-          if (action === 'pause' || action === 'cancel') notifyStop(owner, taskId);
+          if (action === 'pause' || action === 'cancel' || action === 'append') notifyStop(owner, taskId);
           reply(response, 200, result);
         } else reply(response, 409, { error: 'Task state changed or command unavailable', task: store.get(owner, taskId) });
         return;

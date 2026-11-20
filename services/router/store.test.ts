@@ -34,6 +34,24 @@ test('cancellation prevents lease renewal and late completion', t => {
   assert.equal(db.get('owner', task.id)?.status, 'cancelled');
 });
 
+test('an appended instruction stops the superseded run and queues the latest version after cleanup', t => {
+  const db = new TaskStore(':memory:');
+  t.after(() => db.close());
+  const task = db.create('owner', 'desktop', 'first', 'project', 'Review');
+  const { run } = db.claim('owner', 'project', 'device', 0, 100)!;
+  assert.equal(db.command('owner', task.id, 1, { action: 'append', text: 'Include tests' })?.version, 2);
+  assert.deepEqual({ ...db.stopTarget('owner', task.id) }, { runId: run.id, device: 'device' });
+  assert.deepEqual(db.deviceStopTargets('device').map(item => item.id), [run.id]);
+  assert.equal(db.renew(run.id, 'device', 1, 100), undefined);
+  assert.equal(db.claim('owner', 'project', 'another', 2, 100), undefined);
+  assert.equal(db.acknowledgeStop(run.id, 'another', 3), false);
+  assert.equal(db.acknowledgeStop(run.id, 'device', 3), true);
+  assert.equal(db.finish(run.id, 'device', 4, { status: 'succeeded', result: 'Old result' }), false);
+  const next = db.claim('owner', 'project', 'device', 5, 100)!;
+  assert.equal(next.run.version, 2);
+  assert.deepEqual(next.instructions, ['Include tests']);
+});
+
 test('reconciles an expired run after restart and preserves the event cursor', t => {
   const directory = mkdtempSync(join(tmpdir(), 'blazar-'));
   t.after(() => rmSync(directory, { recursive: true, force: true }));
