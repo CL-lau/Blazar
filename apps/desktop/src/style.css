@@ -1,0 +1,31 @@
+:root { color-scheme: dark; font: 15px/1.5 system-ui, sans-serif; background: #141517; color: #ecebef; }
+* { box-sizing: border-box; }
+body { margin: 0; }
+main { max-width: 1120px; margin: auto; padding: 24px; }
+header { display: flex; justify-content: space-between; align-items: center; border-bottom: 1px solid #34343a; padding-bottom: 16px; }
+h1, h2, h3 { margin: 0 0 12px; line-height: 1.2; overflow-wrap: anywhere; }
+h1 { font-size: 25px; margin: 0; }
+h2 { font-size: 20px; }
+button, input, textarea { font: inherit; color: inherit; border: 1px solid #41414b; background: #202128; border-radius: 6px; padding: 8px 12px; }
+button { cursor: pointer; margin: 0 8px 8px 0; }
+button:disabled { opacity: .5; cursor: default; }
+.primary { background: #b7a3ff; color: #21173f; border-color: transparent; font-weight: 650; }
+.workspace { display: grid; grid-template-columns: minmax(180px, 255px) minmax(0, 1fr); gap: 20px; padding-top: 24px; }
+.detail, .connect, aside { padding: 20px; background: #1a1b21; border: 1px solid #34343a; border-radius: 10px; }
+.connect { margin: 30px auto; max-width: 460px; }
+header + .detail { margin-top: 24px; }
+label { display: grid; gap: 6px; margin: 12px 0; }
+textarea { min-height: 100px; resize: vertical; }
+ul { list-style: none; padding: 0; }
+.task-link { display: grid; width: 100%; text-align: left; overflow-wrap: anywhere; }
+.task-link[aria-current="true"] { border-color: #b7a3ff; }
+.status, small { color: #c5bfce; }
+pre, code { background: #111216; padding: 8px; border-radius: 5px; white-space: pre-wrap; overflow-wrap: anywhere; }
+.error { border: 1px solid #854a4c; padding: 10px; color: #ffc2c1; }
+.approval { border-top: 1px solid #4b435e; margin: 16px 0; padding-top: 14px; }
+@media (max-width: 600px) { main { padding: 12px; } .workspace { grid-template-columns: 1fr; } }
+select { font: inherit; color: inherit; background: #202128; border: 1px solid #41414b; border-radius: 6px; padding: 8px; }
+.knowledge { display: grid; gap: 12px; }
+.knowledge fieldset { min-width: 0; border: 1px solid #41414b; border-radius: 6px; }
+.knowledge li { overflow-wrap: anywhere; padding: 8px 0; }
+.knowledge li button { margin-left: 12px; }

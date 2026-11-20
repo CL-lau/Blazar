@@ -1,0 +1,40 @@
+(router_upstream) {
+	reverse_proxy 127.0.0.1:{$BLAZAR_PORT:4199} {
+		header_up X-Blazar-Public-Gateway 1
+	}
+}
+
+{$BLAZAR_PUBLIC_HOST} {
+	@public_read {
+		method GET
+		path /v1/state /v1/stream /v1/devices/connect
+	}
+	@public_resource {
+		method GET
+		path_regexp ^/v1/(tasks/[a-f0-9-]{36}/timeline|artifacts/[a-f0-9-]{36}(/diff)?)$
+	}
+	@public_write {
+		method POST
+		path /v1/pairings/redeem /v1/mobile/push /v1/conversation /v1/events /v1/workflows /v1/channels/feishu/events /v1/channels/qq/events
+	}
+	@task_command {
+		method POST
+		path_regexp ^/v1/tasks/[a-f0-9-]{36}/commands$
+	}
+
+	handle @public_read {
+		import router_upstream
+	}
+	handle @public_resource {
+		import router_upstream
+	}
+	handle @public_write {
+		import router_upstream
+	}
+	handle @task_command {
+		import router_upstream
+	}
+	handle {
+		respond 404
+	}
+}

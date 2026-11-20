@@ -1,0 +1,23 @@
+node_modules/
+.env
+.env.*
+*.sqlite*
+__pycache__/
+.DS_Store
+
+apps/desktop/dist/
+
+apps/desktop/src-tauri/target/
+
+apps/ios/Blazar.xcodeproj/
+apps/ios/build/
+
+# Local service configuration and signing material
+*.env
+*.p8
+*.pem
+*.p12
+*.mobileprovision
+
+# Generated Tauri schemas
+apps/desktop/src-tauri/gen/schemas/

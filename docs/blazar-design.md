@@ -1,0 +1,261 @@
+# Blazar 完整产品与技术设计
+
+状态：设计提案。范围覆盖桌面端、iOS、五类 IM、异构 Worker 和团队协作。实际平台账号、Worker 版本和性能指标以验收结果为准。
+
+## 1. 产品边界
+
+**Blazar 是产品名，也是唯一面向用户的主 Agent 名。** 桌面、iPhone 和所有 IM 中都以 Blazar 的身份交互。本文的 Router 专指主 Agent 所在的服务和调度职责。Blazar 的核心是上下文与跨应用记忆、持续任务管理，以及直接使用应用和操作电脑。用户提交目标、澄清需求、批准动作、查看进度、取消任务和验收产物。所有交互经过同一个逻辑 Router。Router 选择电脑、工作区和 Worker，决定是否并行、交接或恢复任务。用户只在配置页面管理 Agent 的可用性、凭据和工作区权限。任务历史可以展示执行记录供排障。
+
+桌面端用 Tauri + React，Router 与设备执行端用 TypeScript / Node.js，Rust 宿主负责桌面集成，iOS 用 SwiftUI。桌面端、iOS 与 IM 共享同一会话及任务状态。iPhone 上的远程操作经 Router 派发到电脑，产品界面围绕任务和相关文件、diff、审批、结果设计。IM 范围为微信、飞书 / Lark、企业微信、钉钉、QQ。
+
+## 2. LobeHub 源码研究与取舍
+
+分析快照为 [LobeHub 1b89933](https://github.com/lobehub/lobehub/tree/1b89933c8efc0282078a333ccc6107ddcfb06572)。以下是对实际源码边界的归纳。
+
+| 源码观察 | Blazar 决策 |
+| --- | --- |
+| `packages/agent-runtime/src/loop/index.ts` 的 `runAgentLoop` 注入 step，支持外部步数限制、每步完成回调和终止判断。运行时、Host、上下文和服务端传输是独立层级。 | 保留「模型循环与副作用分离」的边界。让 Router 的模型只产出决策，SQLite 事务执行状态变更。 |
+| `apps/server/src/modules/AgentRuntime/AgentRuntimeCoordinator.ts` 分别注入状态和流管理器。人为审批结束当前事件流，后续以新 operation 恢复。异步工具暂停则保留原 operation。 | 分设 Task、Run、Approval。客户端只订阅一个带游标的 Router 流，暂停和恢复靠持久化任务事件表达。 |
+| `packages/heterogeneous-agents/src/registry.ts` 的工厂既有专用 Codex、Claude Code、Pi、Cursor、OpenCode 适配器，也有 Copilot、Droid 等 ACP 适配器。DeepSeek Harness 接在运行时注册表中。 | 共用 ACP 传输与事件归一化，专用协议用独立适配器。注册表保存探测、安装条件、能力、可用版本和认证指引。 |
+| `apps/server/src/services/bot/BotMessageRouter/` 处理账号、访问门禁、触发判定和延迟消息重放。`AgentBridgeService` 区分本地与队列执行，附件提取交给平台 client。 | IM adapter 专注收发和平台语义，权限、去重、任务关联和执行全由 Router 处理。 |
+| `packages/chat-adapter-{wechat,wecom,feishu,dingtalk,qq}` 加上服务端 `platforms` 目录覆盖目标渠道。飞书和 Lark 有独立 definition，QQ 有被动回复约束，企微有连接与媒体逻辑。 | 复用这些边界设计，按官方接入方式独立实现和验收。每个平台声明自己的回复窗口、附件和主动通知能力。 |
+| `packages/device-gateway-client/src/{client,wsTunnel}.ts` 处理设备重连、隧道和流量水位；`agent-gateway-client` 处理运行流回放与终止对账。桌面壳使用 Electron。 | 用窄的设备任务协议和统一重放机制。桌面沿用 Tauri，Rust 壳调用独立 Router 服务。 |
+
+涉及的源码入口：[Agent Loop](https://github.com/lobehub/lobehub/blob/1b89933c8efc0282078a333ccc6107ddcfb06572/packages/agent-runtime/src/loop/index.ts) · [Coordinator](https://github.com/lobehub/lobehub/blob/1b89933c8efc0282078a333ccc6107ddcfb06572/apps/server/src/modules/AgentRuntime/AgentRuntimeCoordinator.ts) · [Worker 注册表](https://github.com/lobehub/lobehub/blob/1b89933c8efc0282078a333ccc6107ddcfb06572/packages/heterogeneous-agents/src/registry.ts) · [Bot 路由](https://github.com/lobehub/lobehub/tree/1b89933c8efc0282078a333ccc6107ddcfb06572/apps/server/src/services/bot) · [设备连接](https://github.com/lobehub/lobehub/tree/1b89933c8efc0282078a333ccc6107ddcfb06572/packages/device-gateway-client)
+
+**策略是参考 LobeHub 的工程边界，保持 Blazar 的依赖图独立。** LobeHub 根许可证对衍生作品的商业分发有附加条件。个别包有独立许可证声明，例如私有 workspace 包 `@lobechat/agent-runtime` 在 manifest 标记 MIT，但还依赖同仓库的上下文与类型包。本文的实现方案采用独立代码。 [根许可证](https://github.com/lobehub/lobehub/blob/1b89933c8efc0282078a333ccc6107ddcfb06572/LICENSE) · [Runtime manifest](https://github.com/lobehub/lobehub/blob/1b89933c8efc0282078a333ccc6107ddcfb06572/packages/agent-runtime/package.json)
+
+### Linger 作为实现基础
+
+采用 [Linger 77abdcb](https://github.com/simplexai-labs/linger/tree/77abdcb37f779f9c9d2de89fa245efa88d3f6584) 的应用架构作为 Blazar 的实现基础。Linger 的 Room / Work Item 对应 Blazar 的会话与任务，TeamHub 作为唯一持久化业务状态入口的模式对应 Router。Computer Daemon 中的出站连接、设备事件账本与运行时适配器对应 Blazar 的设备服务。Linger 将原始应用记录与经模型提出、再经校验的 Wiki 更新分开，Blazar 据此区分证据、派生记忆和用户确认。 [Linger 架构](https://github.com/simplexai-labs/linger/blob/77abdcb37f779f9c9d2de89fa245efa88d3f6584/docs/architecture.md) · [Wiki 与记忆](https://github.com/simplexai-labs/linger/blob/77abdcb37f779f9c9d2de89fa245efa88d3f6584/docs/wiki-and-memory.md)
+
+| Linger 基础 | Blazar 实现与扩展 |
+| --- | --- |
+| Room / Work Item / Context | 一个 Blazar 主 Agent，多入口会话，持久化任务与运行版本；Router 的状态服务沿用现有 TypeScript / SQLite 实现。 |
+| Computer Daemon 的出站 WebSocket、账本和进程适配 | 按设备权限发出任务租约与动作，并按设备序号回放。加入完整 Worker 清单、自定义适配器、iOS 和国内 IM。 |
+| Agent workspace、只读 Memory / Wiki、应用命令权限 | 保留工作区隔离和服务端权限校验，引入连接账号级的来源追踪、撤权失效和跨渠道目的端授权。 |
+
+Linger 根许可证对第三方托管和前端标识修改有附加条款。本仓库以独立实现其架构和行为为基础，便于使用 Blazar 的产品标识和发布方式。 [Linger 许可证](https://github.com/simplexai-labs/linger/blob/77abdcb37f779f9c9d2de89fa245efa88d3f6584/LICENSE)
+
+## 3. Router harness 选型
+
+**选择 Pi Agent Core，作为固定版本的库嵌入 Router，并在自己的代码中写一层薄适配。** Pi 源码快照 `cb1205e4661723c7a8c9fb01acd38b7691f97797` 中，`@earendil-works/pi-agent-core` 声明了可注入的 `streamFn`、上下文变换、工具调用前后钩子、终止信号与 steering。可以仅注入少量 Router 工具和受控的上下文。Pi Worker 使用独立的 Coding Agent RPC，会有不同的进程、权限、会话和版本约束。 [Pi Agent 源码](https://github.com/earendil-works/pi-mono/blob/cb1205e4661723c7a8c9fb01acd38b7691f97797/packages/agent/src/agent.ts) · [Pi 集成方式](https://pi.dev/)
+
+| 方案 | 评价 |
+| --- | --- |
+| Pi Agent Core | TypeScript 可直接嵌入，注入模型传输与工具的切入点明确。Blazar 负责自己的事件、状态和恢复。 |
+| Pi Durable | 已经有持久化对话、任务图与恢复能力。当前文档标记 API 为实验性，直接采用会让任务与审批依赖额外一套持久化语义。作为设计参照。 |
+| LobeHub Runtime | Loop 层清晰且经过复杂场景使用。运行时和服务逻辑依赖仓库类型、上下文及 Host 传输，移植成本高。 |
+| DeepSeek Harness | 架构思路贴近目标。有 `sdk-minimal` 可供嵌入，也有 `acp` 供外部调用。源码以 Cordis profile 组装插件、服务和包，嵌入仍需要适配 profile 的启动和服务依赖。Blazar 用 Pi Core 承载推理循环，应用与设备工具由自己的能力层提供。Worker 通过 `dsh --profile acp` 接入。 |
+| 直接模型 SDK | 对单次结构化分类足够，可用于确定性路由后的轻量判定。如果还要支持有界检索与动态上下文，就需要维护自己的循环。 |
+
+[Pi Durable](https://github.com/earendil-works/pi-mono/blob/cb1205e4661723c7a8c9fb01acd38b7691f97797/packages/durable/README.md) · [DeepSeek Harness 架构](https://github.com/deepseek-ai/deepseek-harness/blob/2e39e70496aa02986ca6a820c5d497e816b69d7e/docs/architecture.md) · [DeepSeek CLI profiles](https://github.com/deepseek-ai/deepseek-harness/blob/2e39e70496aa02986ca6a820c5d497e816b69d7e/apps/cli/README.md)
+
+### Harness 接入合同
+
+```ts
+interface RouterHarness {
+  decide(input: DecisionInput, signal: AbortSignal): Promise<RouterDecision>;
+}
+
+type RouterDecision =
+  | { kind: 'reply'; text: string }
+  | { kind: 'clarify'; question: string }
+  | { kind: 'create_task'; goal: string; workspaceHint?: string }
+  | { kind: 'append_task'; taskId: string; instruction: string }
+  | { kind: 'plan_steps'; taskId: string; steps: ProposedStep[] }
+  | { kind: 'prepare_draft'; goal: string }
+  | { kind: 'propose_action'; taskId: string; action: ActionIntent }
+  | { kind: 'ignore'; reason: string };
+```
+
+每个慢路径使用独立的短生命周期模型上下文。常驻的是 Router 进程、任务及会话关联。决策回合可以使用任务搜索、记忆召回、事件查询、设备和应用摘要等只读工具。Blazar 对应用的读写及桌面操作都表达为结构化 ActionIntent，由任务执行循环通过能力代理编排，每步结果返回 Blazar 再决定下一步。模型输出用结构验证，权限与任务版本仍由服务检查。模型发出的建议先持久化，应用建议时再次比对当前状态。无需模型的命令、状态查询、审批和取消使用确定性路径。普通路由判定默认最多两轮模型步骤、四次只读查询。需要多步操作的任务拥有独立的动作、时间和成本预算，每个可恢复边界都持久化。超时后记录待处理状态或请求澄清。模型提供商由 Blazar 独立配置，Worker 各自认证。上游接口更换只涉及适配层；编译、取消与结构化输出测试覆盖固定版本。
+
+## 4. 部署拓扑和进程模型
+
+```mermaid
+flowchart LR
+  I[iOS App] --> R[可选接入网关]
+  D[桌面 App] --> B[Blazar 主 Agent / Router]
+  R --> B
+  M[微信 / 飞书 Lark / 企微 / 钉钉 / QQ] --> B
+  M -. 平台要求回调时 .-> R
+  B --> S[(SQLite + 文件产物)]
+  B --> P[Pi Agent Core]
+  B --> A[应用连接器与能力代理]
+  B --> H[设备执行端]
+  H --> W[隔离的 Worker 进程]
+  H --> C[Computer Use 驱动]
+```
+
+- 一个 Blazar 实例只允许一个活跃 Router 进程。Router 是控制平面的唯一写入者，内部并行运行接入、模型、调度、发送与恢复循环。每任务有短事务和版本检查，模型、IM、Worker I/O 均在事务外。
+- 本地部署时，系统服务管理器启动 Router，桌面 UI 可随时退出。设备执行端是独立服务，管理 CLI 进程组，保存有限的运行日志和重连状态。工作电脑休眠时，在本机部署的 Router 同样暂停。
+- 需要电脑离线时仍能接收 IM/iOS 消息，可将同一个 Router 部署到常在线的自托管主机。工作电脑只向 Router 或可选公网网关主动建立出站连接。任务在目标工作区离线时等待，配置允许且工作区可用时才由 Router 选择其他设备。
+- 本机 Router 使用回环或本地 socket。外部 iOS 和需要公网回调的 IM 可经 TLS 网关接入。网关只做配对入口、认证、回调转发、连接中继和 APNs 发送，任务决策仍在 Router。网关是受信任部署组件，可处理转发内容。对于需要离线代收的部署，应选常在线 Router，网关返回明确的暂不可用状态或让上游重试。
+- Router 实例使用数据目录锁。迁移使用停机备份、迁移和恢复，旧实例退出后新实例才取得所有权。备份包括数据库及可达产物。单实例故障靠进程重启和备份恢复，多机执行通过设备连接扩展。
+- SQLite 用 WAL 和短事务。以追加事件和当前任务投影装载状态，事务内更新索引和 outbox。系统服务负责 Router 存活，Router 内部 Watchdog 负责设备、租约和任务进度。独立失败域由设备执行端与系统服务提供。
+
+## 5. 数据、任务生命周期与恢复
+
+| 实体 | 字段与行为 |
+| --- | --- |
+| Workspace / Device | 工作区 ACL、版本控制根、能力、默认权限、可用执行设备。Device 记录身份、公钥、OS、心跳、可用 Agent。 |
+| Principal / ChannelBinding | 用户、配对设备和平台账号之间显式绑定。外部 ID 由平台实例和 tenant 命名空间限定。 |
+| Conversation / ThreadLink | Router 会话及平台会话映射。一条平台讨论可关联多项任务。每条关联有成员、可见产物和回传策略。 |
+| InboundEvent | 平台实例、外部 ID、发生时间、接收时间、对话、发起者、消息和附件引用。平台重投不创建第二项任务。 |
+| Task / Step | 用户目标、工作区、当前版本、状态、输入游标、任务 DAG、产物清单和验收要求。 |
+| Run / Attempt | Worker、设备、原生会话 ID、接受的任务版本、租约、心跳、最后一条设备序号和结束原因。 |
+| Approval | 请求动作、参数摘要、发起 Run、任务版本、所需角色、有效期和决定。一次性消费。 |
+| Artifact / Outbox | 产物保存内容哈希、大小、敏感级别和权限。待发送消息保存目的地、幂等键、尝试、窗口及结果。 |
+
+任务状态为 `queued → running → succeeded | failed | cancelled`，并可经 `waiting_device`、`waiting_user`、`cancelling`。Run 状态记录 `offered / accepted / running / suspended / lost / finished`，同一 Task 上的不同步骤可以并行。运行中的补充事件先提交新版本，再尝试原生 steering；不支持时在当前操作安全边界后续跑。已完成任务收到实质新要求时创建新版本。过期版本可以保存草稿供核对，当前任务结果只接收有效版本。
+
+可靠性规则：
+
+1. 接收事务原子写入入站事件。Router 处理时按权限、会话关联、任务版本写入状态和相应 outbox。平台重投命中唯一键返回既有记录。
+2. 派发生成唯一 run ID 与递增 fencing token。设备收到重复 offer 时读取自己的持久化记录，已有同一 run 就回传状态。运行上报用 `(runId, deviceSeq)` 去重。
+3. 默认设备每 10 秒心跳、租约 45 秒。连接断开时设备端短期缓存记录，并在租约失效时停止可控制的进程。设备端按进程组或 Job Object 清理，无法确认退出时隔离原工作区运行，Router 将其标为需要对账。
+4. 取消先持久化，再撤销旧 token 的提交权；发取消命令并等待设备确认退出。完成与取消的胜负按 Router 提交顺序定义。取消不会逆转已经完成的外部写入，需显示相应记录。
+5. 读取与草稿任务可有限重试。写任务恢复优先核对进程、原生会话、工作树与产物，再决定接续或重跑。第三方动作结果未知时记录待核对。发往 IM 的 outbox 命中平台幂等接口时复用幂等键，缺乏确认的发送可显示状态未知，避免盲目重发。
+6. Router 重启后扫描未路由事件、未投递 outbox、未到期审批及存活 run。设备重连报告运行清单与进度序号。Watchdog 检查失联、长期无输出、任务超时与审批过期。语义分析只用于生成停滞判断和建议，由确定性策略实施重试或挂起。
+
+## 6. 路由、上下文与团队
+
+事件先走来源认证、去重和触发条件。会话已经明确关联且发言者有权时，Router 事务直接追加任务并投递 Worker。范围不明、多个任务候选或新团队分工时，交 Pi 判定。歧义足以影响工作区、产物或权限时追问。高峰时可合并同一会话的短间隔消息，取消和审批立即入队。任何后台事件过滤都受渠道及工作区授权控制。投机执行只准备只读分析或私有草稿，Router 按相关性和用户偏好决定是否提醒。
+
+每个 Run 的上下文包包括任务目标、最新用户指令、验收条件、最近事件摘要、工作区身份、可用产物和历史引用。常用信息内联，长日志和大文件按哈希引用查询。历史召回从 Task → Thread / Run → Event / Artifact 逐级查询。摘要记录其来源事件及生成时的任务版本。跨渠道读取时重新检查当前权限。工作区可保留用户确认的决策、验收规范和偏好，并能删除或撤销。
+
+Router 可以把工作拆成有依赖的步骤，例如分析、修改、测试和审查。每步声明产物、依赖、允许的写操作与完成条件；子步骤结果统一回 Router。并行写入使用不同 Git worktree，非 Git 项目默认同一工作区单写。依赖有环、无法取得授权或产物冲突时挂起。Router 根据权限、设备、能力、现有会话、负载和预算选择 Worker。跨 Agent 交接以任务上下文、文件、提交和测试结果为载体，原生会话只在同一适配器和账号的兼容环境恢复。
+
+## 7. 应用连接与跨应用记忆
+
+应用连接与对话渠道是两个权限面。同一个产品可以同时出现在两处。例如飞书机器人负责与 Blazar 对话，飞书应用连接器负责在已授权范围内查找文档。连接其中一个不会隐式授予另一个的权限。
+
+### 应用实例与能力目录
+
+| 对象 | 设计 |
+| --- | --- |
+| AppDefinition | 应用类型、版本、连接方式、能力描述、身份和 scope 映射。内置及自定义连接器共用注册表。 |
+| AppConnection | 某个真实账号或租户的连接实例，记录负责人、共享范围、凭据引用、执行位置、有效权限和生命周期。一个应用可同时连个人账号和多个企业账号。 |
+| ResourceRef | 稳定引用包含连接实例、资源类型、外部 ID 和可选版本。文本、事件、文件和产物均可用它追溯来源。 |
+| Capability | 声明输入输出 schema、读写粒度、副作用、权限需求、执行地点、幂等性和取消能力。能力可按连接及设备实际探测。 |
+
+设置页通过「应用」连接多种服务或本机程序。用户可以命名账号与环境、选择工作区、测试能力、调整权限、查看使用记录和断开连接。连接器支持官方 API / SDK、用户配置的 MCP server、以及由设备端提供的桌面或浏览器能力。通用连接合同包括 `discover`、`health`、`listCapabilities`、`read/search`、`invoke` 与可选的 `subscribe` / `sync`。连接器只提供应用事实和执行结果，权限判定、任务状态和对用户的回复归 Blazar。
+
+同一目标在存在合适的 API 时走 API；浏览器可通过 DOM 操作；原生应用或缺少可用 API 时走 Computer Use。不同实现可以为一个语义能力注册多个后端，候选按账号、权限、稳定性及执行成本排序。切换执行后端不会继承额外权限，外部写入结果不明时先对账再选其他后端。自定义应用通过版本化 manifest 和契约测试加入，核心任务状态机无须随应用增加而修改。
+
+### 记忆服务
+
+- **短期上下文**保存近期对话和当前关注点。**任务记忆**保存目标、有效指令、选择理由、进度和产物。**长期记忆**保存可重用偏好、经确认的决定、工作规范和带来源的事实。来源应用和目标应用可以不同。
+- `MemoryItem` 保存类别、正文或引用、主体与工作区、ACL、来源记录、证据版本、有效期、敏感级别和置信度。个人偏好可在本人不同应用之间召回。团队记忆随工作区共享。从受限应用提炼的事实继承来源限制，目的端也要做披露检查。
+- **写入流程**从用户明确记住的偏好、已确认的任务结果和用户授权同步的资源中提取。自动提取先生成候选，保存原始引用和证据范围，再做去重和合并。出现冲突时保存版本与来源，优先使用最新且明确确认的事实，必要时询问用户。短期 UI 截图、密码和令牌排除在长期记忆之外。
+- **召回流程**先确定请求主体、任务、工作区和目标渠道，再过滤可见来源，然后用 SQLite FTS、时间和结构化索引检索。语义检索可通过可替换索引扩展，召回后再次核验权限和有效性。上下文预算优先给当前指令、确认事实和可定位的引用，长内容按需展开。摘要和 embedding 都是派生数据。
+- **生命周期**支持查看、编辑、固定、禁用和删除记忆。断开连接、撤销权限或收到源资源删除事件后，立即禁止召回相应记录，并重建派生索引及清理有期限的缓存。过期事实可按授权重新读取。工作区之间的迁移或分享需要明确的权限变更。
+
+例如，用户在微信说「按上次设计评审定下的格式整理这次结果」，Blazar 从当前项目记忆找到飞书评审的已确认模板，通过已授权的应用连接读取必要信息，再对工作区产物生成报告。回到微信时只发送当前会话有权看到的摘要或链接。模板事实、来源引用和新产物分别记录，后续从 iOS 或另一应用继续同一个任务。
+
+## 8. Computer Use
+
+Computer Use 是 Blazar 可直接编排的核心能力。跨应用 UI 工作可以由 Blazar 自己完成；需要并行或专业执行时，可以把有边界的子任务交给 Worker，由同一能力代理控制访问。
+
+**驱动选型。** 以 Vercel 的 agent-desktop 为可访问性优先的实现参考，验证按应用或窗口读取 AX 树、生成元素引用及动作反馈。以 CUA 的 Cua Driver 为混合观测的参考，验证窗口级 AX + 截图、视觉回退和不同平台的输入交互。先用统一适配接口分别做真实 macOS 验证，按观察能力、目标定位、焦点冲突、崩溃恢复、安装体积及分发条件选默认驱动。Windows 和 Linux 按能力探测与实际验收结果启用。 [Vercel agent-desktop](https://github.com/vercel-labs/agent-desktop) · [Cua Driver 设计](https://github.com/trycua/cua/blob/main/docs/content/docs/cua-driver/concepts/how-cua-driver-works.mdx)
+
+```ts
+interface ComputerDriver {
+  probe(): Promise<DriverCapabilities>;
+  listSurfaces(): Promise<Surface[]>;
+  observe(target: SurfaceId, mode: 'semantic' | 'visual' | 'hybrid'): Promise<Observation>;
+  act(action: DesktopAction, signal: AbortSignal): Promise<ActionResult>;
+  release(sessionId: string): Promise<void>;
+}
+```
+
+- 设备执行端在用户登录的桌面会话中启动驱动。Blazar 以 `device / user-session / app / window` 寻址。驱动探测屏幕录制、辅助功能和输入状态。设备在线但桌面锁屏时，任务可进入 `waiting_user`，解锁后重新观察再继续。
+- 动作携带 `taskId`、run token、目标窗口、观测版本和预期效果。优先使用稳定的 AX 元素引用，语义信息不足时才使用窗口截图和对应坐标，保存坐标空间和窗口边界。窗口、焦点或观测发生变化时拒绝旧动作，重新观察后再决策。截图按窗口裁剪并短期保留。
+- 共享桌面的鼠标和键盘按用户会话独占租约。独立窗口支持背景输入时也要检查驱动能力，页面状态与系统对话框仍按实际影响串行。检测到用户接管则暂停任务、释放输入，恢复时取得新观测。iOS 或桌面端可向 Blazar 发送暂停、继续或取消指令。
+- 每步依次持久化动作意图、授权决定和设备回执。观察结果验证实际变化。有外部副作用的动作使用幂等键或对账。遇到批准请求时，显示动作、应用账号、目标与待披露内容。批准绑定当前动作和任务版本，目标变化时重新确认。凭据输入保留给用户在受控界面完成。
+- UI 中的网页、消息和文件文字作为观察数据。应用授权与工作区权限由代理和设备端共同检查。跨应用复制、粘贴、上传和发送校验明确的源与目的地。设备端收到取消或有效租约丢失后停止后续输入。Worker 使用同一能力代理，避免绕开动作记录与权限检查。
+
+## 9. Worker 内置目录与扩展
+
+以下是完整产品的交付清单。协议列是接入选型，实际命令、支持版本和能力由供应商文档、探测和端到端测试锁定。
+
+| Worker | 对接路径 |
+| --- | --- |
+| Codex | 官方 App Server，映射会话、轮次、审批和取消 |
+| Claude Code | 官方 Agent SDK，映射流、权限回调和会话恢复 |
+| Pi | Coding Agent RPC |
+| DeepSeek Harness | 内置 Worker，使用官方 `dsh --profile acp`。验证部署版本的握手、多轮会话、进度、权限回调、取消和恢复能力 |
+| GitHub Copilot CLI、Factory Droid、OpenCode | ACP 优先 |
+| Qwen Code、Kimi Code CLI、Kiro CLI、Auggie、Gemini CLI | ACP 优先，按实际协议版本和支持的认证方式验证；需要时走官方程序化入口。Gemini CLI 与 Antigravity 分别探测 |
+| Cursor Agent、Antigravity CLI、Amp、Cline | 官方无界面 CLI 或 SDK，按结构化流归一化 |
+| Goose、Aider | 官方 CLI，适配事件输出和进程控制 |
+
+[ACP 协议](https://agentclientprotocol.com/protocol/v1/overview) · [ACP Agent 目录](https://agentclientprotocol.com/get-started/agents) · [Cursor 无界面 CLI](https://cursor.com/docs/cli/headless) · [Antigravity CLI](https://codelabs.developers.google.com/genai-for-dev-antigravity-cli) · [Gemini CLI 账户迁移](https://developers.google.com/gemini-code-assist/docs/deprecations/code-assist-individuals)
+
+适配器接口为 `probe → start/resume → stream → steer/approve/cancel`，探测返回能力和账号状态。归一化事件包括 `started`、`progress`、`question`、`approval_requested`、`artifact`、`completed`、`failed`。基础能力是运行、产物、失败和取消。若工具无法原生中止，执行端按进程组收尾；若工具缺少实时追加能力，追加排入下一轮。适配器无法承载工作区所要求的权限约束时，Router 会选择符合条件的 Worker 或向用户说明需要更改配置。
+
+用户可从 ACP Registry 添加 Agent，或注册本地命令和参数数组，选择 ACP 或版本化 JSONL。扩展 manifest 声明版本、协议、能力、工作区范围和所需环境变量名。配置页有连接测试、安装与认证状态、启停和删除。进程按 argv 启动，使用白名单环境变量，密钥从操作系统凭据存储注入。修改扩展配置只影响之后的运行；运行将适配器版本和配置快照持久化。
+
+## 10. 渠道、桌面与 iOS
+
+| 渠道 | 接入与端到端验证 |
+| --- | --- |
+| 微信 | 官方 ClawBot 扫码绑定，验证私聊创建、补充、结果和凭据失效。验证项目拟采用的独立接入方式能获官方支持。 |
+| 飞书 / Lark | 同一适配器分别配置区域和应用，验证长连接、`@机器人`、线程回复、文本和附件。 |
+| 企业微信 | 智能机器人 API，验证长连接、续连、企业身份和主动发送条件。 |
+| 钉钉 | Stream 模式，验证机器人群聊及回复窗口，必要时提示从 App 取结果。 |
+| QQ | 官方 QQ 机器人 Gateway 或回调，验证授权场景、事件签名及被动回复窗口，超出窗口按渠道能力回退到 App。 |
+
+[腾讯微信插件](https://github.com/Tencent/openclaw-weixin) · [企业微信智能机器人](https://developer.work.weixin.qq.com/document/path/101463) · [钉钉 Stream 示例](https://github.com/open-dingtalk/dingtalk-stream-sdk-nodejs) · [QQ 开放平台](https://q.qq.com/)
+
+所有渠道都交给 Router 做身份合并、会话绑定和回复。群默认只响应明确触发与已关联讨论的授权跟进。跨渠道接续须由授权用户确认绑定。私有上下文和产物需要符合目标渠道的权限才可回传。消息连接器按平台限制使用流式更新、节流、拆分和回退。公共群里仅发送可公开的摘要和受权限保护的链接。
+
+桌面端提供 Blazar 对话、任务列表、运行详情、产物与审批、设备与工作区管理、应用连接和权限管理、记忆管理、Worker 和 IM 设置。iOS 提供 Blazar 对话、任务与附件、审批、产物预览、推送和配对。iOS 通过一次性、短时有效的二维码发起配对，由桌面端确认绑定。手机生成设备密钥并放入 Keychain；Router 按设备独立签发凭证，支持撤销。APNs 推送只带事件 ID 和提示，客户端拉取正文，离线时可以显示最后同步状态。手机进入前台总是用游标补拉。
+
+## 11. 协议、权限与观测
+
+| 接口 | 合同 |
+| --- | --- |
+| `POST /v1/events` | 发消息或提交来源已验证的 IM 事件。幂等键及认证身份必填，响应代表已写入。 |
+| `POST /v1/tasks/{id}/commands` | 补充、取消、审批等结构化动作。带 `expectedVersion` 和幂等键，版本冲突返回当前版本。 |
+| `GET /v1/state` 与 `GET /v1/stream?after=...` | 获取 ACL 过滤的快照及断点事件流。游标过期返回要求重新同步的状态，客户端用新快照恢复。 |
+| `GET /v1/artifacts/{id}` | 按任务及产物 ACL 授权。仅流式返回允许访问的文件，支持附件预览。 |
+| `/v1/devices/connect` | 设备认证后 WSS 会话，传递 offer、accept、renew、event、cancel、snapshot。每类事件有 schema、序号和大小上限。 |
+| `/v1/app-connections` 与 `/v1/memory` | 由 Blazar 授权的应用连接和记忆管理接口，凭据仅接受写入或轮换，正文及来源遵循 ACL。 |
+| `/v1/pairings` 与 `/v1/admin/*` | 设备配对、撤销、工作区及连接器管理。管理员权限与任务权限分开。 |
+
+Router 命令完成身份和权限检查后才进入执行队列。Worker 只获取自己的工作区、有限凭据及任务上下文。写权限、网络权限、外部动作和授权版本从任务传递至设备端。无法确认权限受控的原生工具不进入对应任务。模型输入中的消息、工件与工具输出按数据处理。附件按来源验证、限制类型与体积，输出路径检查工作区边界。日志默认隐藏密钥和消息正文，审计记录用户身份、授权决策、任务和动作结果。管理员可管理保留期、备份和导出。
+
+监测范围包括接入持久化延迟、确定性与模型路由比例、模型耗时和 token、调度排队、设备在线、租约回收、任务状态变更、每渠道投递失败、客户端游标追赶。使用 event ID、task ID、run ID 贯穿各端。默认负载控制按渠道、用户与工作区公平排队，给取消和审批保留处理能力，日志与进度流可以合并，终态和审批事件必须保存。
+
+## 12. 工程结构与交付验证
+
+```text
+apps/desktop              Tauri + React
+apps/ios                  SwiftUI
+services/router           TypeScript API、策略、调度、SQLite
+services/device           TypeScript 设备执行端与会话对账
+services/gateway          可选公网中继、回调、APNs
+packages/protocol         JSON schema、生成 TypeScript / Swift 类型
+packages/router-harness   Pi Core 适配与决策验证
+packages/workers          ACP、原生协议和扩展注册
+packages/channels         五类 IM
+packages/apps             应用连接、能力目录与凭据引用
+packages/memory           记忆提取、权限过滤与召回
+packages/computer-use     驱动契约、动作与观测
+packages/storage          事务、迁移、备份
+```
+
+工程依赖顺序是协议与状态机，随后并行开发 Router harness、运行器、各客户端和渠道，最后做跨端与故障验收。完整交付按以下验证矩阵验收。
+
+- **所有 Worker** 用真实凭据和已锁定版本执行同一基线任务，验证探测、启动、进度、结果、失败和中止。探测到的续跑、追加和审批能力逐项验证。自定义 ACP 和 JSONL 各用一个实际示例验证。
+- **五类 IM** 逐个用真实测试账号验证消息去重、发送者权限、关联任务、取消和结果回传，飞书与 Lark 分别验收。覆盖限流、机器人掉线、凭据轮换、附件和平台回复窗口。
+- **桌面与 iOS** 验证 App 退出后电脑在线的任务继续、远程配对及撤销、iOS 断线补拉、推送、审批、diff 及多设备执行。用「微信提出目标 → iPhone 批准 → 桌面看产物 → 飞书追加」验证 Router 连续性与可见性。
+- **应用与记忆** 验证两个应用和同一应用的两个账号接入、应用能力发现、跨应用来源追溯、跨租户及跨渠道权限、撤权后索引不可召回、冲突事实可更正。
+- **Computer Use** 验证真实桌面应用的 AX 操作、无 AX 控件时的截图回退、窗口切换、过期引用、用户接管、锁屏恢复、取消后停止输入，以及重启后外部副作用对账。
+- **可靠性** 注入重复入站、路由完成后崩溃、重复派发、设备分区、租约过期、用户取消与完成竞态、权限变更、重放中断、发送结果未知、备份恢复。检查是否误提交旧结果、重复对外发消息或泄漏跨渠道产物。
+- **性能** 使用固定硬件、相同模型与事件流，对比单会话、双层 Router 和订阅直达。初始目标为本机持久化接收 p95 小于 100 ms，已绑定任务从入站到可调度 p95 小于 250 ms，测量时排除外部网络和模型耗时。用 10 并发 Worker 和 30 秒内 300 条混合事件测量队列延迟、误路由率、模型请求与重复交付。目标是验收阈值，当前没有实测结果。
+- **选型验证** 用固定 Pi 版本跑至少一个可替换的模型接入、结构化输出、AbortSignal、只读工具调用与进程重启回放。若某个模型无法可靠输出决策，继续支持确定性路径，并对需要模型的请求返回明确的可重试状态。
+
+当前工作区的 Python 文件是前期原型。它们提供了事件订阅、租约和 outbox 的思路。正式实现依据本文使用 TypeScript/Rust/Swift，本文未改动现有代码。

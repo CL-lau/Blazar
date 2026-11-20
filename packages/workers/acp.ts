@@ -1,0 +1,111 @@
+import { realpath } from 'node:fs/promises';
+import { isAbsolute, relative, sep } from 'node:path';
+import { jobPrompt, type JobContext } from './prompt.ts';
+import { spawnWorker, type WorkerCommand } from './process.ts';
+import { Readable, Writable } from 'node:stream';
+import { client, methods, ndJsonStream, PROTOCOL_VERSION } from '@agentclientprotocol/sdk';
+
+export type AcpWorker = WorkerCommand;
+export const deepSeekWorker: AcpWorker = {
+  executable: 'dsh',
+  args: ['--profile', 'acp'],
+  label: 'DeepSeek Harness',
+  env: ['DEEPSEEK_API_KEY', 'DSH_HOME'],
+};
+
+export type ApprovalHandler = (summary: string, signal: AbortSignal) => Promise<'approved' | 'denied' | undefined>;
+
+export async function probeAcp(worker: AcpWorker, root: string, signal: AbortSignal) {
+  signal.throwIfAborted();
+  const { child, stop } = spawnWorker(worker, root);
+  try {
+    return await client({ name: 'Blazar' }).connectWith(
+      ndJsonStream(Writable.toWeb(child.stdin), Readable.toWeb(child.stdout)), async ctx => {
+        const ready = await ctx.request(methods.agent.initialize, { protocolVersion: PROTOCOL_VERSION }, {
+          cancellationSignal: signal, stopWaitingOnCancel: true,
+        });
+        if (ready.protocolVersion !== PROTOCOL_VERSION) throw new Error('ACP version is unsupported');
+        return { version: ready.protocolVersion, loadSession: ready.agentCapabilities?.loadSession === true };
+      });
+  } finally {
+    await stop();
+  }
+}
+
+export async function runAcp(worker: AcpWorker, root: string, job: JobContext, signal: AbortSignal,
+                             approve?: ApprovalHandler): Promise<string> {
+  const active = AbortSignal.any([signal, AbortSignal.timeout(10 * 60_000)]);
+  active.throwIfAborted();
+  const { child, stop } = spawnWorker(worker, root);
+  let sessionId: string | undefined;
+  let text = '';
+  const requested = new Set<string>();
+  let asking = false;
+  const peer = client({ name: 'Blazar' })
+    .onRequest(methods.client.session.requestPermission, async ({ params }) => {
+      const cancelled = { outcome: { outcome: 'cancelled' as const } };
+      const { toolCall } = params;
+      if (!approve || active.aborted || !sessionId || sessionId !== params.sessionId ||
+          toolCall.kind !== 'read' || !toolCall.locations?.length || toolCall.locations.length > 10 ||
+          requested.has(toolCall.toolCallId)) return cancelled;
+      requested.add(toolCall.toolCallId);
+      const targets: string[] = [];
+      for (const location of toolCall.locations) {
+        if (!isAbsolute(location.path)) return cancelled;
+        const target = await realpath(location.path).catch(() => undefined);
+        if (!target) return cancelled;
+        const path = relative(root, target);
+        if (!path || isAbsolute(path) || path === '..' || path.startsWith('..' + sep)) return cancelled;
+        targets.push(JSON.stringify(path));
+      }
+      const once = params.options.find(option => option.kind === 'allow_once');
+      if (!once || active.aborted || asking) return cancelled;
+      const heading = worker.label + ' requests one-time read access to workspace files:';
+      asking = true;
+      let decision: Awaited<ReturnType<ApprovalHandler>>;
+      try {
+        decision = await approve([heading, ...targets].join('\n').slice(0, 4_000), active);
+      } catch {
+        return cancelled;
+      } finally {
+        asking = false;
+      }
+      if (active.aborted) return cancelled;
+      const selected = decision === 'approved' ? once :
+        decision === 'denied' ? params.options.find(option => option.kind === 'reject_once') : undefined;
+      return selected ? { outcome: { outcome: 'selected', optionId: selected.optionId } } : cancelled;
+    })
+    .onNotification(methods.client.session.update, ({ params: { sessionId: id, update } }) => {
+      if (id === sessionId && update.sessionUpdate === 'agent_message_chunk' && update.content.type === 'text') {
+        text += update.content.text.slice(0, Math.max(0, 4_000 - text.length));
+      }
+    });
+  try {
+    return await peer.connectWith(ndJsonStream(Writable.toWeb(child.stdin), Readable.toWeb(child.stdout)), async ctx => {
+      const options = { cancellationSignal: active, stopWaitingOnCancel: true };
+      const cancel = () => {
+        if (sessionId) void ctx.notify(methods.agent.session.cancel, { sessionId }).catch(() => {});
+      };
+      active.addEventListener('abort', cancel, { once: true });
+      try {
+        active.throwIfAborted();
+        const ready = await ctx.request(methods.agent.initialize, { protocolVersion: PROTOCOL_VERSION }, options);
+        if (ready.protocolVersion !== PROTOCOL_VERSION) throw new Error('ACP version is unsupported');
+        const session = await ctx.request(methods.agent.session.new, { cwd: root, mcpServers: [] }, options);
+        sessionId = session.sessionId;
+        active.throwIfAborted();
+        const outcome = await ctx.request(methods.agent.session.prompt, {
+          sessionId,
+          prompt: [{ type: 'text', text: jobPrompt(job) }],
+        }, options);
+        active.throwIfAborted();
+        if (outcome.stopReason !== 'end_turn' || !text.trim()) throw new Error('ACP worker did not return a completed response');
+        return text.toWellFormed();
+      } finally {
+        active.removeEventListener('abort', cancel);
+      }
+    });
+  } finally {
+    await stop();
+  }
+}

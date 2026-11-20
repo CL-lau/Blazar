@@ -1,0 +1,41 @@
+{
+  "name": "blazar",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "engines": {
+    "node": ">=22.19"
+  },
+  "scripts": {
+    "test": "node --experimental-strip-types --test services/router/*.test.ts",
+    "router": "node --experimental-strip-types services/router/main.ts",
+    "device": "node --experimental-strip-types services/device/main.ts",
+    "desktop": "vite --config apps/desktop/vite.config.ts",
+    "desktop:build": "vite build --config apps/desktop/vite.config.ts",
+    "desktop:native": "cd apps/desktop && tauri dev",
+    "desktop:bundle": "node apps/desktop/scripts/bundle-macos.mjs",
+    "router:db": "node --experimental-strip-types services/router/maintenance.ts",
+    "device:reconcile": "node --experimental-strip-types services/device/reconcile.ts",
+    "router:benchmark": "node --experimental-strip-types services/router/benchmark.ts",
+    "macos:launch-agent": "node deploy/macos/launch-agent.mjs",
+    "device:probe": "node --experimental-strip-types services/device/probe.ts",
+    "ios:project": "cd apps/ios && xcodegen generate",
+    "ios:build": "npm run ios:project && cd apps/ios && xcodebuild -project Blazar.xcodeproj -scheme Blazar -destination 'generic/platform=iOS Simulator' -derivedDataPath build CODE_SIGNING_ALLOWED=NO build"
+  },
+  "dependencies": {
+    "@agentclientprotocol/sdk": "2.8.0",
+    "@earendil-works/pi-agent-core": "1.6.0",
+    "@earendil-works/pi-ai": "1.6.0",
+    "@tauri-apps/api": "^2.12.5",
+    "@wecom/aibot-node-sdk": "1.0.7",
+    "dingtalk-stream": "2.1.6-beta.1",
+    "qrcode": "1.5.4",
+    "react": "^19.3.1",
+    "react-dom": "^19.3.1",
+    "ws": "8.23.0"
+  },
+  "devDependencies": {
+    "@tauri-apps/cli": "^2.12.6",
+    "vite": "^8.3.8"
+  }
+}

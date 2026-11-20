@@ -1,0 +1,164 @@
+import assert from 'node:assert/strict';
+import { randomBytes, randomUUID } from 'node:crypto';
+import { once } from 'node:events';
+import { mkdtemp, realpath, rm, writeFile } from 'node:fs/promises';
+import { cpus, tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { performance } from 'node:perf_hooks';
+import { setTimeout as delay } from 'node:timers/promises';
+import { preview } from '../device/preview.ts';
+import { DeviceSocket } from '../device/socket.ts';
+import { routerServer } from './http.ts';
+import { TaskStore } from './store.ts';
+import { feishuChannel } from '../../packages/channels/feishu.ts';
+
+const jobs = 200;
+const duplicates = 100;
+const concurrency = 10;
+const workspace = 'benchmark';
+const timeout = AbortSignal.timeout(30_000);
+const stop = new AbortController();
+const active = AbortSignal.any([timeout, stop.signal]);
+const root = await realpath(await mkdtemp(join(tmpdir(), 'blazar-bench-')));
+const store = new TaskStore(join(root, 'router.sqlite'));
+const token = randomBytes(32).toString('hex');
+const feishu = {
+  token: 'benchmark-verification', appId: 'benchmark-app', tenant: 'benchmark-tenant', workspace,
+  senders: new Set(['benchmark-user']), chats: new Set(['benchmark-chat']),
+};
+const server = routerServer(store, { owner: 'benchmark', token, feishu });
+const connections: DeviceSocket[] = [];
+const opened = new Map<string, number>();
+const accepted = new Set<string>();
+const reception: number[] = [];
+const dispatch: number[] = [];
+
+function p95(values: number[]) {
+  return Number([...values].sort((a, b) => a - b)[Math.ceil(values.length * 0.95) - 1].toFixed(2));
+}
+
+try {
+  await Promise.all(Array.from({ length: jobs }, (_, index) =>
+    writeFile(join(root, index + '.md'), 'Fixture ' + index)));
+  server.listen(0, '127.0.0.1');
+  await once(server, 'listening');
+  const address = server.address();
+  assert(address && typeof address !== 'string');
+  const base = new URL('http://127.0.0.1:' + address.port);
+  const headers = { Authorization: 'Bearer ' + token, 'Content-Type': 'application/json' };
+  for (let index = 0; index < concurrency; index++) {
+    const device = store.registerDevice('benchmark', 'Device ' + index, workspace);
+    connections.push(new DeviceSocket(base, device.token));
+  }
+
+  async function send(index: number) {
+    const goal = '/preview ' + index + '.md';
+    const key = 'fixture-' + index;
+    const channel = index % 3;
+    const started = performance.now();
+    if (!opened.has(goal)) opened.set(goal, started);
+    const webhook = {
+      schema: '2.0', header: {
+        token: feishu.token, app_id: feishu.appId, tenant_key: feishu.tenant, event_type: 'im.message.receive_v1',
+      },
+      event: {
+        sender: { sender_id: { open_id: 'benchmark-user' }, sender_type: 'user' },
+        message: { message_id: key, chat_id: 'benchmark-chat', message_type: 'text',
+          content: JSON.stringify({ text: '/blazar ' + goal }) },
+      },
+    };
+    const path = ['/v1/events', '/v1/conversation', '/v1/channels/feishu/events'][channel];
+    const response = await fetch(new URL(path, base), {
+      method: 'POST', headers: { ...headers, 'Idempotency-Key': key }, signal: active,
+      body: JSON.stringify(channel === 2 ? webhook : { workspace, text: goal }),
+    });
+    assert.equal(response.status, channel === 2 ? 200 : 202);
+    await response.arrayBuffer();
+    reception.push(performance.now() - started);
+  }
+
+  const started = performance.now();
+  const staging = Array.from({ length: concurrency }, (_, sender) => (async () => {
+    for (let index = sender; index < jobs; index += concurrency) {
+      await send(index);
+      if (index < duplicates) await send(index);
+    }
+  })());
+  const workers = connections.map(async socket => {
+    while (accepted.size < jobs) {
+      active.throwIfAborted();
+      const claim = await socket.request('claim', { capability: 'document.preview', requestId: randomUUID() }, active);
+      assert.equal(claim.status, 200);
+      const { assignment } = await claim.json();
+      if (!assignment) {
+        await delay(5, undefined, { signal: active });
+        continue;
+      }
+      const { run, task } = assignment;
+      assert.equal(task.workspace, workspace);
+      assert(opened.has(task.goal), 'Unexpected goal reached a device');
+      assert(!accepted.has(task.goal), 'Task was claimed more than once');
+      dispatch.push(performance.now() - opened.get(task.goal)!);
+      accepted.add(task.goal);
+      const text = await preview(root, task.goal, active);
+      assert.equal(text, 'Fixture ' + task.goal.slice(9, -3));
+      const outcome = { status: 'succeeded', result: text };
+      const finish = () => socket.request('runs/' + run.id + '/finish', outcome, active);
+      assert.equal((await finish()).status, 200);
+      if (accepted.size % 10 === 0) assert.equal((await finish()).status, 200);
+    }
+  });
+
+  const batch = [...staging, ...workers];
+  try {
+    await Promise.all(batch);
+  } catch (error) {
+    stop.abort();
+    await Promise.allSettled(batch);
+    throw error;
+  }
+  const state = store.snapshot('benchmark');
+  assert.equal(state.tasks.length, jobs);
+  assert(state.tasks.every(task => task.status === 'succeeded'));
+  let cursor = 0;
+  let finishes = 0;
+  for (;;) {
+    const events = store.events('benchmark', cursor);
+    if (!events.length) break;
+    finishes += events.filter(event => event.type === 'run.finished').length;
+    cursor = events.at(-1)!.seq;
+  }
+  assert.equal(finishes, jobs);
+  const notices = new Set<string>();
+  for (;;) {
+    const notice = store.leaseChannelNotice(feishuChannel(feishu), Date.now());
+    if (!notice) break;
+    assert(!notices.has(notice.messageId), 'Duplicate notification staged for delivery');
+    notices.add(notice.messageId);
+    store.finishChannelNotice(notice.id, true);
+  }
+  assert.equal(notices.size, Math.floor(jobs / 3));
+
+  const response = await fetch(new URL('/v1/admin/metrics', base), { headers, signal: active });
+  const serverMetrics = await response.json();
+  assert.equal(serverMetrics.routing.model, 0);
+  assert.equal(reception.length, jobs + duplicates);
+  assert.equal(dispatch.length, jobs);
+  const receiptP95Ms = p95(reception);
+  const claimP95Ms = p95(dispatch);
+  console.log(JSON.stringify({
+    cpu: cpus()[0]?.model, node: process.version, concurrency, submitted: reception.length,
+    completed: jobs, duplicateTasks: 0, duplicateOutboundNotices: 0, unexpectedAssignments: 0,
+    modelRequests: serverMetrics.routing.model, receiptP95Ms, claimP95Ms,
+    elapsedMs: Math.round(performance.now() - started),
+  }, null, 2));
+  assert(receiptP95Ms < 100, 'Local acknowledgement p95 exceeded 100 ms');
+  assert(claimP95Ms < 250, 'Local claim p95 exceeded 250 ms');
+} finally {
+  stop.abort();
+  for (const socket of connections) socket.close();
+  server.closeDeviceSockets();
+  if (server.listening) await new Promise<void>(resolve => server.close(() => resolve()));
+  store.close();
+  await rm(root, { recursive: true, force: true });
+}

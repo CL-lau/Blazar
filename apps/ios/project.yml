@@ -1,0 +1,35 @@
+name: Blazar
+options:
+  deploymentTarget:
+    iOS: "17.0"
+targets:
+  Blazar:
+    type: application
+    platform: iOS
+    sources:
+      - path: Blazar
+        excludes: [Blazar.entitlements]
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.blazar.app
+        GENERATE_INFOPLIST_FILE: YES
+        CODE_SIGN_ENTITLEMENTS: Blazar/Blazar.entitlements
+        SWIFT_VERSION: "5.0"
+        MARKETING_VERSION: "0.1.0"
+        CURRENT_PROJECT_VERSION: "1"
+        INFOPLIST_KEY_CFBundleDisplayName: Blazar
+        INFOPLIST_KEY_NSCameraUsageDescription: "Scan the pairing code displayed by Blazar on your computer."
+      configs:
+        Debug:
+          BLAZAR_APNS_ENVIRONMENT: development
+        Release:
+          BLAZAR_APNS_ENVIRONMENT: production
+schemes:
+  Blazar:
+    build:
+      targets:
+        Blazar: all
+    run:
+      config: Debug
+    archive:
+      config: Release
