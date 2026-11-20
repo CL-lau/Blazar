@@ -2,7 +2,7 @@ import { createInterface } from 'node:readline';
 import { spawnWorker, type WorkerCommand } from './process.ts';
 import { jobPrompt, type JobContext } from './prompt.ts';
 
-export type CustomJsonlWorker = WorkerCommand & { protocol: 'jsonl' };
+export type CustomJsonlWorker = WorkerCommand & { protocol: 'jsonl'; includeFullInputArtifacts?: boolean };
 type Progress = (message: string, signal: AbortSignal) => Promise<void>;
 
 export async function runCustomJsonl(

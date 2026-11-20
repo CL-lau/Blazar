@@ -1,3 +1,4 @@
+import type { WorkerConfiguration } from '../../packages/protocol/task.ts';
 import { artifactDiff } from './artifact-diff.ts';
 import { workerCatalog } from '../../packages/workers/registry.ts';
 import { performance } from 'node:perf_hooks';
@@ -276,7 +277,7 @@ function deviceOperation(store: TaskStore, bearer: string, pathname: string, dat
       throw new RequestError(400, 'Invalid claim request ID');
     }
     const platform = data.platform === undefined ? undefined : requiredText(data.platform, 'device platform', 32);
-    let worker: { label: string; protocol: string } | undefined;
+    let worker: WorkerConfiguration | undefined;
     if (data.worker !== undefined) {
       if (data.capability !== 'agent.acp' || !data.worker || typeof data.worker !== 'object' || Array.isArray(data.worker)) {
         throw new RequestError(400, 'Unexpected Worker metadata');
@@ -289,18 +290,32 @@ function deviceOperation(store: TaskStore, bearer: string, pathname: string, dat
       const label = requiredText(reported.label, 'Worker label', 128);
       if (/[\x00-\x1f\x7f]/.test(label)) throw new RequestError(400, 'Invalid Worker label');
       worker = { label, protocol };
+      if (reported.adapterVersion !== undefined || reported.revision !== undefined) {
+        if (reported.adapterVersion !== 1 || typeof reported.revision !== 'string' ||
+            !/^[a-f0-9]{64}$/.test(reported.revision)) throw new RequestError(400, 'Invalid Worker revision');
+        worker.adapterVersion = reported.adapterVersion;
+        worker.revision = reported.revision;
+      }
     }
     store.recordDeviceWorker(device.id, worker);
     store.recordDeviceActivity(device.id, now, data.capability, platform);
     store.expire(now);
     const assignment = store.claim(device.owner, device.workspace, device.id, now, leaseMs,
       data.capability === 'document.preview' ? '/preview ' : data.capability === 'computer.observe' ? '/observe ' : '',
-      data.capability === 'agent.acp' ? '/preview ' : '', key);
+      data.capability === 'agent.acp' ? '/preview ' : '', key, worker);
     store.clearInterruption(device.id);
     return { status: 200, body: { assignment: assignment ?? null, ...(assignment && { leaseRemainingMs: Math.max(0, assignment.run.expires - Date.now()) }) } };
   }
-  const run = /^\/v1\/device\/runs\/([a-f0-9-]{36})\/(renew|finish|stopped|request-approval|approval|consume-approval|progress)$/.exec(pathname);
+  const run = /^\/v1\/device\/runs\/([a-f0-9-]{36})\/(renew|finish|stopped|request-approval|approval|consume-approval|progress|input-artifact)$/.exec(pathname);
   if (!run) throw new RequestError(404, 'Route not found');
+  if (run[2] === 'input-artifact') {
+    const artifactId = requiredText(data.artifactId, 'artifact ID', 36);
+    if (!/^[a-f0-9-]{36}$/.test(artifactId)) throw new RequestError(400, 'Invalid artifact ID');
+    const artifact = store.runInputArtifact(run[1], device.id, artifactId, now);
+    if (!artifact) throw new RequestError(404, 'Run input artifact not found');
+    const { content, ...identity } = artifact;
+    return { status: 200, body: { ...identity, text: Buffer.from(content).toString('utf8') } };
+  }
   if (run[2] === 'stopped') {
     const accepted = store.acknowledgeStop(run[1], device.id, now);
     return { status: accepted ? 200 : 409, body: { accepted } };
@@ -327,8 +342,9 @@ function deviceOperation(store: TaskStore, bearer: string, pathname: string, dat
   }
   if (run[2] === 'renew') {
     store.recordDeviceActivity(device.id, now);
-    const renewed = store.renew(run[1], device.id, now, leaseMs);
-    return { status: renewed ? 200 : 409, body: renewed ? { renewed, leaseRemainingMs: Math.max(0, now + leaseMs - Date.now()) } : { renewed } };
+    const expires = store.renew(run[1], device.id, now, leaseMs);
+    if (expires === undefined) return { status: 409, body: { renewed: false } };
+    return { status: 200, body: { renewed: true, leaseRemainingMs: Math.max(0, expires - Date.now()) } };
   }
   if (data.status !== 'succeeded' && data.status !== 'failed') {
     throw new RequestError(400, 'Invalid outcome status');
@@ -666,7 +682,7 @@ export function routerServer(store: TaskStore, config: { owner: string; token: s
         const action = data.action;
         let command: Parameters<TaskStore['command']>[3];
         if (action === 'append') command = { action, text: requiredText(data.text, 'text', 32_000) };
-        else if (action === 'cancel' || action === 'pause' || action === 'resume') command = { action };
+        else if (action === 'cancel' || action === 'pause' || action === 'resume' || action === 'retry' || action === 'accept_result' || action === 'reject_result') command = { action };
         else if (action === 'approve' || action === 'deny') {
           command = { action, approvalId: requiredText(data.approvalId, 'approval ID', 36) };
         } else throw new RequestError(400, 'Invalid action');

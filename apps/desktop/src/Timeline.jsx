@@ -15,6 +15,7 @@ const labels = {
   'approval.requested': 'Approval requested',
   'approval.decided': 'Approval decided',
   'artifact.created': 'Artifact saved',
+  'workflow.result_outdated': 'An upstream result changed',
 };
 
 export function Timeline({ taskId, token, cursor }) {

@@ -13,7 +13,18 @@ export function workflowSteps(input: unknown): WorkflowStep[] {
         value.needs.length > 20 || value.needs.some((item: unknown) => typeof item !== 'string')) {
       throw new InvalidWorkflow('Invalid workflow step');
     }
-    return { key: value.key as string, goal: value.goal as string, needs: [...new Set<string>(value.needs)] };
+    if (value.acceptanceCriteria !== undefined && (!Array.isArray(value.acceptanceCriteria) ||
+        value.acceptanceCriteria.length > 10 || value.acceptanceCriteria.some((criterion: unknown) =>
+          typeof criterion !== 'string' || !criterion.trim() || criterion.trim().length > 500))) {
+      throw new InvalidWorkflow('Invalid workflow acceptance criteria');
+    }
+    if (value.requireReview !== undefined && typeof value.requireReview !== 'boolean') {
+      throw new InvalidWorkflow('Invalid workflow review option');
+    }
+    const acceptanceCriteria: string[] = Array.isArray(value.acceptanceCriteria)
+      ? [...new Set<string>(value.acceptanceCriteria.map((criterion: string) => criterion.trim()))] : [];
+    return { key: value.key as string, goal: value.goal as string, needs: [...new Set<string>(value.needs)],
+      ...(acceptanceCriteria.length && { acceptanceCriteria }), ...(value.requireReview === true && { requireReview: true }) };
   });
   orderWorkflow(steps);
   return steps;

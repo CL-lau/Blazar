@@ -72,12 +72,18 @@ export async function resolveWorker(mode: string, manifest?: string, executableO
       data.args.some((value: unknown) => typeof value !== 'string' || value.length > 2_048 || value.includes('\0'))) {
     throw new Error('Invalid worker manifest');
   }
+  if (data.includeFullInputArtifacts !== undefined &&
+      (data.protocol !== 'jsonl' || typeof data.includeFullInputArtifacts !== 'boolean')) {
+    throw new Error('Invalid full-artifact option in Worker manifest');
+  }
   const env = data.env ?? [];
   if (!Array.isArray(env) || env.length > 32 || env.some((key: unknown) =>
     typeof key !== 'string' || !/^[A-Z_][A-Z0-9_]*$/.test(key) || /^(BLAZAR_|NODE_OPTIONS$|DYLD_|LD_)/.test(key))) {
     throw new Error('Invalid worker environment list');
   }
-  return { executable: await locate(data.executable), label: data.label, args: data.args, env, protocol: data.protocol };
+  const worker = { executable: await locate(data.executable), label: data.label, args: data.args, env };
+  return data.protocol === 'jsonl' ? { ...worker, protocol: 'jsonl', includeFullInputArtifacts: data.includeFullInputArtifacts }
+    : { ...worker, protocol: 'acp' };
 }
 
 async function locate(executable: string): Promise<string> {

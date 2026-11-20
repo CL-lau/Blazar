@@ -159,6 +159,12 @@ private struct TaskScreen: View {
                             ForEach(plan.steps) { step in
                                 VStack(alignment: .leading) {
                                     Text(step.goal)
+                                    ForEach(step.acceptanceCriteria ?? [], id: \.self) { criterion in
+                                        Text(criterion).font(.caption)
+                                    }
+                                    if step.requireReview == true {
+                                        Text("Requires your acceptance").font(.caption)
+                                    }
                                     if !step.needs.isEmpty {
                                         Text("After " + step.needs.joined(separator: ", ")).font(.caption)
                                     }
@@ -191,6 +197,7 @@ private struct TaskScreen: View {
                                             dependencies: (snapshot.workflowSteps ?? [])
                                                 .filter { $0.taskId == task.id }
                                                 .compactMap { link in snapshot.tasks.first { $0.id == link.predecessorId } },
+                                            criteria: (snapshot.criteria ?? []).filter { $0.taskId == task.id }.map(\.criterion),
                                             progress: snapshot.progress?.first { $0.taskId == task.id }?.message,
                                             approvals: snapshot.approvals.filter { $0.taskId == task.id },
                                             artifacts: snapshot.artifacts.filter { $0.taskId == task.id },
@@ -288,6 +295,7 @@ private struct TaskDetails: View {
     let client: RouterClient
     let task: RouterSnapshot.Task
     let dependencies: [RouterSnapshot.Task]
+    let criteria: [String]
     let progress: String?
     let approvals: [RouterSnapshot.Approval]
     let artifacts: [RouterSnapshot.Artifact]
@@ -297,6 +305,7 @@ private struct TaskDetails: View {
     @State private var error: String?
     @State private var preview: String?
     @State private var working = false
+    @State private var confirmingRetry = false
     @State private var loadingActivity = false
     @State private var activity: [TimelinePage.Entry] = []
     @State private var before: Int?
@@ -308,6 +317,11 @@ private struct TaskDetails: View {
                 Text(task.status.replacingOccurrences(of: "_", with: " "))
                 if let progress { Text(progress).foregroundStyle(.secondary) }
                 if let result = task.result { Text(result).textSelection(.enabled) }
+            }
+            if !criteria.isEmpty {
+                Section("Acceptance criteria") {
+                    ForEach(criteria, id: \.self) { Text($0) }
+                }
             }
             if !dependencies.isEmpty {
                 Section("Dependencies") {
@@ -353,7 +367,21 @@ private struct TaskDetails: View {
             if task.status == "paused" {
                 Button("Resume task") { send("resume") }
             }
-            if ["paused", "pausing"].contains(task.status) {
+            if task.status == "failed" || (task.status == "waiting_user" && approvals.isEmpty) {
+                Button("Retry task") { confirmingRetry = true }
+                    .confirmationDialog("Retry this task as a new run?", isPresented: $confirmingRetry) {
+                        Button("Retry task") { send("retry") }
+                    } message: {
+                        Text("Review any effects of the previous run first.")
+                    }
+            }
+            if task.status == "waiting_review" {
+                Section("Review result") {
+                    Button("Accept result") { send("accept_result") }
+                    Button("Reject result", role: .destructive) { send("reject_result") }
+                }
+            }
+            if ["paused", "pausing", "waiting_review"].contains(task.status) {
                 Button("Cancel task", role: .destructive) { send("cancel") }
             }
             if !["cancelled", "cancelling", "paused", "pausing"].contains(task.status) {

@@ -355,6 +355,9 @@ test('Router authenticates, deduplicates commands and replays task changes over 
     workspace: 'demo', steps: [{ key: 'loop', goal: 'Draft notes', needs: ['loop'] }],
   })).status, 400);
 
+  assert.equal((await post('/v1/workflows', 'invalid-criteria', {
+    workspace: 'demo', steps: [{ key: 'draft', goal: 'Draft notes', needs: [], acceptanceCriteria: [42] }],
+  })).status, 400);
   const metrics = await fetch(url + '/v1/admin/metrics', { headers });
   assert.equal(metrics.status, 200);
   const measurement = await metrics.json();

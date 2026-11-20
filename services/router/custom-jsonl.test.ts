@@ -18,6 +18,13 @@ test('a registered JSONL extension executes a real subprocess through Router and
   await writeFile(script, `
     const request = JSON.parse(require('node:fs').readFileSync(0, 'utf8'));
     if (request.version !== 1 || request.type !== 'run') process.exit(2);
+    if (request.input.goal === 'Verify upstream file') {
+      const artifact = request.input.predecessorResults[0].artifact;
+      if (artifact.text !== 'Z'.repeat(2500) || artifact.excerpt.length !== 2000 ||
+          request.input.acceptanceCriteria?.[0] !== 'Check the full input') process.exit(3);
+      console.log(JSON.stringify({version:1,type:'completed',result:'Complete input verified'}));
+      return;
+    }
     if (request.input.goal === 'Wait for pause') {
       console.log(JSON.stringify({version:1,type:'progress',message:'Ready to pause'}));
       setInterval(() => {}, 1000);
@@ -30,6 +37,7 @@ test('a registered JSONL extension executes a real subprocess through Router and
   const manifest = join(root, 'worker.json');
   await writeFile(manifest, JSON.stringify({
     version: 1, protocol: 'jsonl', label: 'Fixture JSONL', executable: process.execPath, args: [script],
+    includeFullInputArtifacts: true,
   }));
   const worker = await resolveWorker('custom', manifest);
   assert.equal(worker?.protocol, 'jsonl');
@@ -58,9 +66,32 @@ test('a registered JSONL extension executes a real subprocess through Router and
   const presence = store.devices('owner')[0];
   assert.equal(presence.workerLabel, 'Fixture JSONL');
   assert.equal(presence.workerProtocol, 'jsonl');
+  const execution = () => store.timeline('owner', task.id)!.events.find(event => event.type === 'run.started')!.data.worker;
+  const workerReceipt = execution();
+  assert.equal(workerReceipt.label, 'Fixture JSONL');
+  assert.equal(workerReceipt.protocol, 'jsonl');
+  assert.equal(workerReceipt.adapterVersion, 1);
+  assert.match(workerReceipt.revision, /^[a-f0-9]{64}$/);
+  assert(!JSON.stringify(workerReceipt).includes(script));
+  store.recordDeviceWorker(device.id, { label: 'Later worker', protocol: 'acp' });
+  assert.deepEqual(execution(), workerReceipt);
   const progress = store.events('owner', 0).filter(event => event.type === 'run.progress')
     .map(event => JSON.parse(event.data).message);
   assert.deepEqual(progress, ['Running Fixture JSONL', 'Read the input']);
+  const workflow = store.createWorkflow('owner', 'full-input', 'project', [
+    { key: 'source', goal: 'Prepare full file', needs: [] },
+    { key: 'verify', goal: 'Verify upstream file', needs: ['source'], acceptanceCriteria: ['Check the full input'] },
+  ]);
+  const draft = store.claim('owner', 'project', device.id, Date.now(), 45_000)!;
+  assert.equal(store.finish(draft.run.id, device.id, Date.now(), {
+    status: 'succeeded', result: 'Prepared', artifact: { name: 'source.md', text: 'Z'.repeat(2500) },
+  }), true);
+  assert.equal(await client.runOnce(AbortSignal.timeout(4000)), true);
+  const verified = workflow.steps.find(step => step.key === 'verify')!;
+  assert.equal(store.get('owner', String(verified.taskId))?.result, 'Complete input verified');
+  assert.equal(store.snapshot('owner').criteria[0].criterion, 'Check the full input');
+  assert.deepEqual(store.snapshot('another').criteria, []);
+
   const pausable = store.create('owner', 'fixture', 'pause-task', 'project', 'Wait for pause');
   const signal = AbortSignal.timeout(4000);
   const executing = assert.rejects(client.runOnce(signal), /aborted/i);

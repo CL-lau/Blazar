@@ -7,16 +7,16 @@ import { runJsonWorker } from '../../packages/workers/jsonl.ts';
 import { runCodex } from '../../packages/workers/codex.ts';
 import type { Worker } from '../../packages/workers/registry.ts';
 import { runAcp } from '../../packages/workers/acp.ts';
-import { createHash, randomUUID } from 'node:crypto';
+import { createHash, createHmac, randomUUID } from 'node:crypto';
 import { DeviceLedger } from './ledger.ts';
 import { setTimeout as delay } from 'node:timers/promises';
-import type { Run, RunOutcome, Task } from '../../packages/protocol/task.ts';
+import type { PredecessorInput, Run, RunOutcome, Task, WorkerConfiguration } from '../../packages/protocol/task.ts';
 import { performance } from 'node:perf_hooks';
 import { maintainLease } from './lease.ts';
 import { platform } from 'node:os';
 import { preview } from './preview.ts';
 
-type Assignment = { run: Run; task: Task; instructions: string[]; predecessors: { taskId: string; version: number; result: string | null }[] };
+type Assignment = { run: Run; task: Task; instructions: string[]; predecessors: PredecessorInput[]; acceptanceCriteria?: string[] };
 
 export class DeviceClient {
   private socket: DeviceSocket;
@@ -24,6 +24,7 @@ export class DeviceClient {
   private ledger: DeviceLedger;
   private scope: string;
   private worker?: Worker;
+  private workerConfiguration?: WorkerConfiguration;
   private observation?: ObservationConfig;
   private workspaceIdentity: string;
   private claimId = randomUUID();
@@ -37,6 +38,16 @@ export class DeviceClient {
     this.workspaceIdentity = workspaceIdentity;
     this.ledger = ledger;
     this.worker = worker;
+    if (worker) {
+      const protocol = worker.protocol ?? 'acp';
+      const adapterVersion = 1;
+      // Keep executable paths and arguments local, even if they contain sensitive values.
+      const revision = createHmac('sha256', token).update(JSON.stringify([
+        adapterVersion, worker.label, protocol, worker.executable, worker.args, worker.env ?? [],
+        worker.protocol === 'jsonl' && worker.includeFullInputArtifacts === true,
+      ])).digest('hex');
+      this.workerConfiguration = { label: worker.label, protocol, adapterVersion, revision };
+    }
     this.observation = observation;
     this.scope = createHash('sha256').update(JSON.stringify([base.origin, token])).digest('hex');
   }
@@ -85,6 +96,26 @@ export class DeviceClient {
     return response.ok;
   }
 
+  private async completeInputArtifacts(inputs: PredecessorInput[], prefix: string, signal: AbortSignal) {
+    let budget = 64_000;
+    for (const input of inputs) {
+      const artifact = input.artifact;
+      if (!artifact || !artifact.truncated || artifact.size > budget || artifact.size <= 0) continue;
+      const response = await this.post(prefix + 'input-artifact', { artifactId: artifact.id }, signal);
+      if (!response.ok) {
+        await response.body?.cancel();
+        throw new Error('Unable to read a required workflow input');
+      }
+      const { text } = await response.json() as { text?: unknown };
+      if (typeof text !== 'string' || Buffer.byteLength(text) !== artifact.size ||
+          createHash('sha256').update(text).digest('hex') !== artifact.sha256) {
+        throw new Error('Workflow input artifact failed integrity verification');
+      }
+      artifact.text = text;
+      budget -= artifact.size;
+    }
+  }
+
   async runOnce(signal: AbortSignal): Promise<boolean> {
     const interrupted = this.ledger.interrupted(this.workspaceIdentity);
     if (interrupted) {
@@ -105,7 +136,7 @@ export class DeviceClient {
     const claimStarted = performance.now();
     const claim = await this.post('claim', {
       capability: this.observation ? 'computer.observe' : this.worker ? 'agent.acp' : 'document.preview', requestId: this.claimId, platform: platform(),
-      worker: this.worker && { label: this.worker.label, protocol: this.worker.protocol ?? 'acp' },
+      worker: this.workerConfiguration,
     }, signal);
     if (!claim.ok) throw new Error(`Task claim failed (${claim.status})`);
     const { assignment, leaseRemainingMs } = await claim.json() as { assignment: Assignment | null; leaseRemainingMs?: number };
@@ -156,8 +187,11 @@ export class DeviceClient {
           outcome = { status: 'succeeded', result: click ? 'Application action completed.' : 'Application snapshot is ready.',
             artifact: { name: 'application-observation.txt', text: result } };
         } else if (this.worker) {
+          if (this.worker.protocol === 'jsonl' && this.worker.includeFullInputArtifacts) {
+            await this.completeInputArtifacts(assignment.predecessors, prefix, active);
+          }
           const job = { goal: assignment.task.goal, instructions: assignment.instructions,
-            predecessors: assignment.predecessors };
+            predecessors: assignment.predecessors, acceptanceCriteria: assignment.acceptanceCriteria };
           let sequence = 1;
           const report = async (message: string, signal: AbortSignal) => {
             const reply = await this.post(prefix + 'progress', { seq: ++sequence, message }, signal);

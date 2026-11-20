@@ -1,4 +1,4 @@
-export type TaskStatus = 'queued' | 'running' | 'cancelling' | 'cancelled' | 'succeeded' | 'failed' | 'waiting_user' | 'waiting_dependency' | 'waiting_device' | 'pausing' | 'paused';
+export type TaskStatus = 'queued' | 'running' | 'cancelling' | 'cancelled' | 'succeeded' | 'failed' | 'waiting_user' | 'waiting_dependency' | 'waiting_device' | 'pausing' | 'paused' | 'waiting_review';
 
 export interface Task {
   id: string;
@@ -35,4 +35,22 @@ export interface WorkflowStep {
   key: string;
   goal: string;
   needs: string[];
+  acceptanceCriteria?: string[];
+  requireReview?: boolean;
+}
+
+
+export interface WorkerConfiguration {
+  label: string;
+  protocol: string;
+  adapterVersion?: number;
+  revision?: string;
+}
+
+
+export interface PredecessorInput {
+  taskId: string;
+  version: number;
+  result: string | null;
+  artifact?: { id: string; name: string; sha256: string; excerpt: string; truncated: boolean; size: number; text?: string };
 }

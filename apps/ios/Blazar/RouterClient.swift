@@ -29,6 +29,11 @@ struct RouterSnapshot: Decodable {
         let taskId: String
         let predecessorId: String?
     }
+    struct Criterion: Decodable {
+        let taskId: String
+        let criterion: String
+    }
+    let criteria: [Criterion]?
     let cursor: Int
     let workflowSteps: [WorkflowStepLink]?
     let progress: [Progress]?
@@ -107,6 +112,8 @@ struct RouterClient: Equatable {
         let key: String
         let goal: String
         let needs: [String]
+        let acceptanceCriteria: [String]?
+        let requireReview: Bool?
         var id: String { key }
     }
 

@@ -3,7 +3,9 @@ import { orderWorkflow } from './workflow.ts';
 import type { ConversationTurn, Decision, RouteRequest } from './harness.ts';
 import { createHash, randomBytes, randomUUID } from 'node:crypto';
 import { DatabaseSync } from 'node:sqlite';
-import type { Run, RunOutcome, Task, TaskEvent, WorkflowStep } from '../../packages/protocol/task.ts';
+import type { PredecessorInput, Run, RunOutcome, Task, TaskEvent, WorkerConfiguration, WorkflowStep } from '../../packages/protocol/task.ts';
+
+const runLimitMs = 10 * 60_000;
 
 export class IdempotencyConflict extends Error {
   constructor() { super('Idempotency key already used'); }
@@ -61,6 +63,18 @@ export class TaskStore {
         workflow_id TEXT NOT NULL REFERENCES workflow(id), step_key TEXT NOT NULL,
         task_id TEXT NOT NULL UNIQUE REFERENCES task(id), PRIMARY KEY(workflow_id,step_key)
       );
+      CREATE TABLE IF NOT EXISTS task_review (
+        task_id TEXT PRIMARY KEY REFERENCES task(id) ON DELETE CASCADE
+      );
+      CREATE TABLE IF NOT EXISTS review_input (
+        task_id TEXT NOT NULL REFERENCES task_review(task_id) ON DELETE CASCADE,
+        predecessor TEXT NOT NULL REFERENCES task(id), version INTEGER NOT NULL,
+        PRIMARY KEY(task_id,predecessor)
+      );
+      CREATE TABLE IF NOT EXISTS task_criterion (
+        task_id TEXT NOT NULL REFERENCES task(id) ON DELETE CASCADE,
+        position INTEGER NOT NULL, criterion TEXT NOT NULL, PRIMARY KEY(task_id,position)
+      );
       CREATE TABLE IF NOT EXISTS workflow_dependency (
         task_id TEXT NOT NULL REFERENCES task(id), predecessor TEXT NOT NULL REFERENCES task(id),
         PRIMARY KEY(task_id,predecessor)
@@ -107,6 +121,9 @@ export class TaskStore {
         id TEXT PRIMARY KEY, taskId TEXT NOT NULL UNIQUE REFERENCES task(id),
         device TEXT NOT NULL, version INTEGER NOT NULL, expires INTEGER NOT NULL
       );
+      CREATE TABLE IF NOT EXISTS run_deadline (
+        run_id TEXT PRIMARY KEY REFERENCES run(id) ON DELETE CASCADE, deadline INTEGER NOT NULL
+      );
       CREATE INDEX IF NOT EXISTS run_device ON run(device);
       CREATE TABLE IF NOT EXISTS run_dependency (
         run_id TEXT NOT NULL REFERENCES run(id) ON DELETE CASCADE,
@@ -150,6 +167,9 @@ export class TaskStore {
         id TEXT PRIMARY KEY, taskId TEXT NOT NULL REFERENCES task(id), runId TEXT NOT NULL,
         name TEXT NOT NULL, sha256 TEXT NOT NULL, size INTEGER NOT NULL, content BLOB NOT NULL
       );
+      CREATE TABLE IF NOT EXISTS artifact_version (
+        artifact_id TEXT PRIMARY KEY REFERENCES artifact(id) ON DELETE CASCADE, task_version INTEGER NOT NULL
+      );
       CREATE INDEX IF NOT EXISTS artifact_task ON artifact(taskId);
       CREATE TABLE IF NOT EXISTS receipt (
         owner TEXT NOT NULL, source TEXT NOT NULL, key TEXT NOT NULL,
@@ -168,7 +188,10 @@ export class TaskStore {
       CREATE INDEX IF NOT EXISTS task_dispatch ON task(workspace,status);
       CREATE INDEX IF NOT EXISTS event_task ON event(taskId,seq);
     `);
-    this.transaction(() => this.updateWorkflowReadiness());
+    this.transaction(() => {
+      this.db.prepare('INSERT OR IGNORE INTO run_deadline SELECT id,expires+? FROM run').run(runLimitMs);
+      this.updateWorkflowReadiness();
+    });
   }
 
   close() {
@@ -209,18 +232,33 @@ export class TaskStore {
     }
   }
 
+  private invalidateCompletedDescendants(upstreamId: string) {
+    const invalidated = this.db.prepare(`WITH RECURSIVE descendants(id) AS (
+      SELECT task_id FROM workflow_dependency WHERE predecessor=?
+      UNION
+      SELECT d.task_id FROM workflow_dependency d JOIN descendants parent ON d.predecessor=parent.id
+    )
+    UPDATE task SET status='waiting_user',version=version+1,result=?
+    WHERE status='succeeded' AND id IN (SELECT id FROM descendants)
+    RETURNING id`).all(upstreamId, 'An upstream result was revised. Review prior results before retrying.');
+    for (const task of invalidated) {
+      this.event(String(task.id), 'workflow.result_outdated', { upstreamId, status: 'waiting_user' });
+    }
+    if (invalidated.length) this.updateWorkflowReadiness();
+  }
+
   private event(taskId: string, type: string, data: unknown) {
     this.db.prepare('INSERT INTO event(taskId,type,data) VALUES(?,?,?)')
       .run(taskId, type, JSON.stringify(data));
-    if (['run.finished', 'run.superseded', 'task.instruction_added'].includes(type)) {
+    if (['run.finished', 'run.superseded', 'task.instruction_added', 'task.result_accepted'].includes(type)) {
       this.updateWorkflowReadiness(taskId);
     }
-    const terminal = new Set(['run.finished', 'task.cancelled', 'run.lease_expired', 'run.device_revoked', 'approval.expired', 'run.inputs_changed', 'run.device_interrupted']);
+    const terminal = new Set(['run.finished', 'task.cancelled', 'run.lease_expired', 'run.device_revoked', 'approval.expired', 'run.inputs_changed', 'run.device_interrupted', 'run.deadline_exceeded', 'task.result_accepted', 'task.result_rejected', 'workflow.result_outdated']);
     if (!terminal.has(type) && type !== 'task.cancel_requested') return;
     const task = this.db.prepare('SELECT status FROM task WHERE id=?').get(taskId);
     const status = String(task?.status);
     const notices: Record<string, string> = {
-      succeeded: 'completed', failed: 'failed', cancelled: 'was cancelled', waiting_user: 'needs attention',
+      succeeded: 'completed', failed: 'failed', cancelled: 'was cancelled', waiting_user: 'needs attention', waiting_review: 'needs result review',
     };
     const notice = notices[status];
     if (!notice) return;
@@ -262,7 +300,9 @@ export class TaskStore {
         s.task_id AS taskId,d.predecessor AS predecessorId FROM workflow_step s
         JOIN workflow w ON w.id=s.workflow_id LEFT JOIN workflow_dependency d ON d.task_id=s.task_id
         WHERE w.owner=? ORDER BY s.rowid`).all(owner);
-      return { tasks, artifacts, approvals, progress, workflowSteps, cursor };
+      const criteria = this.db.prepare(`SELECT c.task_id AS taskId,c.criterion FROM task_criterion c
+        JOIN task t ON t.id=c.task_id WHERE t.owner=? ORDER BY c.task_id,c.position`).all(owner);
+      return { tasks, artifacts, approvals, progress, workflowSteps, criteria, cursor };
     });
   }
 
@@ -480,12 +520,12 @@ export class TaskStore {
       }
       if (['cancelled', 'cancelling', 'paused', 'pausing'].includes(String(link.status))) return;
       const taskId = String(link.id);
-      this.appendInstruction(taskId, message.text, { channel });
+      this.appendInstruction(taskId, message.text, String(link.status), { channel });
     });
   }
 
   private cancelTask(taskId: string, priorStatus: string, metadata: Record<string, string> = {}) {
-    if (!['queued', 'running', 'waiting_user', 'waiting_dependency', 'waiting_device', 'pausing', 'paused'].includes(priorStatus)) {
+    if (!['queued', 'running', 'waiting_user', 'waiting_dependency', 'waiting_device', 'pausing', 'paused', 'waiting_review'].includes(priorStatus)) {
       return false;
     }
     const liveRun = this.db.prepare('SELECT 1 FROM run WHERE taskId=?').get(taskId);
@@ -495,11 +535,12 @@ export class TaskStore {
     return true;
   }
 
-  private appendInstruction(taskId: string, text: string, metadata: Record<string, string> = {}) {
+  private appendInstruction(taskId: string, text: string, previousStatus: string, metadata: Record<string, string> = {}) {
     const run = this.db.prepare('SELECT id FROM run WHERE taskId=?').get(taskId);
     this.db.prepare('UPDATE task SET status=?,version=version+1,result=NULL WHERE id=?')
       .run(run ? 'running' : 'queued', taskId);
     this.event(taskId, 'task.instruction_added', { text, ...metadata });
+    if (previousStatus === 'succeeded') this.invalidateCompletedDescendants(taskId);
   }
 
   create(owner: string, source: string, key: string, workspace: string, goal: string): Task {
@@ -541,6 +582,10 @@ export class TaskStore {
         this.db.prepare('INSERT INTO task(id,owner,workspace,goal,status) VALUES(?,?,?,?,?)')
           .run(taskId, owner, workspace, step.goal, status);
         this.db.prepare('INSERT INTO workflow_step VALUES(?,?,?)').run(id, name, taskId);
+        if (step.requireReview) this.db.prepare('INSERT INTO task_review VALUES(?)').run(taskId);
+        for (const [position, criterion] of (step.acceptanceCriteria ?? []).entries()) {
+          this.db.prepare('INSERT INTO task_criterion VALUES(?,?,?)').run(taskId, position, criterion);
+        }
         const predecessors = [...new Set(step.needs)].map(dependency => tasks.get(dependency)!);
         for (const predecessor of predecessors) {
           this.db.prepare('INSERT INTO workflow_dependency VALUES(?,?)').run(taskId, predecessor);
@@ -556,7 +601,7 @@ export class TaskStore {
       .all(id);
   }
 
-  command(owner: string, taskId: string, version: number, command: { action: 'cancel' | 'pause' | 'resume' } | { action: 'append'; text: string } | { action: 'approve' | 'deny'; approvalId: string }, key?: string) {
+  command(owner: string, taskId: string, version: number, command: { action: 'cancel' | 'pause' | 'resume' | 'retry' | 'accept_result' | 'reject_result' } | { action: 'append'; text: string } | { action: 'approve' | 'deny'; approvalId: string }, key?: string) {
     return this.transaction(() => {
       const fingerprint = JSON.stringify([taskId, version, command]);
       if (key) {
@@ -582,21 +627,37 @@ export class TaskStore {
         if (!changed.changes) return undefined;
         this.db.prepare("UPDATE task SET status='running' WHERE id=?").run(taskId);
         this.event(taskId, 'approval.decided', { approvalId: command.approvalId, decision });
+      } else if (command.action === 'accept_result' || command.action === 'reject_result') {
+        if (task.status !== 'waiting_review' || liveRun) return undefined;
+        const accepted = command.action === 'accept_result';
+        if (accepted && this.db.prepare(`SELECT 1 FROM review_input i JOIN task p ON p.id=i.predecessor
+          WHERE i.task_id=? AND (p.status!='succeeded' OR p.version<>i.version)`).get(taskId)) return undefined;
+        const status = accepted ? 'succeeded' : 'failed';
+        this.db.prepare('UPDATE task SET status=?,version=version+1 WHERE id=?').run(status, taskId);
+        if (accepted) {
+          this.db.prepare(`UPDATE artifact_version SET task_version=? WHERE task_version=?
+            AND artifact_id IN (SELECT id FROM artifact WHERE taskId=?)`).run(version + 1, version, taskId);
+        }
+        this.db.prepare('DELETE FROM review_input WHERE task_id=?').run(taskId);
+        this.event(taskId, accepted ? 'task.result_accepted' : 'task.result_rejected', { status });
       } else if (command.action === 'pause') {
         if (!['queued', 'running', 'waiting_user', 'waiting_dependency', 'waiting_device'].includes(task.status)) return undefined;
         const status = liveRun ? 'pausing' : 'paused';
         this.db.prepare('UPDATE task SET status=?,version=version+1 WHERE id=?').run(status, taskId);
         this.event(taskId, 'task.pause_requested', { status });
-      } else if (command.action === 'resume') {
-        if (task.status !== 'paused' || liveRun) return undefined;
+      } else if (command.action === 'resume' || command.action === 'retry') {
+        const allowed = command.action === 'resume' ? task.status === 'paused'
+          : task.status === 'failed' || task.status === 'waiting_user';
+        if (!allowed || liveRun) return undefined;
         this.db.prepare("UPDATE task SET status='queued',version=version+1,result=NULL WHERE id=?").run(taskId);
-        this.event(taskId, 'task.resumed', { status: 'queued' });
+        const type = command.action === 'resume' ? 'task.resumed' : 'task.retry_requested';
+        this.event(taskId, type, { status: 'queued', previousStatus: task.status });
         this.updateWorkflowReadiness(taskId);
       } else if (command.action === 'cancel') {
         if (!this.cancelTask(taskId, task.status)) return undefined;
       } else if (command.action === 'append') {
         if (['cancelling', 'cancelled', 'pausing', 'paused'].includes(task.status)) return undefined;
-        this.appendInstruction(taskId, command.text);
+        this.appendInstruction(taskId, command.text, task.status);
       }
       const updated = this.get(owner, taskId)!;
       if (key) {
@@ -812,9 +873,10 @@ export class TaskStore {
     });
   }
 
-  claim(owner: string, workspace: string, device: string, now: number, leaseMs: number, goalPrefix = '', excludingPrefix = '', requestId?: string) {
+  claim(owner: string, workspace: string, device: string, now: number, leaseMs: number, goalPrefix = '', excludingPrefix = '', requestId?: string, worker?: WorkerConfiguration) {
     return this.transaction(() => {
-      const fingerprint = JSON.stringify([owner, workspace, goalPrefix, excludingPrefix]);
+      const identity = [owner, workspace, goalPrefix, excludingPrefix];
+      const fingerprint = JSON.stringify(worker ? [...identity, worker] : identity);
       if (requestId) {
         const receipt = this.db.prepare('SELECT fingerprint,response,expires FROM device_claim WHERE device=? AND key=?')
           .get(device, requestId);
@@ -844,18 +906,20 @@ export class TaskStore {
           .run(device, requestId, fingerprint, null, now + 10 * 60_000);
         return undefined;
       }
-      const run: Run = { id: randomUUID(), taskId: task.id, version: task.version, device, expires: now + leaseMs };
+      const run: Run = { id: randomUUID(), taskId: task.id, version: task.version, device, expires: now + Math.min(leaseMs, runLimitMs) };
       this.db.prepare('INSERT INTO run VALUES(?,?,?,?,?)').run(run.id, task.id, device, run.version, run.expires);
+      this.db.prepare('INSERT INTO run_deadline VALUES(?,?)').run(run.id, now + runLimitMs);
       this.db.prepare("UPDATE task SET status='running' WHERE id=?").run(task.id);
-      const predecessors = this.db.prepare(`SELECT p.id AS taskId,p.version,p.result
-        FROM workflow_dependency d JOIN task p ON p.id=d.predecessor WHERE d.task_id=? ORDER BY p.rowid`).all(task.id);
+      const predecessors = this.predecessorInputs(task.id);
       if (predecessors.length) {
         this.db.prepare(`INSERT INTO run_dependency(run_id,predecessor,version)
           SELECT ?,p.id,p.version FROM workflow_dependency d JOIN task p ON p.id=d.predecessor
           WHERE d.task_id=?`).run(run.id, task.id);
       }
       this.event(task.id, 'run.started', {
-        runId: run.id, predecessors: predecessors.map(({ taskId, version }) => ({ taskId, version })),
+        runId: run.id, ...(worker && { worker }), predecessors: predecessors.map(({ taskId, version, artifact }) => ({
+          taskId, version, ...(artifact && { artifactId: artifact.id }),
+        })),
       });
       const assignment = this.assignment(owner, run, predecessors);
       if (requestId) this.db.prepare('INSERT INTO device_claim VALUES(?,?,?,?,?)')
@@ -864,11 +928,48 @@ export class TaskStore {
     });
   }
 
-  private assignment(owner: string, run: Run, predecessors: ReturnType<ReturnType<DatabaseSync['prepare']>['all']>) {
+  private predecessorInputs(taskId: string): PredecessorInput[] {
+    const rows = this.db.prepare(`SELECT p.id AS taskId,p.version,p.result,a.id AS artifactId,a.name,a.sha256,a.size,a.content
+      FROM workflow_dependency d JOIN task p ON p.id=d.predecessor
+      LEFT JOIN artifact a ON a.rowid=(
+        SELECT a.rowid FROM artifact a JOIN artifact_version v ON v.artifact_id=a.id
+        WHERE a.taskId=p.id AND v.task_version=p.version ORDER BY a.rowid DESC LIMIT 1
+      )
+      WHERE d.task_id=? ORDER BY p.rowid`).all(taskId);
+    let budget = 16_000;
+    return rows.map(row => {
+      const input: PredecessorInput = {
+        taskId: String(row.taskId), version: Number(row.version), result: row.result === null ? null : String(row.result),
+      };
+      if (!row.artifactId || !(row.content instanceof Uint8Array)) return input;
+      const text = Buffer.from(row.content).toString('utf8');
+      const excerpt = text.slice(0, Math.min(2000, budget)).toWellFormed();
+      budget -= excerpt.length;
+      input.artifact = {
+        id: String(row.artifactId), name: String(row.name), sha256: String(row.sha256),
+        excerpt, truncated: excerpt.length < text.length, size: Number(row.size),
+      };
+      return input;
+    });
+  }
+
+  private assignment(owner: string, run: Run, predecessors: PredecessorInput[]) {
     const instructions = this.db.prepare(`SELECT data FROM event WHERE taskId=?
       AND type='task.instruction_added' ORDER BY seq`).all(run.taskId)
       .map(row => JSON.parse(String(row.data)).text as string);
-    return { run, task: this.get(owner, run.taskId)!, instructions, predecessors };
+    const acceptanceCriteria = this.db.prepare('SELECT criterion FROM task_criterion WHERE task_id=? ORDER BY position')
+      .all(run.taskId).map(row => String(row.criterion));
+    return { run, task: this.get(owner, run.taskId)!, instructions, predecessors, acceptanceCriteria };
+  }
+
+  runInputArtifact(runId: string, device: string, artifactId: string, now: number) {
+    return this.db.prepare(`SELECT a.id,a.name,a.sha256,a.content FROM run r JOIN task t ON t.id=r.taskId
+      JOIN run_dependency d ON d.run_id=r.id JOIN artifact a ON a.taskId=d.predecessor
+      JOIN artifact_version v ON v.artifact_id=a.id AND v.task_version=d.version
+      WHERE a.id=? AND r.id=? AND r.device=? AND r.expires>? AND t.status='running' AND r.version=t.version
+      AND NOT EXISTS(SELECT 1 FROM invalid_workflow_run i WHERE i.id=r.id)`)
+      .get(artifactId, runId, device, now) as
+      { id: string; name: string; sha256: string; content: Uint8Array } | undefined;
   }
 
   requestApproval(runId: string, device: string, summary: string, now: number) {
@@ -927,12 +1028,15 @@ export class TaskStore {
     });
   }
 
-  renew(runId: string, device: string, now: number, leaseMs: number): boolean {
-    return this.db.prepare(`UPDATE run SET expires=? WHERE id=? AND device=? AND expires>?
+  renew(runId: string, device: string, now: number, leaseMs: number) {
+    const lease = this.db.prepare(`UPDATE run SET expires=MIN(?, (
+      SELECT deadline FROM run_deadline WHERE run_id=run.id
+    )) WHERE id=? AND device=? AND expires>?
       AND NOT EXISTS(SELECT 1 FROM invalid_workflow_run i WHERE i.id=run.id)
       AND EXISTS(SELECT 1 FROM task WHERE task.id=run.taskId AND (task.status='running' OR (task.status='waiting_user' AND EXISTS(
-        SELECT 1 FROM approval WHERE approval.runId=run.id AND decision IS NULL AND approval.expires>?))))`)
-      .run(now + leaseMs, runId, device, now, now).changes === 1;
+        SELECT 1 FROM approval WHERE approval.runId=run.id AND decision IS NULL AND approval.expires>?)))) RETURNING expires`)
+      .get(now + leaseMs, runId, device, now, now);
+    return lease ? Number(lease.expires) : undefined;
   }
 
   stopTarget(owner: string, taskId: string) {
@@ -980,6 +1084,13 @@ export class TaskStore {
         this.finishStoppedRun(runId, taskId, row.status === 'pausing');
         return false;
       }
+      const pendingReview = outcome.status === 'succeeded' && !row.staleInputs && row.runVersion === row.version &&
+        Boolean(this.db.prepare('SELECT 1 FROM task_review WHERE task_id=?').get(taskId));
+      if (pendingReview) {
+        this.db.prepare('DELETE FROM review_input WHERE task_id=?').run(taskId);
+        this.db.prepare(`INSERT INTO review_input SELECT ?,predecessor,version FROM run_dependency WHERE run_id=?`)
+          .run(taskId, runId);
+      }
       this.db.prepare('DELETE FROM run WHERE id=?').run(runId);
       if (row.staleInputs) {
         this.db.prepare("UPDATE task SET status='waiting_user',result=? WHERE id=?")
@@ -992,7 +1103,8 @@ export class TaskStore {
         this.event(taskId, 'run.superseded', { runId });
         return false;
       }
-      this.db.prepare('UPDATE task SET status=?,result=? WHERE id=?').run(outcome.status, outcome.result, taskId);
+      const finalStatus = pendingReview ? 'waiting_review' : outcome.status;
+      this.db.prepare('UPDATE task SET status=?,result=? WHERE id=?').run(finalStatus, outcome.result, taskId);
       if (outcome.status === 'succeeded' && outcome.artifact) {
         const { name, text } = outcome.artifact;
         const content = Buffer.from(text, 'utf8');
@@ -1000,10 +1112,11 @@ export class TaskStore {
         const sha256 = createHash('sha256').update(content).digest('hex');
         this.db.prepare('INSERT INTO artifact VALUES(?,?,?,?,?,?,?)')
           .run(id, taskId, runId, name, sha256, content.length, content);
-        this.event(taskId, 'artifact.created', { id, taskId, runId, name, sha256, size: content.length });
+        this.db.prepare('INSERT INTO artifact_version VALUES(?,?)').run(id, row.version!);
+        this.event(taskId, 'artifact.created', { id, taskId, runId, name, sha256, size: content.length, version: row.version });
       }
       this.db.prepare('INSERT INTO run_receipt VALUES(?,?,?)').run(runId, device, digest);
-      this.event(taskId, 'run.finished', { runId, status: outcome.status, result: outcome.result });
+      this.event(taskId, 'run.finished', { runId, status: finalStatus, result: outcome.result });
       return true;
     });
   }
@@ -1052,9 +1165,9 @@ export class TaskStore {
           approvalId: approval.id, runId: approval.runId, expires: approval.expires, status: 'failed',
         });
       }
-      const rows = this.db.prepare(`SELECT r.id, r.taskId, t.status,
+      const rows = this.db.prepare(`SELECT r.id, r.taskId, t.status,r.expires=d.deadline AS deadlineReached,
         EXISTS(SELECT 1 FROM invalid_workflow_run i WHERE i.id=r.id) AS staleInputs FROM run r
-        JOIN task t ON r.taskId=t.id WHERE r.expires<=?`).all(now);
+        JOIN task t ON r.taskId=t.id JOIN run_deadline d ON d.run_id=r.id WHERE r.expires<=?`).all(now);
       for (const row of rows) {
         const taskId = String(row.taskId);
         const status = row.status === 'cancelling' ? 'cancelled' : 'waiting_user';
@@ -1063,7 +1176,11 @@ export class TaskStore {
         const inputsChanged = row.staleInputs && status === 'waiting_user';
         if (inputsChanged) this.db.prepare('UPDATE task SET result=? WHERE id=?')
           .run('An upstream result changed during execution. Review the run before retrying.', taskId);
-        this.event(taskId, inputsChanged ? 'run.inputs_changed' : 'run.lease_expired', { runId: row.id, status });
+        const timedOut = status === 'waiting_user' && Boolean(row.deadlineReached);
+        if (timedOut && !inputsChanged) this.db.prepare('UPDATE task SET result=? WHERE id=?')
+          .run('The run reached its time limit. Review the device before retrying.', taskId);
+        const event = inputsChanged ? 'run.inputs_changed' : timedOut ? 'run.deadline_exceeded' : 'run.lease_expired';
+        this.event(taskId, event, { runId: row.id, status });
       }
       return approvals.length + rows.length;
     });

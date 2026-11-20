@@ -28,7 +28,7 @@ test('cancellation prevents lease renewal and late completion', t => {
   const task = db.create('owner', 'desktop', 'first', 'project', 'Review');
   const { run } = db.claim('owner', 'project', 'device', 0, 10)!;
   assert.equal(db.command('owner', task.id, 1, { action: 'cancel' })?.status, 'cancelling');
-  assert.equal(db.renew(run.id, 'device', 5, 10), false);
+  assert.equal(db.renew(run.id, 'device', 5, 10), undefined);
   assert.equal(db.expire(10), 1);
   assert.equal(db.finish(run.id, 'device', 11, { status: 'succeeded', result: 'Late' }), false);
   assert.equal(db.get('owner', task.id)?.status, 'cancelled');
@@ -64,7 +64,7 @@ test('approvals bind decisions to the current run, owner, and task version', t =
   assert.equal(db.snapshot('owner').approvals.length, 1);
   assert.equal(db.snapshot('other').approvals.length, 0);
   assert.equal(db.finish(run.id, 'device', now, { status: 'succeeded', result: 'Premature' }), false);
-  assert.equal(db.renew(run.id, 'device', now + 1, 45_000), true);
+  assert.equal(db.renew(run.id, 'device', now + 1, 45_000), now + 45_001);
   assert.equal(db.command('other', task.id, 1, { action: 'approve', approvalId }), undefined);
 
   assert.equal(db.command('owner', task.id, 1, { action: 'append', text: 'Revise the draft' })?.version, 2);
@@ -180,7 +180,7 @@ test('watchdog records a pending approval timeout and fences the expired run', t
   assert.equal(db.expire(expiry + 1), 0);
   assert.equal(db.get('owner', task.id)?.status, 'failed');
   assert.match(db.get('owner', task.id)?.result ?? '', /approval expired/i);
-  assert.equal(db.renew(run.id, 'device', expiry + 1, 45_000), false);
+  assert.equal(db.renew(run.id, 'device', expiry + 1, 45_000), undefined);
   assert.equal(db.finish(run.id, 'device', expiry + 1, { status: 'succeeded', result: 'Late' }), false);
   assert.equal(db.consumeApproval(run.id, 'device', String(approval.id), expiry + 1), false);
   const events = db.events('owner', cursor);
@@ -223,24 +223,40 @@ test('running workflow steps cannot commit after a predecessor is replaced', t =
     { key: 'review', goal: 'Review', needs: ['draft'] },
   ]);
   const draft = db.claim('owner', 'project', 'author', now, 100)!;
-  assert.equal(db.finish(draft.run.id, 'author', now + 1, { status: 'succeeded', result: 'First draft' }), true);
+  assert.equal(db.finish(draft.run.id, 'author', now + 1, {
+    status: 'succeeded', result: 'First draft', artifact: { name: 'draft.md', text: 'Original artifact' },
+  }), true);
   const review = db.claim('owner', 'project', 'reviewer', now + 2, 100)!;
   const approval = db.requestApproval(review.run.id, 'reviewer', 'Approve the review', now + 3)!;
   assert.equal(db.command('owner', draft.task.id, 1, { action: 'append', text: 'Replace the draft' })?.version, 2);
   assert.equal(db.snapshot('owner').approvals.length, 0);
   assert.equal(db.command('owner', review.task.id, 1, { action: 'approve', approvalId: String(approval.id) }), undefined);
-  assert.equal(db.renew(review.run.id, 'reviewer', now + 4, 100), false);
+  assert.equal(db.renew(review.run.id, 'reviewer', now + 4, 100), undefined);
   const revised = db.claim('owner', 'project', 'author', now + 5, 100)!;
-  assert.equal(db.finish(revised.run.id, 'author', now + 6, { status: 'succeeded', result: 'Revised draft' }), true);
+  assert.equal(db.finish(revised.run.id, 'author', now + 6, {
+    status: 'succeeded', result: 'Revised draft', artifact: { name: 'draft.md', text: 'X'.repeat(2100) },
+  }), true);
   assert.equal(db.finish(review.run.id, 'reviewer', now + 7, {
     status: 'succeeded', result: 'Stale review', artifact: { name: 'review.txt', text: 'Old facts' },
   }), false);
-  assert.equal(db.snapshot('owner').artifacts.length, 0);
+  assert.equal(db.snapshot('owner').artifacts.filter(artifact => artifact.taskId === review.task.id).length, 0);
   assert.equal(db.get('owner', review.task.id)?.status, 'waiting_user');
   assert.equal(db.claim('owner', 'project', 'reviewer', now + 8, 100), undefined);
   db.command('owner', review.task.id, 1, { action: 'append', text: 'Review the revised draft' });
   const retry = db.claim('owner', 'project', 'reviewer', now + 9, 100)!;
   assert.deepEqual(retry.predecessors.map(input => input.result), ['Revised draft']);
+  const artifact = retry.predecessors[0].artifact!;
+  assert.equal(retry.predecessors[0].version, 2);
+  assert.equal(artifact.name, 'draft.md');
+  assert.equal(artifact.excerpt, 'X'.repeat(2000));
+  assert.equal(artifact.truncated, true);
+  assert.equal(artifact.id, db.snapshot('owner').artifacts[0].id);
+  assert.equal(db.runInputArtifact(retry.run.id, 'author', artifact.id, now + 10), undefined);
+  assert.equal(db.runInputArtifact(retry.run.id, 'reviewer', review.predecessors[0].artifact!.id, now + 10), undefined);
+  assert.equal(Buffer.from(db.runInputArtifact(retry.run.id, 'reviewer', artifact.id, now + 10)!.content).toString(),
+    'X'.repeat(2100));
+  db.command('owner', draft.task.id, 2, { action: 'append', text: 'Revise it again' });
+  assert.equal(db.runInputArtifact(retry.run.id, 'reviewer', artifact.id, now + 11), undefined);
 });
 
 test('waiting-device tasks reflect capability, workspace, and recent healthy presence', t => {
@@ -279,7 +295,7 @@ test('paused devices finish their current run and claim new work only after resu
   db.updateDeviceReadiness(2);
   assert.equal(db.get('owner', second.id)?.status, 'waiting_device');
   assert.equal(db.claim('owner', 'project', device.id, 2, 100, '/preview '), undefined);
-  assert.equal(db.renew(live.run.id, device.id, 2, 100), true);
+  assert.equal(db.renew(live.run.id, device.id, 2, 100), 102);
   assert.equal(db.finish(live.run.id, device.id, 3, { status: 'succeeded', result: 'Finished' }), true);
   assert.equal(db.setDevicePaused('owner', device.id, false), true);
   assert.equal(db.claim('owner', 'project', device.id, 4, 100, '/preview ')?.task.id, second.id);
@@ -292,7 +308,7 @@ test('running tasks require acknowledgement before resume and reject old results
   const first = db.claim('owner', 'project', 'device', 10, 100)!;
   assert.equal(db.command('owner', task.id, 1, { action: 'pause' })?.status, 'pausing');
   assert.equal(db.command('owner', task.id, 2, { action: 'resume' }), undefined);
-  assert.equal(db.renew(first.run.id, 'device', 11, 100), false);
+  assert.equal(db.renew(first.run.id, 'device', 11, 100), undefined);
   assert.equal(db.acknowledgeStop(first.run.id, 'another-device', 11), false);
   assert.equal(db.acknowledgeStop(first.run.id, 'device', 11), true);
   assert.equal(db.get('owner', task.id)?.status, 'paused');
@@ -346,4 +362,98 @@ test('single-use link codes attach a second channel to the same task and workspa
   db.receiveChannelMessage('owner', 'feishu', 'project', follow('authorized-chat', 'linked', 'after-unlink'));
   assert.equal(db.get('owner', task.id)?.version, 2);
   assert.equal(db.taskChannels('owner', task.id).length, 1);
+});
+
+test('a run cannot extend its lease past the Router time limit', t => {
+  const db = new TaskStore(':memory:');
+  t.after(() => db.close());
+  const task = db.create('owner', 'desktop', 'deadline', 'project', 'Review notes');
+  const { run } = db.claim('owner', 'project', 'device', 0, 600_000)!;
+  assert.equal(db.renew(run.id, 'device', 599_999, 45_000), 600_000);
+  assert.equal(db.renew(run.id, 'device', 600_000, 45_000), undefined);
+  assert.equal(db.finish(run.id, 'device', 600_000, { status: 'succeeded', result: 'Late result' }), false);
+  assert.equal(db.expire(600_000), 1);
+  assert.equal(db.get('owner', task.id)?.status, 'waiting_user');
+  assert.equal(db.timeline('owner', task.id)?.events[0].type, 'run.deadline_exceeded');
+});
+
+test('only completed failures and reconciled runs can be retried as a new version', t => {
+  const db = new TaskStore(':memory:');
+  t.after(() => db.close());
+  const now = Date.now();
+  const task = db.create('owner', 'desktop', 'retry', 'project', 'Review notes');
+  const first = db.claim('owner', 'project', 'device', now, 100)!;
+  db.requestApproval(first.run.id, 'device', 'Review this action', now);
+  assert.equal(db.command('owner', task.id, 1, { action: 'retry' }), undefined);
+  db.expire(now + 100);
+  const retry = db.command('owner', task.id, 1, { action: 'retry' }, 'retry-command');
+  assert.equal(retry?.version, 2);
+  assert.equal(retry?.status, 'queued');
+  assert.equal(db.command('owner', task.id, 1, { action: 'retry' }, 'retry-command')?.version, 2);
+  assert.equal(db.command('owner', task.id, 1, { action: 'retry' }, 'stale-command'), undefined);
+  const attempt = db.claim('owner', 'project', 'device', now + 101, 100)!;
+  assert.notEqual(attempt.run.id, first.run.id);
+  assert.equal(db.finish(attempt.run.id, 'device', now + 102, { status: 'failed', result: 'Failed' }), true);
+  assert.equal(db.command('owner', task.id, 2, { action: 'retry' })?.version, 3);
+});
+
+test('a workflow waits for acceptance and refuses review after an upstream version changes', t => {
+  const db = new TaskStore(':memory:');
+  t.after(() => db.close());
+  db.createWorkflow('owner', 'result-review', 'project', [
+    { key: 'draft', goal: 'Draft', needs: [] },
+    { key: 'review', goal: 'Review', needs: ['draft'], requireReview: true },
+    { key: 'delivery', goal: 'Prepare delivery', needs: ['review'] },
+  ]);
+  const draft = db.claim('owner', 'project', 'device', 0, 100)!;
+  assert.equal(db.finish(draft.run.id, 'device', 1, { status: 'succeeded', result: 'Draft' }), true);
+  const review = db.claim('owner', 'project', 'device', 2, 100)!;
+  const outcome = { status: 'succeeded' as const, result: 'Reviewed', artifact: { name: 'review.md', text: 'Proof' } };
+  assert.equal(db.finish(review.run.id, 'device', 3, outcome), true);
+  assert.equal(db.get('owner', review.task.id)?.status, 'waiting_review');
+  assert.equal(db.claim('owner', 'project', 'device', 4, 100), undefined);
+  db.command('owner', draft.task.id, 1, { action: 'append', text: 'Update the source' });
+  assert.equal(db.command('owner', review.task.id, 1, { action: 'accept_result' }), undefined);
+  assert.equal(db.command('owner', review.task.id, 1, { action: 'reject_result' })?.status, 'failed');
+  assert.equal(db.command('owner', review.task.id, 2, { action: 'retry' })?.status, 'waiting_dependency');
+  const updatedDraft = db.claim('owner', 'project', 'device', 5, 100)!;
+  db.finish(updatedDraft.run.id, 'device', 6, { status: 'succeeded', result: 'Updated source' });
+  const nextReview = db.claim('owner', 'project', 'device', 7, 100)!;
+  db.finish(nextReview.run.id, 'device', 8, outcome);
+  const accepted = db.command('owner', review.task.id, 3, { action: 'accept_result' }, 'accepted');
+  assert.equal(accepted?.status, 'succeeded');
+  assert.equal(accepted?.version, 4);
+  assert.equal(db.command('owner', review.task.id, 3, { action: 'accept_result' }, 'accepted')?.version, 4);
+  const delivery = db.claim('owner', 'project', 'device', 9, 100)!;
+  assert.equal(delivery.task.goal, 'Prepare delivery');
+  assert.equal(delivery.predecessors[0].version, 4);
+  assert.equal(delivery.predecessors[0].artifact?.excerpt, 'Proof');
+});
+
+test('revisions invalidate completed transitive results without silently re-running them', t => {
+  const db = new TaskStore(':memory:');
+  t.after(() => db.close());
+  db.createWorkflow('owner', 'transitive-change', 'project', [
+    { key: 'draft', goal: 'Draft', needs: [] },
+    { key: 'review', goal: 'Review', needs: ['draft'] },
+    { key: 'publish', goal: 'Prepare publication', needs: ['review'] },
+  ]);
+  const draft = db.claim('owner', 'project', 'device', 0, 100)!;
+  db.finish(draft.run.id, 'device', 1, { status: 'succeeded', result: 'First draft' });
+  const review = db.claim('owner', 'project', 'device', 2, 100)!;
+  db.finish(review.run.id, 'device', 3, { status: 'succeeded', result: 'Accepted review' });
+  const publish = db.claim('owner', 'project', 'device', 4, 100)!;
+  db.command('owner', draft.task.id, 1, { action: 'append', text: 'Revise the facts' });
+  const stale = db.get('owner', review.task.id);
+  assert.equal(stale?.status, 'waiting_user');
+  assert.equal(stale?.version, 2);
+  assert.equal(db.timeline('owner', review.task.id)?.events[0].type, 'workflow.result_outdated');
+  assert.equal(db.renew(publish.run.id, 'device', 5, 100), undefined);
+  assert.equal(db.finish(publish.run.id, 'device', 6, { status: 'succeeded', result: 'Obsolete' }), false);
+  const revised = db.claim('owner', 'project', 'device', 7, 100)!;
+  db.finish(revised.run.id, 'device', 8, { status: 'succeeded', result: 'Revised draft' });
+  assert.equal(db.claim('owner', 'project', 'device', 9, 100), undefined);
+  assert.equal(db.command('owner', review.task.id, 2, { action: 'retry' })?.status, 'queued');
+  const next = db.claim('owner', 'project', 'device', 10, 100)!;
+  assert.equal(next.predecessors[0].result, 'Revised draft');
 });

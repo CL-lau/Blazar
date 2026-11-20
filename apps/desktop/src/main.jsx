@@ -76,6 +76,7 @@ function App() {
     .filter(link => link.taskId === selected && link.predecessorId)
     .map(link => snapshot.tasks.find(item => item.id === link.predecessorId)).filter(Boolean);
   const artifacts = snapshot?.artifacts.filter(item => item.taskId === selected) ?? [];
+  const criteria = snapshot?.criteria?.filter(item => item.taskId === selected) ?? [];
   const progress = snapshot?.progress?.find(item => item.taskId === selected);
   const api = (path, options) => callRouter(connected, path, options);
   const reload = () => refreshSnapshot(connected);
@@ -160,6 +161,10 @@ function App() {
                     </button>
                   </li>)}</ul>
                 </section>}
+                {criteria.length > 0 && <section aria-label="Acceptance criteria">
+                  <h3>Acceptance criteria</h3>
+                  <ul>{criteria.map(item => <li key={item.criterion}>{item.criterion}</li>)}</ul>
+                </section>}
                 {progress && <p role="status">{progress.message}</p>}
                 {task.result && <pre>{task.result}</pre>}
                 {snapshot.approvals.filter(item => item.taskId === task.id).map(item => (
@@ -182,13 +187,23 @@ function App() {
                   </div>
                 ))}
                 {preview?.taskId === task.id && <section><h3>{preview.name}</h3><pre>{preview.text}</pre></section>}
+                {task.status === 'waiting_review' && <section className="approval" aria-label="Result review">
+                  <h3>Review result</h3>
+                  <button disabled={busy} onClick={() => command('accept_result')}>Accept result</button>
+                  <button disabled={busy} onClick={() => command('reject_result')}>Reject result</button>
+                </section>}
                 <ChannelLinks key={task.id} taskId={task.id} token={connected} cursor={snapshot.cursor} />
                 <Timeline key={task.id} taskId={task.id} token={connected} cursor={snapshot.cursor} />
                 {['queued', 'running', 'waiting_user', 'waiting_dependency', 'waiting_device'].includes(task.status) &&
                   <button disabled={busy} onClick={() => command('pause')}>Pause task</button>}
                 {task.status === 'paused' &&
                   <button disabled={busy} onClick={() => command('resume')}>Resume task</button>}
-                {['paused', 'pausing'].includes(task.status) &&
+                {(task.status === 'failed' || (task.status === 'waiting_user'
+                  && !snapshot.approvals.some(approval => approval.taskId === task.id))) &&
+                  <button disabled={busy} onClick={() => {
+                    if (window.confirm('Retry this task as a new run? Review any effects of the previous run first.')) command('retry');
+                  }}>Retry task</button>}
+                {['paused', 'pausing', 'waiting_review'].includes(task.status) &&
                   <button disabled={busy} onClick={() => command('cancel')}>Cancel task</button>}
                 {!['cancelled', 'cancelling', 'paused', 'pausing'].includes(task.status) && (
                   <form onSubmit={event => { event.preventDefault(); command('append', { text: instruction }); }}>
@@ -235,6 +250,9 @@ function App() {
                   <p>Workspace: {plan.workspace}</p>
                   <ol>{plan.steps.map(step => <li key={step.key}>
                     <strong>{step.key}</strong> · {step.goal}
+                    {step.acceptanceCriteria?.length > 0 && <ul>{step.acceptanceCriteria.map(criterion =>
+                      <li key={criterion}>{criterion}</li>)}</ul>}
+                    {step.requireReview && <p>Requires your acceptance</p>}
                     {step.needs.length > 0 && <p>After {step.needs.join(', ')}</p>}
                   </li>)}</ol>
                   <button type="button" disabled={busy} onClick={() => submit(async () => {

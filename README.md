@@ -57,6 +57,8 @@ BLAZAR_PUBLIC_HOST=blazar.example.com caddy run --config deploy/Caddyfile --adap
 
 In the desktop pairing form, enter `https://blazar.example.com` and scan the QR code from the iOS app. For a remote execution device, set `BLAZAR_ROUTER_URL=https://blazar.example.com` and use its own device token. Caddy proxies the device WebSocket, the iOS API, and the Feishu and QQ callback routes. Create pairing codes, manage devices, and configure app connections on the Router host using the loopback address.
 
+A new execution run has a ten-minute maximum duration, including time spent awaiting approval. The Router caps each renewal at that deadline. If the deadline is reached before the result arrives, the task timeline records the timeout and the task waits for review.
+
 ## Interrupted device recovery
 
 If an execution device exits unexpectedly during a task, its workspace remains blocked on that OS account. Review the interrupted run in Blazar, confirm that the Worker and its children have stopped, and check the workspace and any external effects. The execution devices view shows the interrupted run ID when the device reconnects. Stop the device service, clear that run, and then restart the service.
@@ -106,6 +108,8 @@ For a JSONL extension, set `"protocol": "jsonl"` in the same manifest. Blazar wr
 ```
 
 For a failed run, send `{"version":1,"type":"failed","message":"Reason"}` as the terminal line. A successful Worker exits with status zero after writing its result. Configure local executable paths and environment names only for Workers you trust to run with your local account.
+
+Set `"includeFullInputArtifacts": true` in a JSONL manifest to fetch complete text for truncated predecessor artifacts where the run has access. Blazar verifies the content hash and limits full-text fetches to 64,000 bytes per run. Use `artifact.text` when available and `artifact.excerpt` for bounded context.
 
 ## Feishu / Lark document memory
 
