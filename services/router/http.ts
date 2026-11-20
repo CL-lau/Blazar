@@ -7,7 +7,7 @@ import { WebSocket, WebSocketServer } from 'ws';
 import { createQQHandler, qqChannel, type QQConfig } from '../../packages/channels/qq.ts';
 import { feishuChannel, parseFeishu, type FeishuConfig } from '../../packages/channels/feishu.ts';
 import { InvalidWorkflow, workflowSteps } from './workflow.ts';
-import type { MemoryAnswer, RouterHarness } from './harness.ts';
+import type { MemoryAnswer, RouteRequest, RouterHarness } from './harness.ts';
 import { timingSafeEqual } from 'node:crypto';
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http';
 import { setTimeout as delay } from 'node:timers/promises';
@@ -569,9 +569,13 @@ export function routerServer(store: TaskStore, config: { owner: string; token: s
         const key = requiredText(request.headers['idempotency-key'], 'Idempotency-Key', 128);
         const data = await jsonObject(request);
         if (!admin && store.mobileOwner(mobileToken) !== owner) throw new RequestError(401, 'Authentication required');
-        const input = {
+        if (data.usePersonalMemory !== undefined && typeof data.usePersonalMemory !== 'boolean') {
+          throw new RequestError(400, 'Invalid personal memory option');
+        }
+        const input: RouteRequest = {
           workspace: requiredText(data.workspace, 'workspace', 128),
           text: requiredText(data.text, 'text', 32_000),
+          ...(data.usePersonalMemory === true ? { usePersonalMemory: true } : {}),
         };
         let decision = store.routingDecision(owner, key, input);
         if (decision) metrics.route('replayed');
@@ -582,17 +586,27 @@ export function routerServer(store: TaskStore, config: { owner: string; token: s
           }
           else if (!config.harness) throw new RequestError(503, 'Blazar has no Router model configured');
           else {
+            const recall = () => input.usePersonalMemory
+              ? config.memory?.personalContext(owner, input.workspace, input.text) ?? [] : [];
+            const evidence = recall();
             const modelStarted = performance.now();
             metrics.route('model');
             try {
               decision = await config.harness({
                 ...input, recent: store.recentConversation(owner, input.workspace),
+                ...(evidence.length ? { personalMemory: evidence.map(item => item.body) } : {}),
               }, AbortSignal.timeout(15_000));
             } catch {
               metrics.route('modelErrors');
               throw new RequestError(503, 'Blazar could not make a routing decision. Please retry.');
             } finally {
               metrics.observe('model', performance.now() - modelStarted);
+            }
+            if (evidence.length) {
+              const current = recall();
+              if (evidence.some(item => !current.some(note => note.id === item.id && note.version === item.version))) {
+                throw new RequestError(409, 'Personal memory changed while routing. Please retry.');
+              }
             }
           }
           if (!admin && store.mobileOwner(mobileToken) !== owner) throw new RequestError(401, 'Authentication required');

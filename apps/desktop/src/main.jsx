@@ -16,6 +16,7 @@ function App() {
   const [selected, setSelected] = useState('');
   const [workspace, setWorkspace] = useState('default');
   const [goal, setGoal] = useState('');
+  const [usePersonalMemory, setUsePersonalMemory] = useState(false);
   const [answer, setAnswer] = useState('');
   const [plan, setPlan] = useState(null);
   const [instruction, setInstruction] = useState('');
@@ -201,7 +202,7 @@ function App() {
                 event.preventDefault();
                 const ask = event.nativeEvent.submitter?.value === 'ask';
                 submit(async () => {
-                  const result = await api(ask ? '/conversation' : '/events', { method: 'POST', key, body: { workspace, text: goal } });
+                  const result = await api(ask ? '/conversation' : '/events', { method: 'POST', key, body: { workspace, text: goal, ...(ask && { usePersonalMemory }) } });
                   if (ask && result.kind !== 'create_task') {
                     setAnswer(result.text);
                     setPlan(result.kind === 'propose_workflow'
@@ -221,6 +222,10 @@ function App() {
                 <label>Workspace<input value={workspace} onChange={event => { setWorkspace(event.target.value); setKey(crypto.randomUUID()); }} required /></label>
                 <label>Task<textarea value={goal} onChange={event => { setGoal(event.target.value); setKey(crypto.randomUUID()); }} required /></label>
                 <button className="primary" disabled={busy || !workspace.trim() || !goal.trim()}>Create task</button>
+                <label className="checkbox-label"><input type="checkbox" checked={usePersonalMemory} onChange={event => {
+                  setUsePersonalMemory(event.target.checked);
+                  setKey(crypto.randomUUID());
+                }} /> Use personal memory when asking Blazar</label>
                 <button type="submit" value="ask" disabled={busy || !workspace.trim() || !goal.trim()}>Ask Blazar</button>
                 {answer && <p role="status">{answer}</p>}
                 {plan && <section className="approval" aria-label="Proposed workflow">

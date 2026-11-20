@@ -281,7 +281,7 @@ export class TaskStore {
 
   recentConversation(owner: string, workspace: string): ConversationTurn[] {
     return this.db.prepare(`SELECT json_extract(request,'$[1]') AS text,decision FROM routing_decision
-      WHERE owner=? AND json_extract(request,'$[0]')=? ORDER BY rowid DESC LIMIT 6`)
+      WHERE owner=? AND json_extract(request,'$[0]')=? AND json_array_length(request)=2 ORDER BY rowid DESC LIMIT 6`)
       .all(owner, workspace).reverse().map(row => {
         const decision = JSON.parse(String(row.decision)) as Decision;
         if (decision.kind === 'propose_workflow') {
@@ -294,7 +294,8 @@ export class TaskStore {
   }
 
   routingDecision(owner: string, key: string, request: RouteRequest, decision?: Decision): Decision | undefined {
-    const fingerprint = JSON.stringify([request.workspace, request.text]);
+    const fingerprint = JSON.stringify(request.usePersonalMemory
+      ? [request.workspace, request.text, true] : [request.workspace, request.text]);
     if (decision) {
       this.db.prepare('INSERT OR IGNORE INTO routing_decision VALUES(?,?,?,?)')
         .run(owner, key, fingerprint, JSON.stringify(decision));

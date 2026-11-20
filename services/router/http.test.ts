@@ -20,6 +20,8 @@ test('Router authenticates, deduplicates commands and replays task changes over 
   const token = 'local-test-secret';
   let decisions = 0;
   let memoryAnswers = 0;
+  let routingMemory: string[] | undefined;
+  let routingMemoryId: string | undefined;
   let revokeDuringAnswer: string | undefined;
   const server = routerServer(store, {
     owner: 'test', token, memory, pushEnabled: true,
@@ -41,6 +43,11 @@ test('Router authenticates, deduplicates commands and replays task changes over 
     },
     async harness(input) {
       decisions++;
+      if (input.workspace === 'memory-review') {
+        routingMemory = input.personalMemory;
+        if (routingMemoryId) memory.remove('test', routingMemoryId);
+        return { kind: 'reply', text: 'Reviewed workspace preferences.' };
+      }
       if (input.text === 'Plan the review') return {
         kind: 'propose_workflow', text: 'Draft and review',
         steps: [{ key: 'draft', goal: 'Draft notes', needs: [] },
@@ -357,5 +364,19 @@ test('Router authenticates, deduplicates commands and replays task changes over 
   assert.ok(measurement.devices.active > 0);
   assert.equal(Object.values(measurement.tasks).reduce((sum, count) => Number(sum) + Number(count), 0),
     store.snapshot('test').tasks.length);
+
+  const personal = memory.remember('test', 'memory-review', 'Review format: three bullets.')!;
+  memory.remember('test', 'other-workspace', 'Review format: private elsewhere.');
+  memory.remember('test', 'memory-review', 'Review format: imported text.', {
+    connection: github, resource: 'docs/format.md', revision: '1',
+  });
+  const memoryQuestion = { workspace: 'memory-review', text: 'Review format?' };
+  assert.equal((await post('/v1/conversation', 'plain-review', memoryQuestion)).status, 200);
+  assert.equal(routingMemory, undefined);
+  assert.equal((await post('/v1/conversation', 'memory-review', { ...memoryQuestion, usePersonalMemory: true })).status, 200);
+  assert.deepEqual(routingMemory, ['Review format: three bullets.']);
+  assert.equal(store.recentConversation('test', 'memory-review').length, 1);
+  routingMemoryId = personal;
+  assert.equal((await post('/v1/conversation', 'memory-race', { ...memoryQuestion, usePersonalMemory: true })).status, 409);
 
 });

@@ -116,9 +116,9 @@ struct RouterClient: Equatable {
         let steps: [WorkflowStep]?
     }
 
-    func ask(workspace: String, text: String, key: UUID) async throws -> ConversationReply {
+    func ask(workspace: String, text: String, key: UUID, usePersonalMemory: Bool = false) async throws -> ConversationReply {
         try JSONDecoder().decode(ConversationReply.self, from: await request(
-            "v1/conversation", body: ["workspace": workspace, "text": text], key: key
+            "v1/conversation", body: ["workspace": workspace, "text": text, "usePersonalMemory": usePersonalMemory], key: key
         ))
     }
 

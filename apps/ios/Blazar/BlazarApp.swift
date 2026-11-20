@@ -41,6 +41,7 @@ private struct TaskScreen: View {
     @State private var requestKey = UUID()
     @State private var sending = false
     @State private var answer: String?
+    @State private var usePersonalMemory = false
     @State private var plan: ProposedWorkflow?
     @State private var pairingCode = ""
     @State private var pairing = false
@@ -126,13 +127,16 @@ private struct TaskScreen: View {
                         }
                         .disabled(sending || workspace.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
                                   || goal.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                        Toggle("Use personal memory when asking", isOn: $usePersonalMemory)
+                            .onChange(of: usePersonalMemory) { _, _ in requestKey = UUID() }
                         Button("Ask Blazar") {
                             Task {
                                 sending = true
                                 defer { sending = false }
                                 do {
                                     let submittedWorkspace = workspace
-                                    let reply = try await client.ask(workspace: submittedWorkspace, text: goal, key: requestKey)
+                                    let reply = try await client.ask(workspace: submittedWorkspace, text: goal, key: requestKey,
+                                                                     usePersonalMemory: usePersonalMemory)
                                     answer = reply.text
                                     if reply.kind == "propose_workflow", let steps = reply.steps, !steps.isEmpty {
                                         plan = ProposedWorkflow(workspace: submittedWorkspace, steps: steps)
