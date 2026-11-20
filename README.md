@@ -137,6 +137,8 @@ An execution device can run in `observe` mode using a locally installed [agent-d
 
 Set the application name to its localized macOS display name, such as `计算器` on a Chinese system. Use `/observe calculator --windows` to list visible windows for the configured app. Then use `/observe calculator --window w-123` with a current accessible window ID to inspect that window.
 
-To enable clicks for named buttons, set `BLAZAR_COMPUTER_BUTTONS` to an alias-to-label map such as `{"calculator":["Clear"]}`. Submit `/click calculator Clear` from desktop or iOS, then review and approve the one-time action in Blazar.
+To enable clicks for named buttons, set `BLAZAR_COMPUTER_BUTTONS` to an alias-to-label map such as `{"calculator":["Clear"]}`. Submit `/click calculator Clear` from desktop or iOS, then review and approve the one-time action in Blazar. Include a window ID before the button label to scope the approval, for example `/click calculator --window w-123 Clear`.
 
 To cancel a task from a linked IM thread, send `/blazar /cancel` as a reply. On channels that use explicit task references, use the channel’s follow-up syntax with `/cancel` as the follow-up text. The original workspace and conversation must match the task link.
+
+To continue an existing task in another supported IM conversation, open the task on desktop and create a one-time link command. Send the command as a new message in an authorized conversation for the same workspace. Reply in the linked Feishu or Lark thread, or use `/blazar follow TASK_ID your instruction` on channels that require an explicit task reference.

@@ -449,6 +449,26 @@ export function routerServer(store: TaskStore, config: { owner: string; token: s
         reply(response, 200, { enabled: deviceToken !== null });
         return;
       }
+      const taskLinks = /^\/v1\/admin\/tasks\/([a-f0-9-]{36})\/links(?:\/([a-f0-9]{64}))?$/.exec(url.pathname);
+      if (taskLinks && request.method === 'GET' && !taskLinks[2]) {
+        if (!store.get(owner, taskLinks[1])) throw new RequestError(404, 'Task not found');
+        reply(response, 200, { links: store.taskChannels(owner, taskLinks[1]) });
+        return;
+      }
+      if (taskLinks?.[2] && request.method === 'DELETE') {
+        if (!store.unlinkTaskChannel(owner, taskLinks[1], taskLinks[2])) throw new RequestError(404, 'Task conversation link not found');
+        reply(response, 200, { removed: true });
+        return;
+      }
+      if (url.pathname === '/v1/admin/task-links' && request.method === 'POST') {
+        const data = await jsonObject(request);
+        const id = requiredText(data.taskId, 'task ID', 36);
+        if (!/^[a-f0-9-]{36}$/.test(id)) throw new RequestError(400, 'Invalid task ID');
+        const link = store.createTaskLink(owner, id, Date.now());
+        if (!link) throw new RequestError(404, 'Task not found');
+        reply(response, 201, link);
+        return;
+      }
       if (url.pathname === '/v1/admin/metrics' && request.method === 'GET') {
         reply(response, 200, { ...metrics.snapshot(), ...store.metrics(owner, Date.now()) });
         return;

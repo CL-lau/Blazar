@@ -3,6 +3,7 @@ import { createRoot } from 'react-dom/client';
 import { PairingCode } from './PairingCode.jsx';
 import { Timeline } from './Timeline.jsx';
 import { Knowledge } from './Knowledge.jsx';
+import { ChannelLinks } from './ChannelLinks.jsx';
 import { Devices } from './Devices.jsx';
 import { callRouter } from './router.js';
 import './style.css';
@@ -181,6 +182,7 @@ function App() {
                   </div>
                 ))}
                 {preview?.taskId === task.id && <section><h3>{preview.name}</h3><pre>{preview.text}</pre></section>}
+                <ChannelLinks key={task.id} taskId={task.id} token={connected} cursor={snapshot.cursor} />
                 <Timeline key={task.id} taskId={task.id} token={connected} cursor={snapshot.cursor} />
                 {['queued', 'running', 'waiting_user', 'waiting_dependency', 'waiting_device'].includes(task.status) &&
                   <button disabled={busy} onClick={() => command('pause')}>Pause task</button>}

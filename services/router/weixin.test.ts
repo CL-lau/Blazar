@@ -31,3 +31,33 @@ test('Weixin preserves large message IDs and uses the authorized conversation co
   assert.equal(payload.msg.to_user_id, 'person');
   assert.equal(payload.msg.context_token, 'ctx');
 });
+
+test('WeChat keeps its reply context across Router restart without retrying unknown deliveries', async t => {
+  const { mkdtempSync, rmSync } = await import('node:fs');
+  const { join } = await import('node:path');
+  const { tmpdir } = await import('node:os');
+  const { TaskStore } = await import('./store.ts');
+  const dir = mkdtempSync(join(tmpdir(), 'blazar-weixin-restart-'));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  const path = join(dir, 'router.sqlite');
+  const channel = JSON.stringify(['weixin', 'bot']);
+  const message = { id: 'msg', thread: 'msg', chat: 'user', root: true, text: 'Review notes' };
+  const before = new TaskStore(path);
+  before.receiveChannelMessage('owner', channel, 'work', message, 'authorized-context');
+  before.receiveChannelMessage('owner', channel, 'work', message, 'duplicate-must-not-replace-context');
+  const run = before.claim('owner', 'work', 'device', Date.now(), 45_000)!;
+  assert.equal(before.finish(run.run.id, 'device', Date.now(), { status: 'succeeded', result: 'Private result' }), true);
+  before.close();
+
+  const after = new TaskStore(path);
+  try {
+    assert.equal(after.leaseWeixinNotice('other', channel, Date.now(), ['user']), undefined);
+    assert.equal(after.leaseWeixinNotice('owner', channel, Date.now(), ['different-user']), undefined);
+    const notice = after.leaseWeixinNotice('owner', channel, Date.now(), ['user'])!;
+    assert.equal(notice.context, 'authorized-context');
+    assert.doesNotMatch(notice.text, /Private result/);
+    assert.equal(after.leaseWeixinNotice('owner', channel, Date.now() + 60_000, ['user']), undefined);
+  } finally {
+    after.close();
+  }
+});

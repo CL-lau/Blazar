@@ -64,7 +64,11 @@ fn allowed(method: &Method, path: &str) -> bool {
             identifier(id)
         }
         ("GET", ["", "admin", "mobile-clients" | "devices" | "workers"]) => true,
-        ("POST", ["", "admin", "devices"]) => true,
+        ("POST", ["", "admin", "devices" | "task-links"]) => true,
+        ("GET", ["", "admin", "tasks", id, "links"]) => identifier(id),
+        ("DELETE", ["", "admin", "tasks", id, "links", link]) => {
+            identifier(id) && link.len() == 64 && link.bytes().all(|byte| byte.is_ascii_hexdigit())
+        }
         ("PATCH", ["", "admin", "devices", id]) => identifier(id),
         ("POST", ["", "memory", "answer"]) => true,
         ("GET", ["", "artifacts", id] | ["", "artifacts", id, "diff"]) => identifier(id),

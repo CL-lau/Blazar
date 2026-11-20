@@ -26,6 +26,10 @@ export class TaskStore {
       CREATE TABLE IF NOT EXISTS channel_cursor (
         channel TEXT PRIMARY KEY, value TEXT NOT NULL
       );
+      CREATE TABLE IF NOT EXISTS task_link_code (
+        code_hash TEXT PRIMARY KEY, task_id TEXT NOT NULL REFERENCES task(id) ON DELETE CASCADE,
+        expires INTEGER NOT NULL
+      );
       CREATE TABLE IF NOT EXISTS channel_thread (
         owner TEXT NOT NULL, channel TEXT NOT NULL, chat TEXT NOT NULL, thread TEXT NOT NULL,
         task_id TEXT NOT NULL REFERENCES task(id), PRIMARY KEY(owner,channel,chat,thread)
@@ -34,7 +38,13 @@ export class TaskStore {
         id TEXT PRIMARY KEY, channel TEXT NOT NULL, chat TEXT NOT NULL, message_id TEXT NOT NULL,
         text TEXT NOT NULL, created INTEGER NOT NULL, retry INTEGER NOT NULL, delivered INTEGER NOT NULL DEFAULT 0
       );
+      CREATE INDEX IF NOT EXISTS channel_notice_thread ON channel_outbox(channel,chat,message_id,created);
       CREATE INDEX IF NOT EXISTS channel_outbox_pending ON channel_outbox(channel,delivered,retry);
+      CREATE TABLE IF NOT EXISTS weixin_reply_context (
+        owner TEXT NOT NULL, channel TEXT NOT NULL, chat TEXT NOT NULL,
+        token TEXT NOT NULL, expires INTEGER NOT NULL, PRIMARY KEY(owner,channel,chat)
+      );
+      CREATE INDEX IF NOT EXISTS weixin_reply_context_expiry ON weixin_reply_context(expires);
       CREATE TABLE IF NOT EXISTS channel_reply_window (
         channel TEXT NOT NULL, chat TEXT NOT NULL, message_id TEXT NOT NULL, expires INTEGER NOT NULL,
         PRIMARY KEY(channel,chat,message_id)
@@ -331,6 +341,22 @@ export class TaskStore {
     });
   }
 
+  leaseWeixinNotice(owner: string, channel: string, now: number, senders: readonly string[]) {
+    return this.transaction(() => {
+      this.db.prepare('DELETE FROM weixin_reply_context WHERE expires<=?').run(now);
+      const row = this.db.prepare(`SELECT o.id,o.chat,o.text,c.token AS context FROM channel_outbox o
+        JOIN weixin_reply_context c ON c.channel=o.channel AND c.chat=o.chat
+        WHERE c.owner=? AND o.channel=? AND o.delivered=0 AND o.retry<=? AND o.created>?
+        AND o.chat IN (SELECT value FROM json_each(?))
+        AND EXISTS (SELECT 1 FROM channel_thread t WHERE t.owner=c.owner AND t.channel=o.channel
+          AND t.chat=o.chat AND t.thread=o.message_id)
+        ORDER BY o.created,o.rowid LIMIT 1`).get(owner, channel, now, now - 10 * 60_000, JSON.stringify(senders)) as
+        { id: string; chat: string; text: string; context: string } | undefined;
+      if (row) this.db.prepare('UPDATE channel_outbox SET delivered=-2 WHERE id=?').run(row.id);
+      return row;
+    });
+  }
+
   leasePassiveNotice(channel: string, now: number, chats: readonly string[]) {
     return this.transaction(() => {
       const candidate = this.db.prepare(`SELECT o.id,o.chat,o.message_id AS messageId,o.text,w.expires,
@@ -352,25 +378,93 @@ export class TaskStore {
     this.db.prepare('UPDATE channel_outbox SET delivered=? WHERE id=?').run(delivered ? 1 : -1, id);
   }
 
+  createTaskLink(owner: string, taskId: string, now: number) {
+    return this.transaction(() => {
+      if (!this.get(owner, taskId)) return undefined;
+      this.db.prepare('DELETE FROM task_link_code WHERE expires<=? OR task_id=?').run(now, taskId);
+      const code = randomBytes(24).toString('base64url');
+      const hash = createHash('sha256').update(code).digest('hex');
+      const expires = now + 5 * 60_000;
+      this.db.prepare('INSERT INTO task_link_code VALUES(?,?,?)').run(hash, taskId, expires);
+      return { code, expires };
+    });
+  }
+
+  taskChannels(owner: string, taskId: string, now = Date.now()) {
+    return this.db.prepare(`SELECT c.channel,c.chat,c.thread,o.created,CASE
+      WHEN o.id IS NULL THEN NULL
+      WHEN o.delivered=1 THEN 'sent'
+      WHEN o.delivered=-1 THEN 'failed'
+      WHEN o.delivered=-2 THEN 'unknown'
+      WHEN COALESCE(w.expires,o.created+600000)<=? THEN 'expired'
+      ELSE 'pending' END AS delivery
+      FROM channel_thread c JOIN task t ON c.task_id=t.id
+      LEFT JOIN channel_outbox o ON o.rowid=(
+        SELECT rowid FROM channel_outbox WHERE channel=c.channel AND chat=c.chat AND message_id=c.thread
+        ORDER BY created DESC,rowid DESC LIMIT 1
+      )
+      LEFT JOIN channel_reply_window w ON w.channel=c.channel AND w.chat=c.chat AND w.message_id=c.thread
+      WHERE t.owner=? AND c.task_id=? ORDER BY c.rowid`)
+      .all(now, owner, taskId).map(row => {
+        const channel = String(row.channel);
+        const chat = String(row.chat);
+        const thread = String(row.thread);
+        const id = createHash('sha256').update(JSON.stringify([channel, chat, thread])).digest('hex');
+        return { id, channel, chat, thread, delivery: row.delivery };
+      });
+  }
+
+  unlinkTaskChannel(owner: string, taskId: string, linkId: string) {
+    return this.transaction(() => {
+      const link = this.taskChannels(owner, taskId).find(item => item.id === linkId);
+      if (!link) return false;
+      this.db.prepare('DELETE FROM channel_thread WHERE owner=? AND task_id=? AND channel=? AND chat=? AND thread=?')
+        .run(owner, taskId, link.channel, link.chat, link.thread);
+      this.db.prepare('DELETE FROM channel_outbox WHERE channel=? AND chat=? AND message_id=? AND delivered=0')
+        .run(link.channel, link.chat, link.thread);
+      this.event(taskId, 'task.channel_unlinked', { channel: link.channel });
+      return true;
+    });
+  }
+
   receiveChannelMessage(owner: string, channel: string, workspace: string,
-                        message: { id: string; chat: string; thread: string; root: boolean; text: string; taskId?: string; replyExpires?: number }) {
+                        message: { id: string; chat: string; thread: string; root: boolean; text: string; taskId?: string; replyExpires?: number }, weixinContext?: string) {
     if (message.text.startsWith('/observe ') || message.text.startsWith('/click ')) return;
     return this.transaction(() => {
       const existing = this.db.prepare('INSERT OR IGNORE INTO channel_message VALUES(?,?,?)')
         .run(owner, channel, message.id);
       if (!existing.changes) return;
+      if (weixinContext) {
+        this.db.prepare(`INSERT INTO weixin_reply_context VALUES(?,?,?,?,?) ON CONFLICT(owner,channel,chat)
+          DO UPDATE SET token=excluded.token,expires=excluded.expires`)
+          .run(owner, channel, message.chat, weixinContext, Date.now() + 10 * 60_000);
+      }
       const key = [owner, channel, message.chat, message.thread] as const;
-      if (message.root) {
-        if (message.text === '/cancel') return;
-        const id = randomUUID();
-        this.db.prepare('INSERT INTO task(id,owner,workspace,goal) VALUES(?,?,?,?)')
-          .run(id, owner, workspace, message.text);
-        this.db.prepare('INSERT INTO channel_thread VALUES(?,?,?,?,?)').run(...key, id);
+      if (message.text === '/cancel' && message.root) return;
+      const linking = message.text === '/link' || message.text.startsWith('/link ');
+      if (linking || message.root) {
+        let taskId: string;
+        if (linking) {
+          const code = /^\/link ([A-Za-z0-9_-]{32})$/.exec(message.text)?.[1];
+          if (!code || !message.root) return;
+          const hash = createHash('sha256').update(code).digest('hex');
+          const link = this.db.prepare(`DELETE FROM task_link_code WHERE code_hash=? AND expires>?
+            AND EXISTS(SELECT 1 FROM task t WHERE t.id=task_link_code.task_id AND t.owner=? AND t.workspace=?)
+            RETURNING task_id`).get(hash, Date.now(), owner, workspace);
+          if (!link) return;
+          taskId = String(link.task_id);
+        } else {
+          taskId = randomUUID();
+          this.db.prepare('INSERT INTO task(id,owner,workspace,goal) VALUES(?,?,?,?)')
+            .run(taskId, owner, workspace, message.text);
+        }
+        this.db.prepare('INSERT INTO channel_thread VALUES(?,?,?,?,?)').run(...key, taskId);
         if (message.replyExpires !== undefined) {
           this.db.prepare('INSERT INTO channel_reply_window VALUES(?,?,?,?)')
             .run(channel, message.chat, message.id, message.replyExpires);
         }
-        this.event(id, 'task.created', { goal: message.text, workspace, channel });
+        if (linking) this.event(taskId, 'task.channel_linked', { channel });
+        else this.event(taskId, 'task.created', { goal: message.text, workspace, channel });
         return;
       }
       const link = message.taskId

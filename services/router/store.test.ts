@@ -306,3 +306,44 @@ test('running tasks require acknowledgement before resume and reject old results
   assert.equal(db.expire(113), 1);
   assert.equal(db.get('owner', task.id)?.status, 'waiting_user');
 });
+
+test('single-use link codes attach a second channel to the same task and workspace', t => {
+  const db = new TaskStore(':memory:');
+  t.after(() => db.close());
+  db.receiveChannelMessage('owner', 'weixin', 'project', {
+    id: 'root', chat: 'original', thread: 'root', root: true, text: 'Review the draft',
+  });
+  const task = db.snapshot('owner').tasks[0];
+  assert.equal(db.createTaskLink('other', task.id, Date.now()), undefined);
+  const code = db.createTaskLink('owner', task.id, Date.now())!.code;
+  const message = (id: string, chat: string) => ({ id, chat, thread: id, root: true, text: '/link ' + code });
+  db.receiveChannelMessage('owner', 'feishu', 'wrong', message('wrong', 'wrong-chat'));
+  db.receiveChannelMessage('owner', 'feishu', 'project', message('linked', 'authorized-chat'));
+  db.receiveChannelMessage('owner', 'feishu', 'project', message('replay', 'third-chat'));
+  const follow = (chat: string, thread: string, id: string) => ({
+    id, chat, thread, root: false, text: 'Add the conclusion',
+  });
+  db.receiveChannelMessage('owner', 'feishu', 'project', follow('third-chat', 'replay', 'bad-follow'));
+  db.receiveChannelMessage('owner', 'feishu', 'project', follow('authorized-chat', 'linked', 'follow'));
+  assert.equal(db.snapshot('owner').tasks.length, 1);
+  assert.equal(db.get('owner', task.id)?.version, 2);
+  const events = db.timeline('owner', task.id)!.events;
+  assert.deepEqual(events.map(entry => entry.type), ['task.instruction_added', 'task.channel_linked', 'task.created']);
+  assert(!JSON.stringify(events).includes(code));
+  const assignment = db.claim('owner', 'project', 'device', Date.now(), 45_000)!;
+  assert.equal(db.finish(assignment.run.id, 'device', Date.now(), { status: 'succeeded', result: 'Reviewed' }), true);
+  const link = db.taskChannels('owner', task.id).find(item => item.channel === 'feishu')!;
+  assert.equal(link.delivery, 'pending');
+  assert.deepEqual(db.taskChannels('other', task.id), []);
+  assert.equal(db.unlinkTaskChannel('other', task.id, link.id), false);
+  assert.equal(db.unlinkTaskChannel('owner', task.id, link.id), true);
+  assert.equal(db.leaseChannelNotice('feishu', Date.now()), undefined);
+  const notice = db.leaseChannelNotice('weixin', Date.now(), undefined, true)!;
+  assert.equal(notice.messageId, 'root');
+  assert.equal(db.taskChannels('owner', task.id)[0].delivery, 'unknown');
+  db.finishChannelNotice(notice.id, true);
+  assert.equal(db.taskChannels('owner', task.id)[0].delivery, 'sent');
+  db.receiveChannelMessage('owner', 'feishu', 'project', follow('authorized-chat', 'linked', 'after-unlink'));
+  assert.equal(db.get('owner', task.id)?.version, 2);
+  assert.equal(db.taskChannels('owner', task.id).length, 1);
+});
