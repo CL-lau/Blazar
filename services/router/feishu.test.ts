@@ -1,7 +1,9 @@
 import { createFeishuSender, feishuChannel } from '../../packages/channels/feishu.ts';
 import assert from 'node:assert/strict';
 import { once } from 'node:events';
+import { randomUUID } from 'node:crypto';
 import test from 'node:test';
+import { DeviceSocket } from '../device/socket.ts';
 import { routerServer } from './http.ts';
 import { TaskStore } from './store.ts';
 
@@ -15,6 +17,7 @@ test('Feishu callbacks verify the source and link authorized thread replies', as
   server.listen(0, '127.0.0.1');
   await once(server, 'listening');
   t.after(async () => {
+    server.closeDeviceSockets();
     await new Promise<void>(resolve => {
       server.close(() => resolve());
       server.closeAllConnections();
@@ -48,11 +51,23 @@ test('Feishu callbacks verify the source and link authorized thread replies', as
   assert.equal(tasks.length, 1);
   assert.equal(tasks[0].goal, '/preview notes.md');
   assert.equal((await post(makeEvent('other-chat', '/blazar Ignore this', { root: 'root', chat: 'unlisted' }))).status, 200);
+  const device = store.registerDevice('owner', 'Feishu fixture', 'workspace');
+  const socket = new DeviceSocket(new URL('http://127.0.0.1:' + address.port), device.token);
+  t.after(() => socket.close());
+  const signal = AbortSignal.timeout(4_000);
+  const claimed = await socket.request('claim', { capability: 'document.preview', requestId: randomUUID() }, signal);
+  const { assignment } = await claimed.json();
+  const stop = Promise.withResolvers<void>();
+  const unwatch = socket.onStop(assignment.run.id, stop.resolve);
   const follow = makeEvent('follow', '/blazar Include recommendations', { root: 'root' });
   assert.equal((await post(follow)).status, 200);
+  await Promise.race([stop.promise, once(signal, 'abort').then(() => signal.throwIfAborted())]);
+  unwatch();
+  const stopped = await socket.request('runs/' + assignment.run.id + '/stopped', {}, signal);
+  assert.equal(stopped.status, 200);
   assert.equal((await post(follow)).status, 200);
   assert.equal(store.get('owner', tasks[0].id)?.version, 2);
-  assert.equal(store.timeline('owner', tasks[0].id)?.events[0].data.text, 'Include recommendations');
+  assert.equal(store.timeline('owner', tasks[0].id)?.events.find(event => event.type === 'task.instruction_added')?.data.text, 'Include recommendations');
   const run = store.claim('owner', 'workspace', 'device', Date.now(), 45_000)!;
   const outcome = { status: 'succeeded' as const, result: 'Private workspace output' };
   assert.equal(store.finish(run.run.id, 'device', Date.now(), outcome), true);

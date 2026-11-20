@@ -2,7 +2,7 @@ import { setTimeout as delay } from 'node:timers/promises';
 import { parseWeixin, weixinTransport, type WeixinConfig } from '../../packages/channels/weixin.ts';
 import type { TaskStore } from './store.ts';
 
-export function startWeixin(store: TaskStore, owner: string, config: WeixinConfig) {
+export function startWeixin(store: TaskStore, owner: string, config: WeixinConfig, onMessage?: () => void) {
   const stop = new AbortController();
   const channel = JSON.stringify(['weixin', config.botId]);
   const transport = weixinTransport(config);
@@ -16,6 +16,7 @@ export function startWeixin(store: TaskStore, owner: string, config: WeixinConfi
           const event = parseWeixin(raw, config);
           if (!event) continue;
           store.receiveChannelMessage(owner, channel, config.workspace, event.message, event.context);
+          onMessage?.();
         }
         if (batch.cursor !== current) store.saveChannelCursor(channel, batch.cursor);
         if (batch.messages.length) continue;

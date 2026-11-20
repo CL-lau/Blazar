@@ -4,7 +4,7 @@ import type { TaskStore } from './store.ts';
 
 type ConnectionConfig = DingTalkConfig & { clientId: string; clientSecret: string; workspace: string };
 
-export function startDingTalk(store: TaskStore, owner: string, config: ConnectionConfig) {
+export function startDingTalk(store: TaskStore, owner: string, config: ConnectionConfig, onMessage?: () => void) {
   const channel = JSON.stringify(['dingtalk', config.clientId, config.robotCode]);
   const connectionOptions = { clientId: config.clientId, clientSecret: config.clientSecret, autoReconnect: true };
   const client = new DWClient(connectionOptions);
@@ -34,6 +34,7 @@ export function startDingTalk(store: TaskStore, owner: string, config: Connectio
       const event = parseDingTalk(frame.data, config);
       if (event) {
         store.receiveChannelMessage(owner, channel, config.workspace, event);
+        onMessage?.();
         const window = dingTalkReplyWindow(frame.data, Date.now());
         if (window) windows.set(event.chat, window);
       }

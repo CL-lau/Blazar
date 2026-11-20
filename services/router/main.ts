@@ -92,13 +92,13 @@ const qqDispatcher = setInterval(() => {
 qqDispatcher.unref();
 
 const dingTalk = dingTalkConfig(process.env);
-const stopDingTalk = dingTalk ? startDingTalk(store, 'local', dingTalk) : undefined;
+const stopDingTalk = dingTalk ? startDingTalk(store, 'local', dingTalk, server.flushStopNotifications) : undefined;
 
 const wecom = weComConfig(process.env);
-const stopWeCom = wecom ? startWeCom(store, 'local', wecom) : undefined;
+const stopWeCom = wecom ? startWeCom(store, 'local', wecom, server.flushStopNotifications) : undefined;
 
 const weixin = weixinConfig(process.env);
-const stopWeixin = weixin ? startWeixin(store, 'local', weixin) : undefined;
+const stopWeixin = weixin ? startWeixin(store, 'local', weixin, server.flushStopNotifications) : undefined;
 
 let shuttingDown = false;
 function shutdown() {

@@ -406,6 +406,7 @@ export function routerServer(store: TaskStore, config: { owner: string; token: s
           if (event.kind === 'message') {
             store.receiveChannelMessage(config.owner, qqChannel(config.qq),
               config.qq.workspace, event.message);
+            flushStopNotifications();
             metrics.observe('qq', performance.now() - started);
           }
           reply(response, 200, { op: 12 });
@@ -422,6 +423,7 @@ export function routerServer(store: TaskStore, config: { owner: string; token: s
         if (event.kind === 'message') {
           const channel = feishuChannel(config.feishu);
           store.receiveChannelMessage(config.owner, channel, config.feishu.workspace, event);
+          flushStopNotifications();
           metrics.observe('feishu', performance.now() - started);
         }
         reply(response, 200, {});

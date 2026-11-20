@@ -2,7 +2,7 @@ import { WSClient } from '@wecom/aibot-node-sdk';
 import { parseWeCom, type WeComConfig } from '../../packages/channels/wecom.ts';
 import type { TaskStore } from './store.ts';
 
-export function startWeCom(store: TaskStore, owner: string, config: WeComConfig) {
+export function startWeCom(store: TaskStore, owner: string, config: WeComConfig, onMessage?: () => void) {
   const channel = JSON.stringify(['wecom', config.botId]);
   const client = new WSClient({
     botId: config.botId, secret: config.secret,
@@ -22,7 +22,10 @@ export function startWeCom(store: TaskStore, owner: string, config: WeComConfig)
     if (!active || !authenticated) return;
     try {
       const message = parseWeCom(frame.body, config);
-      if (message) store.receiveChannelMessage(owner, channel, config.workspace, message);
+      if (message) {
+        store.receiveChannelMessage(owner, channel, config.workspace, message);
+        onMessage?.();
+      }
     } catch {
       console.error('WeCom message was not committed');
     }
