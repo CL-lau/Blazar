@@ -2,7 +2,10 @@ import { createInterface } from 'node:readline';
 import { spawnWorker, type WorkerCommand } from './process.ts';
 import { jobPrompt, type JobContext } from './prompt.ts';
 
-export async function runCodex(worker: WorkerCommand, root: string, job: JobContext, signal: AbortSignal) {
+export type CodexSteer = (text: string, messageId: string) => Promise<boolean>;
+
+export async function runCodex(worker: WorkerCommand, root: string, job: JobContext, signal: AbortSignal,
+                               onSteerReady?: (steer: CodexSteer) => (() => void)) {
   const active = AbortSignal.any([signal, AbortSignal.timeout(10 * 60_000)]);
   active.throwIfAborted();
   const { child, closed, stop } = spawnWorker(worker, root);
@@ -11,6 +14,7 @@ export async function runCodex(worker: WorkerCommand, root: string, job: JobCont
   let nextId = 0;
   let threadId: string | undefined;
   let turnId: string | undefined;
+  let clearSteer: (() => void) | undefined;
   const turns = new Map<string, { text: string; status?: string }>();
   const pending = new Map<number, (value: any) => void>();
   const turnDone = Promise.withResolvers<void>();
@@ -87,7 +91,20 @@ export async function runCodex(worker: WorkerCommand, root: string, job: JobCont
       input: [{ type: 'text', text: jobPrompt(job), text_elements: [] }],
     });
     if (typeof turn.turn?.id !== 'string') throw new Error('Codex returned no turn ID');
-    turnId = turn.turn.id as string;
+    const currentTurn: string = turn.turn.id;
+    turnId = currentTurn;
+    clearSteer = onSteerReady?.(async (text, messageId) => {
+      if (active.aborted || turns.get(currentTurn)?.status !== undefined || !text.trim()) return false;
+      try {
+        const result = await request('turn/steer', {
+          threadId, expectedTurnId: currentTurn, clientUserMessageId: messageId,
+          input: [{ type: 'text', text, text_elements: [] }],
+        });
+        return !active.aborted && result.turnId === currentTurn;
+      } catch {
+        return false;
+      }
+    });
     if (turns.get(turnId)?.status === undefined) await Promise.race([turnDone.promise, interrupted]);
     active.throwIfAborted();
     const output = turns.get(turnId);
@@ -96,6 +113,7 @@ export async function runCodex(worker: WorkerCommand, root: string, job: JobCont
     }
     return output.text.toWellFormed();
   } finally {
+    clearSteer?.();
     active.removeEventListener('abort', interrupt);
     lines.close();
     await stop();
