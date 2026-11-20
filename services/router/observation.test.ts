@@ -104,3 +104,29 @@ if (op === 'snapshot') {
   assert.match(result, /Done/);
   assert.equal(readFileSync(join(directory, 'clicked'), 'utf8'), 'yes');
 });
+
+test('selected window must belong to the configured application and be accessible', async t => {
+  const { observeApp } = await import('../../packages/computer-use/observe.ts');
+  const root = mkdtempSync(join(tmpdir(), 'blazar-window-scope-'));
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  const driver = join(root, 'driver.cjs');
+  writeFileSync(driver, `#!${process.execPath}
+const args = process.argv.slice(2);
+const send = data => console.log(JSON.stringify({ok:true,command:args[0],data}));
+if (args.join(' ') === 'list-windows --app Calculator') send([
+  {id:'w-10',app_name:'Calculator',title:'Arithmetic',visible:true,accessible:true},
+  {id:'w-11',app_name:'Other Application',title:'Other app data',visible:true,accessible:true},
+  {id:'w-12',app_name:'Calculator',title:'Second window',visible:true,accessible:false}
+]);
+else if (args.join(' ') === 'snapshot --app Calculator -i --window-id w-10') send({tree:{role:'window',name:'Arithmetic'}});
+else process.exit(2);
+`, { mode: 0o700 });
+  const config = observationConfig({ BLAZAR_COMPUTER_DRIVER: driver, BLAZAR_COMPUTER_APPS: '{"calculator":"Calculator"}' });
+  const signal = AbortSignal.timeout(3000);
+  const list = await observeApp(config, root, '/observe calculator --windows', signal);
+  assert.match(list, /w-10 · Arithmetic/);
+  assert.doesNotMatch(list, /Other app/);
+  assert.equal(await observeApp(config, root, '/observe calculator --window w-10', signal), 'window: Arithmetic');
+  await assert.rejects(observeApp(config, root, '/observe calculator --window w-11', signal), /inaccessible/);
+  await assert.rejects(observeApp(config, root, '/observe calculator --window w-12', signal), /inaccessible/);
+});

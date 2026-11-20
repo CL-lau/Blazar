@@ -133,7 +133,9 @@ In Apps and memory, use **Disable memory** to keep an item out of normal search 
 
 ## Computer observation
 
-An execution device can run in `observe` mode using a locally installed [agent-desktop](https://github.com/vercel-labs/agent-desktop). Set `BLAZAR_COMPUTER_DRIVER` to its absolute executable path and `BLAZAR_COMPUTER_APPS` to an alias map such as `{"calculator":"Calculator"}`. From the desktop or iOS client, submit `/observe calculator` in the registered workspace. The result is an access-controlled text artifact derived from the application's accessibility tree.
+An execution device can run in `observe` mode using a locally installed [agent-desktop](https://github.com/vercel-labs/agent-desktop). Set `BLAZAR_COMPUTER_DRIVER` to its absolute executable path and `BLAZAR_COMPUTER_APPS` to an alias map such as `{"calculator":"Calculator"}`. From the desktop or iOS client, submit `/observe calculator` in the registered workspace. The result is an access-controlled text artifact derived from the application's accessibility tree. Run `npm run device:probe -- observe` with the same configuration to inspect Accessibility, Screen Recording, and Automation permission states without prompting for access.
+
+Set the application name to its localized macOS display name, such as `计算器` on a Chinese system. Use `/observe calculator --windows` to list visible windows for the configured app. Then use `/observe calculator --window w-123` with a current accessible window ID to inspect that window.
 
 To enable clicks for named buttons, set `BLAZAR_COMPUTER_BUTTONS` to an alias-to-label map such as `{"calculator":["Clear"]}`. Submit `/click calculator Clear` from desktop or iOS, then review and approve the one-time action in Blazar.
 

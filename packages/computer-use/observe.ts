@@ -47,18 +47,54 @@ function describeTree(input: unknown) {
   return rows.join('\n').slice(0, 4_000).toWellFormed();
 }
 
+export async function probeComputer(config: ObservationConfig, root: string, signal: AbortSignal) {
+  const data = await runDriver(config, root, ['permissions'], signal);
+  const keys = ['accessibility', 'screen_recording', 'automation'] as const;
+  return Object.fromEntries(keys.map(key => {
+    const state = data?.[key]?.state;
+    return [key, typeof state === 'string' && /^[a-z_]{1,32}$/.test(state) ? state : 'unknown'];
+  }));
+}
+
+async function windowsFor(config: ObservationConfig, root: string, app: string, signal: AbortSignal) {
+  const data: unknown = await runDriver(config, root, ['list-windows', '--app', app], signal);
+  if (!Array.isArray(data)) throw new Error('Invalid application window inventory.');
+  return data.filter(window => window && typeof window.id === 'string' &&
+    /^w-[0-9]{1,20}$/.test(window.id) && typeof window.app_name === 'string' &&
+    window.app_name.toLowerCase() === app.toLowerCase() && window.visible === true)
+    .map(window => ({
+      id: String(window.id),
+      title: typeof window.title === 'string' ? window.title.replace(/[\x00-\x1f\x7f]/g, ' ').slice(0, 120).toWellFormed() : '',
+      accessible: window.accessible === true,
+    }));
+}
+
 export async function observeApp(config: ObservationConfig, root: string, goal: string, signal: AbortSignal) {
-  const match = /^\/observe ([a-z0-9_-]{1,32})$/.exec(goal);
+  const match = /^\/observe ([a-z0-9_-]{1,32})(?: (--windows)| --window (w-[0-9]{1,20}))?$/.exec(goal);
   const app = match && config.apps.get(match[1]);
-  if (!app) throw new Error('Choose a configured application alias for /observe.');
-  const snapshot = await readSnapshot(config, root, app, signal);
+  if (!app || !match) throw new Error('Choose a configured application alias for /observe.');
+  if (match[2]) {
+    const windows = await windowsFor(config, root, app, signal);
+    return windows.slice(0, 25).map(window =>
+      [window.id, window.title || 'Untitled', window.accessible ? 'Accessible' : 'Accessibility unavailable'].join(' · ')
+    ).join('\n') || 'No visible windows found.';
+  }
+  const windowId = match[3];
+  if (windowId) {
+    const windows = await windowsFor(config, root, app, signal);
+    if (!windows.some(window => window.id === windowId && window.accessible)) {
+      throw new Error('The selected window is unavailable or inaccessible.');
+    }
+  }
+  const snapshot = await readSnapshot(config, root, app, signal, windowId);
   const description = describeTree(snapshot.tree);
   if (!description) throw new Error('No accessible elements were found.');
   return description;
 }
 
-async function readSnapshot(config: ObservationConfig, root: string, app: string, signal: AbortSignal) {
-  const data = await runDriver(config, root, ['snapshot', '--app', app, '-i'], signal);
+async function readSnapshot(config: ObservationConfig, root: string, app: string, signal: AbortSignal, windowId?: string) {
+  const options = windowId ? ['--window-id', windowId] : [];
+  const data = await runDriver(config, root, ['snapshot', '--app', app, '-i', ...options], signal);
   if (!data?.tree) throw new Error('No application snapshot was available.');
   return data;
 }
