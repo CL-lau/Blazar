@@ -211,7 +211,7 @@ export class DeviceClient {
                   if (decision?.decision !== 'approved') return decision?.decision;
                   if (await this.consumeApproval(prefix, decision.id, signal)) return 'approved';
                   return undefined;
-                });
+                }, report);
           outcome = { status: 'succeeded', result, artifact: { name: 'worker-result.txt', text: result } };
         } else {
           if (assignment.instructions.length) throw new Error('Submit a new preview to change the document path.');

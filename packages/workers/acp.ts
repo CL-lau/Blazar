@@ -33,12 +33,16 @@ export async function probeAcp(worker: AcpWorker, root: string, signal: AbortSig
 }
 
 export async function runAcp(worker: AcpWorker, root: string, job: JobContext, signal: AbortSignal,
-                             approve?: ApprovalHandler): Promise<string> {
+                             approve?: ApprovalHandler,
+                             report?: (message: string, signal: AbortSignal) => Promise<void>): Promise<string> {
   const active = AbortSignal.any([signal, AbortSignal.timeout(10 * 60_000)]);
   active.throwIfAborted();
   const { child, stop } = spawnWorker(worker, root);
   let sessionId: string | undefined;
   let text = '';
+  let reports = Promise.resolve();
+  let remainingReports = 8;
+  let previousProgress: string | undefined;
   const requested = new Set<string>();
   let asking = false;
   const peer = client({ name: 'Blazar' })
@@ -76,9 +80,22 @@ export async function runAcp(worker: AcpWorker, root: string, job: JobContext, s
       return selected ? { outcome: { outcome: 'selected', optionId: selected.optionId } } : cancelled;
     })
     .onNotification(methods.client.session.update, ({ params: { sessionId: id, update } }) => {
-      if (id === sessionId && update.sessionUpdate === 'agent_message_chunk' && update.content.type === 'text') {
+      if (!sessionId || id !== sessionId) return;
+      if (update.sessionUpdate === 'agent_message_chunk' && update.content.type === 'text') {
         text += update.content.text.slice(0, Math.max(0, 4_000 - text.length));
       }
+      if (!report || active.aborted || !remainingReports ||
+          (update.sessionUpdate !== 'tool_call' && update.sessionUpdate !== 'tool_call_update')) return;
+      const message = update.status === 'in_progress' ? 'Worker is using a tool' :
+        update.status === 'completed' ? 'Worker completed a tool call' :
+        update.status === 'failed' ? 'Worker tool call failed' : undefined;
+      if (!message || message === previousProgress) return;
+      previousProgress = message;
+      remainingReports--;
+      reports = reports.then(async () => {
+        if (!active.aborted) await report(message, active);
+      });
+      void reports.catch(() => {});
     });
   try {
     return await peer.connectWith(ndJsonStream(Writable.toWeb(child.stdin), Readable.toWeb(child.stdout)), async ctx => {
@@ -98,6 +115,7 @@ export async function runAcp(worker: AcpWorker, root: string, job: JobContext, s
           sessionId,
           prompt: [{ type: 'text', text: jobPrompt(job) }],
         }, options);
+        await reports.catch(() => {});
         active.throwIfAborted();
         if (outcome.stopReason !== 'end_turn' || !text.trim()) throw new Error('ACP worker did not return a completed response');
         return text.toWellFormed();

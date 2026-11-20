@@ -17,6 +17,11 @@ createInterface({ input: process.stdin }).on('line', line => {
   if (method === 'session/prompt') {
     const input = JSON.parse(params.prompt[0].text);
     if (input.goal === 'wait') return;
+    for (const status of ['in_progress', 'in_progress', 'completed']) {
+      send({ method: 'session/update', params: { sessionId: 'session', update: {
+        sessionUpdate: 'tool_call', toolCallId: 'read', title: 'Private workspace path', kind: 'read', status,
+      } } });
+    }
     send({ method: 'session/update', params: {
       sessionId: 'session',
       update: { sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: input.goal + ': ' + input.instructions[0] } },
@@ -40,10 +45,12 @@ test('ACP probe reports a successful handshake without opening a session', async
 });
 
 test('ACP starts a subprocess, initializes a session, and assembles streamed text', async () => {
+  const progress: string[] = [];
   const result = await runAcp(worker, process.cwd(), {
     goal: 'Review notes', instructions: ['Three bullets'], predecessors: [],
-  }, AbortSignal.timeout(2_000));
+  }, AbortSignal.timeout(2_000), undefined, async message => { progress.push(message); });
   assert.equal(result, 'Review notes: Three bullets');
+  assert.deepEqual(progress, ['Worker is using a tool', 'Worker completed a tool call']);
 });
 
 test('ACP cancels a worker that does not return a turn result', async () => {
