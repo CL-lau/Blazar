@@ -84,7 +84,9 @@ export function createQQSender(config: QQConfig, transport = fetch) {
       if (response.status === 401) access = undefined;
       throw new Error('QQ request was rejected');
     }
-    return response.json();
+    const result: unknown = await response.json();
+    if (!result || typeof result !== 'object' || Array.isArray(result)) throw new Error('Invalid QQ response');
+    return result as Record<string, unknown>;
   }
   return async (notice: { chat: string; messageId: string; text: string; seq: number; expires: number }) => {
     if (!config.chats.has(notice.chat)) throw new Error('QQ destination unavailable');

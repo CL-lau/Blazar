@@ -6,9 +6,8 @@ type ConnectionConfig = DingTalkConfig & { clientId: string; clientSecret: strin
 
 export function startDingTalk(store: TaskStore, owner: string, config: ConnectionConfig) {
   const channel = JSON.stringify(['dingtalk', config.clientId, config.robotCode]);
-  const client = new DWClient({
-    clientId: config.clientId, clientSecret: config.clientSecret, autoReconnect: true,
-  });
+  const connectionOptions = { clientId: config.clientId, clientSecret: config.clientSecret, autoReconnect: true };
+  const client = new DWClient(connectionOptions);
   let active = true;
   let sending = false;
   const windows = new Map<string, ReplyWindow>();

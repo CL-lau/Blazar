@@ -85,8 +85,8 @@ export function createFeishuSender(appId: string, appSecret: string, region: 'fe
       await response.body?.cancel();
       throw new Error('Feishu request failed');
     }
-    const data = await response.json();
-    if (data.code !== 0) {
+    const data = object(await response.json());
+    if (data?.code !== 0) {
       access = undefined;
       throw new Error('Feishu rejected the request');
     }

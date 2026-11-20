@@ -1,3 +1,4 @@
+import type { Run, Task } from '../../packages/protocol/task.ts';
 import assert from 'node:assert/strict';
 import { randomBytes, randomUUID } from 'node:crypto';
 import { once } from 'node:events';
@@ -89,7 +90,7 @@ try {
       active.throwIfAborted();
       const claim = await socket.request('claim', { capability: 'document.preview', requestId: randomUUID() }, active);
       assert.equal(claim.status, 200);
-      const { assignment } = await claim.json();
+      const { assignment } = await claim.json() as { assignment: { run: Run; task: Task } | null };
       if (!assignment) {
         await delay(5, undefined, { signal: active });
         continue;
@@ -140,7 +141,7 @@ try {
   assert.equal(notices.size, Math.floor(jobs / 3));
 
   const response = await fetch(new URL('/v1/admin/metrics', base), { headers, signal: active });
-  const serverMetrics = await response.json();
+  const serverMetrics = await response.json() as { routing: { model: number } };
   assert.equal(serverMetrics.routing.model, 0);
   assert.equal(reception.length, jobs + duplicates);
   assert.equal(dispatch.length, jobs);

@@ -64,7 +64,7 @@ export function weixinTransport(config: WeixinConfig, transport = fetch) {
       await response.body?.cancel();
       throw new Error('Weixin request failed');
     }
-    const value = JSON.parse(await response.text(), (key, value, context) => {
+    const value = JSON.parse(await response.text(), (key: string, value: unknown, context?: { source?: string }) => {
       if (key === 'message_id' && typeof value === 'number') return context?.source;
       return value;
     });

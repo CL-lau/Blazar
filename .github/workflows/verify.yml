@@ -1,0 +1,54 @@
+name: Verify Blazar
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  router:
+    runs-on: ubuntu-24.04
+    strategy:
+      matrix:
+        node: ['22.19.0', '24']
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: ${{ matrix.node }}
+          cache: npm
+      - run: npm ci
+      - run: npm run typecheck
+      - run: npm test
+
+  apple:
+    runs-on: macos-26
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: '24'
+          cache: npm
+      - run: npm ci
+      - run: npm run desktop:build
+      - run: cargo test --locked --manifest-path apps/desktop/src-tauri/Cargo.toml
+      - run: npm run desktop:bundle
+      - name: Install verified XcodeGen release
+        shell: bash
+        run: |
+          tool_dir="$(mktemp -d)"
+          cd "$tool_dir"
+          curl --fail --silent --show-error --location \
+            https://github.com/yonaskolb/XcodeGen/releases/download/2.48.0/xcodegen.zip -o xcodegen.zip
+          echo '620c9f0dc10849f94728ab5df52d225ebab8187439dd6fee1925e59e80dff892  xcodegen.zip' | shasum -a 256 -c
+          ditto -x -k xcodegen.zip .
+          echo "$tool_dir/xcodegen/bin" >> "$GITHUB_PATH"
+      - run: npm run ios:build

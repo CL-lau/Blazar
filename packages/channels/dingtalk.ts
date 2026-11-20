@@ -56,5 +56,5 @@ export async function sendDingTalkNotice(window: ReplyWindow, text: string, tran
     throw new Error('DingTalk reply failed');
   }
   const data = await response.json();
-  if (data?.errcode !== 0) throw new Error('DingTalk rejected the reply');
+  if (!data || typeof data !== 'object' || !('errcode' in data) || data.errcode !== 0) throw new Error('DingTalk rejected the reply');
 }
