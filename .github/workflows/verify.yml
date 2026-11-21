@@ -26,6 +26,14 @@ jobs:
       - run: npm ci
       - run: npm run typecheck
       - run: npm test
+      - name: Verify DeepSeek Harness with a local model endpoint
+        if: matrix.node == '24'
+        shell: bash
+        run: |
+          tool_dir="$(mktemp -d)"
+          npm install --prefix "$tool_dir" --ignore-scripts --no-audit --no-fund @deepseek-ai/dsh@0.2.2-rc.5
+          BLAZAR_TEST_DEEPSEEK_EXECUTABLE="$tool_dir/node_modules/.bin/dsh" \
+            node --test services/router/deepseek-runtime.test.ts
 
   apple:
     runs-on: macos-26
