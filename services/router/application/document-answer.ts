@@ -6,7 +6,8 @@ import { accessDocument } from './document-sync.ts';
 
 export async function answerFromDocuments(store: MemoryStore, readers: readonly DocumentConnector[],
                                           generate: MemoryAnswer | undefined, owner: string, workspace: string,
-                                          question: string, input: unknown) {
+                                          question: string, input: unknown, signal?: AbortSignal) {
+  signal?.throwIfAborted();
   if (!Array.isArray(input) || input.length < 1 || input.length > 4) {
     throw new RequestError(400, 'Choose one to four source documents');
   }
@@ -30,9 +31,14 @@ export async function answerFromDocuments(store: MemoryStore, readers: readonly 
   });
   if (!generate) throw new RequestError(503, 'Blazar has no Router model configured');
   const checks: (() => boolean)[] = [];
+  const cancelReads = new AbortController();
+  const reading = signal ? AbortSignal.any([cancelReads.signal, signal]) : cancelReads.signal;
   const documents = await Promise.all(requested.map(({ connection, resource, reader }) =>
-    accessDocument(store, owner, workspace, connection, reader, resource, 'read', undefined, undefined,
-      check => checks.push(check))));
+    accessDocument(store, owner, workspace, connection, reader, resource, 'read', reading,
+      () => !reading.aborted, check => checks.push(check)))).catch(error => {
+    cancelReads.abort();
+    throw error;
+  });
   const sources = documents.map((result, index) => {
     if (!('text' in result) || typeof result.text !== 'string') throw new RequestError(502, 'Document preview is unavailable');
     if (requested[index].revision !== undefined && requested[index].revision !== result.revision) {
@@ -42,6 +48,7 @@ export async function answerFromDocuments(store: MemoryStore, readers: readonly 
       body: result.text.slice(0, 2_000).toWellFormed() };
   });
   const checkSources = () => {
+    signal?.throwIfAborted();
     if (checks.length !== sources.length || checks.some(check => !check())) {
       throw new RequestError(409, 'Document access changed while preparing the answer');
     }
@@ -49,8 +56,9 @@ export async function answerFromDocuments(store: MemoryStore, readers: readonly 
   checkSources();
   let answer: string;
   try {
+    const timeout = AbortSignal.timeout(15_000);
     answer = (await generate(question, sources.map(({ id, body, resource, revision }) => ({ id, body, resource, revision })),
-      AbortSignal.timeout(15_000))).trim();
+      signal ? AbortSignal.any([timeout, signal]) : timeout)).trim();
     if (!answer || answer.length > 8_000) throw new Error('Invalid model response');
   } catch {
     checkSources();

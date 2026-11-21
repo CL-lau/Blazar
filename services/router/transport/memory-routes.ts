@@ -125,7 +125,19 @@ export async function handleMemory(
     const workspace = requiredText(data.workspace, 'workspace', 128);
     const question = requiredText(data.question, 'question', 4_000);
     if (data.documents !== undefined) {
-      reply(response, 200, await answerFromDocuments(store, documents ?? [], answerMemory, owner, workspace, question, data.documents));
+      const controller = new AbortController();
+      const disconnect = () => controller.abort();
+      response.once('close', disconnect);
+      if (response.destroyed) disconnect();
+      try {
+        const result = await answerFromDocuments(store, documents ?? [], answerMemory, owner, workspace,
+          question, data.documents, controller.signal);
+        if (!controller.signal.aborted) reply(response, 200, result);
+      } catch (error) {
+        if (!controller.signal.aborted) throw error;
+      } finally {
+        response.removeListener('close', disconnect);
+      }
       return true;
     }
     const query = requiredText(data.query, 'search terms', 256);

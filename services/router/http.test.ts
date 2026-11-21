@@ -26,6 +26,8 @@ test('Router authenticates, deduplicates commands and replays task changes over 
   let revokeDuringAnswer: string | undefined;
   let githubStatus = 200;
   let githubBody = 'Engineering review findings';
+  const answerStarted = Promise.withResolvers<void>();
+  const answerCancelled = Promise.withResolvers<void>();
   const server = routerServer(store, {
     owner: 'test', token, memory, pushEnabled: true,
     documents: [feishuDocuments('feishu', 'project account', 'fixture', async (url, init) => {
@@ -44,7 +46,16 @@ test('Router authenticates, deduplicates commands and replays task changes over 
       assert.equal(evidence, 'Design review findings');
       return 'Keep one review summary.';
     },
-    async answerMemory(question, evidence) {
+    async answerMemory(question, evidence, signal) {
+      if (question === 'Cancel selected document answer') {
+        answerStarted.resolve();
+        return new Promise<string>((_resolve, reject) => {
+          signal.addEventListener('abort', () => {
+            answerCancelled.resolve();
+            reject(signal.reason);
+          }, { once: true });
+        });
+      }
       if (question === 'Compare selected documents') {
         assert.deepEqual(evidence.map(item => item.resource), ['doc123', 'docs/review.md']);
         assert.deepEqual(evidence.map(item => item.body), ['Design review findings', 'Engineering review findings']);
@@ -259,6 +270,21 @@ test('Router authenticates, deduplicates commands and replays task changes over 
   const live = await liveAnswer.json();
   assert.equal(live.answer, 'Both documents contain review findings.');
   assert.deepEqual(live.sources.map(item => item.connection), [connection, github]);
+  const stopAnswer = new AbortController();
+  const timeout = AbortSignal.timeout(2_000);
+  const abandoned = fetch(url + '/v1/memory/answer', {
+    method: 'POST', signal: AbortSignal.any([stopAnswer.signal, timeout]),
+    headers: { ...headers, 'Content-Type': 'application/json' },
+    body: JSON.stringify({ workspace: 'demo', question: 'Cancel selected document answer',
+      documents: [{ connection: github, resource: 'docs/review.md' }] }),
+  });
+  const aborted = assert.rejects(abandoned, { name: 'AbortError' });
+  const deadline = new Promise<never>((_resolve, reject) =>
+    timeout.addEventListener('abort', () => reject(timeout.reason), { once: true }));
+  await Promise.race([answerStarted.promise, deadline]);
+  stopAnswer.abort();
+  await aborted;
+  await Promise.race([answerCancelled.promise, deadline]);
   assert.deepEqual(memory.recall('test', 'demo', 'findings', [github]), []);
   const changedLive = await post('/v1/memory/answer', 'changed-selected-document', {
     workspace: 'demo', question: 'Compare selected documents',
