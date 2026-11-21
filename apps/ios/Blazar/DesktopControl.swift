@@ -12,7 +12,7 @@ enum DesktopOperation: String, CaseIterable, Identifiable {
         let window = rawWindow.trimmingCharacters(in: .whitespacesAndNewlines)
         let button = rawButton.trimmingCharacters(in: .whitespacesAndNewlines)
         guard alias.wholeMatch(of: #/[a-z0-9_-]{1,32}/#) != nil else { return nil }
-        if self == .windows { return "/observe \(alias) --windows" }
+        if self == .windows { return "/observe \(alias) --windows-json" }
         guard window.isEmpty || window.wholeMatch(of: #/w-[0-9]{1,20}/#) != nil else { return nil }
         let target = window.isEmpty ? alias : "\(alias) --window \(window)"
         if self == .inspect { return "/observe \(target)" }
@@ -23,8 +23,17 @@ enum DesktopOperation: String, CaseIterable, Identifiable {
 }
 
 struct DesktopControl: View {
+    private struct Window: Decodable, Identifiable {
+        let id: String
+        let title: String
+        let accessible: Bool
+
+        var label: String { title.isEmpty ? id : "\(title) · \(id)" }
+    }
+
     let client: RouterClient
     let targets: [RouterSnapshot.DesktopTarget]
+    let tasks: [RouterSnapshot.Task]
     @Binding var workspace: String
     @Binding var sending: Bool
     let reload: () async -> Void
@@ -36,6 +45,16 @@ struct DesktopControl: View {
     @State private var window = ""
     @State private var button = ""
     @State private var requestKey = UUID()
+    @State private var inventoryId: String?
+
+    private var inventoryTask: RouterSnapshot.Task? {
+        tasks.first { $0.id == inventoryId }
+    }
+
+    private var windows: [Window]? {
+        guard inventoryTask?.status == "succeeded", let result = inventoryTask?.result else { return nil }
+        return try? JSONDecoder().decode([Window].self, from: Data(result.utf8))
+    }
 
     private var command: String? {
         operation.command(alias: alias, window: window, button: button)
@@ -85,9 +104,29 @@ struct DesktopControl: View {
                     ForEach(aliases, id: \.self) { Text($0).tag($0) }
                 }
             }
-            if operation != .windows {
+            if operation != .windows, let windows, windows.contains(where: \.accessible) {
+                Picker("Window", selection: $window) {
+                    Text("Active window").tag("")
+                    ForEach(windows.filter(\.accessible)) { item in Text(item.label).tag(item.id) }
+                }
+            } else if operation != .windows {
                 TextField("Window ID (optional)", text: $window)
                     .autocorrectionDisabled()
+            }
+            if operation == .windows, let windows {
+                if windows.isEmpty {
+                    Text("No visible windows.")
+                }
+                ForEach(windows) { item in
+                    Button(item.label) {
+                        operation = .inspect
+                        window = item.id
+                    }
+                    .disabled(!item.accessible)
+                }
+            } else if operation == .windows, let inventoryTask {
+                Text(inventoryTask.status == "failed" ? (inventoryTask.result ?? "Window list unavailable.") : inventoryTask.status)
+                    .font(.caption)
             }
             if operation == .click {
                 TextField("Configured button label", text: $button)
@@ -99,11 +138,16 @@ struct DesktopControl: View {
                 let targetWorkspace = workspace
                 let key = requestKey
                 let computer = targetDevice
+                let listing = operation == .windows
                 sending = true
                 Task {
                     defer { sending = false }
                     do {
-                        try await client.submit(workspace: targetWorkspace, goal: command, key: key, desktopDevice: computer)
+                        let task = try await client.submit(workspace: targetWorkspace, goal: command, key: key, desktopDevice: computer)
+                        if listing {
+                            inventoryId = task.id
+                            window = ""
+                        }
                         requestKey = UUID()
                         await reload()
                     } catch {
@@ -117,9 +161,18 @@ struct DesktopControl: View {
         }
         .disabled(sending)
         .onChange(of: command) { _, _ in requestKey = UUID() }
-        .onChange(of: workspace) { _, _ in requestKey = UUID() }
+        .onChange(of: workspace) { _, _ in
+            requestKey = UUID()
+            inventoryId = nil
+            window = ""
+        }
         .onChange(of: targetDevice) { _, _ in
             requestKey = UUID()
+            inventoryId = nil
+            window = ""
+        }
+        .onChange(of: alias) { _, _ in
+            inventoryId = nil
             window = ""
         }
         .onChange(of: aliases) { _, next in

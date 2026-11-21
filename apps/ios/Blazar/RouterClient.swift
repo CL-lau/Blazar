@@ -111,10 +111,12 @@ struct RouterClient: Equatable {
         }
     }
 
-    func submit(workspace: String, goal: String, key: UUID, desktopDevice: String? = nil) async throws {
+    @discardableResult
+    func submit(workspace: String, goal: String, key: UUID, desktopDevice: String? = nil) async throws -> RouterSnapshot.Task {
         var body = ["workspace": workspace, "text": goal]
         if let desktopDevice { body["desktopDevice"] = desktopDevice }
-        _ = try await request("v1/events", body: body, key: key)
+        let response = try await request("v1/events", body: body, key: key)
+        return try JSONDecoder().decode(RouterSnapshot.Task.self, from: response)
     }
 
     struct WorkflowStep: Codable, Identifiable {

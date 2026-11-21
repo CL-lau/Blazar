@@ -15,6 +15,13 @@ test('a device observes only configured applications and stores a bounded window
   const directory = realpathSync(mkdtempSync(join(tmpdir(), 'blazar-observe-')));
   const executable = join(directory, 'driver.cjs');
   writeFileSync(executable, `#!${process.execPath}
+if (process.argv[2] === 'list-windows') {
+  console.log(JSON.stringify({ok:true,command:'list-windows',data:[
+    {id:'w-10',app_name:'Calculator',title:'Scientific · Calculator',visible:true,accessible:true},
+    {id:'w-11',app_name:'Other',title:'Other workspace',visible:true,accessible:true},
+  ]}));
+  process.exit(0);
+}
 if (JSON.stringify(process.argv.slice(2)) !== JSON.stringify(['snapshot','--app','Calculator','-i'])) process.exit(2);
 console.log(JSON.stringify({ok:true,command:'snapshot',data:{tree:{role:'window',name:'Calculator',children:[
   {role:'button',name:'Add',value:'private value',ref_id:'@temporary'},
@@ -76,6 +83,11 @@ console.log(JSON.stringify({ok:true,command:'snapshot',data:{tree:{role:'window'
   assert.equal(artifacts[0].taskId, task.id);
   const file = store.artifact('owner', String(artifacts[0].id))!;
   assert.equal(Buffer.from(file.content).toString(), 'window: Calculator\n  button: Add');
+  const windows = store.create('owner', 'desktop', 'windows', 'work', '/observe calculator --windows-json', computer);
+  assert.equal(await client.runOnce(AbortSignal.timeout(8_000)), true);
+  assert.deepEqual(JSON.parse(store.get('owner', windows.id)?.result ?? ''), [
+    { id: 'w-10', title: 'Scientific · Calculator', accessible: true },
+  ]);
   store.updateDeviceReadiness(Date.now());
   assert.equal(store.get('owner', denied.id)?.status, 'waiting_device');
   assert.equal(store.get('owner', preview.id)?.status, 'waiting_device');

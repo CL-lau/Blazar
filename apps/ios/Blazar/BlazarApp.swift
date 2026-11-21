@@ -153,7 +153,8 @@ private struct TaskScreen: View {
                         if let answer { Text(answer).textSelection(.enabled) }
 
                     }
-                    DesktopControl(client: client, targets: snapshot.desktopTargets ?? [], workspace: $workspace, sending: $sending, reload: reload,
+                    DesktopControl(client: client, targets: snapshot.desktopTargets ?? [], tasks: snapshot.tasks,
+                                   workspace: $workspace, sending: $sending, reload: reload,
                                    showError: { self.error = $0.localizedDescription })
                     if let plan {
                         Section("Proposed workflow") {

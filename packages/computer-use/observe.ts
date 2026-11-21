@@ -98,11 +98,14 @@ export function observeApp(config: ObservationConfig, root: string, goal: string
 }
 
 async function observeWindow(config: ObservationConfig, root: string, goal: string, signal: AbortSignal) {
-  const match = /^\/observe ([a-z0-9_-]{1,32})(?: (--windows)| --window (w-[0-9]{1,20}))?$/.exec(goal);
+  const match = /^\/observe ([a-z0-9_-]{1,32})(?: (--windows(?:-json)?)| --window (w-[0-9]{1,20}))?$/.exec(goal);
   const app = match && config.apps.get(match[1]);
   if (!app || !match) throw new Error('Choose a configured application alias for /observe.');
   if (match[2]) {
     const windows = await windowsFor(config, root, app, signal);
+    if (match[2] === '--windows-json') {
+      return JSON.stringify(windows.slice(0, 25).map(({ id, title, accessible }) => ({ id, title, accessible })));
+    }
     return windows.slice(0, 25).map(window =>
       [window.id, window.title || 'Untitled', window.accessible ? 'Accessible' : 'Accessibility unavailable'].join(' · ')
     ).join('\n') || 'No visible windows found.';

@@ -264,7 +264,9 @@ export class DeviceClient {
                 return () => this.consumeApproval(prefix, decision.id, signal);
               })
             : await observeApp(this.observation, this.root, assignment.task.goal, active);
-          outcome = { status: 'succeeded', result: click ? 'Application action completed.' : 'Application snapshot is ready.',
+          const windowInventory = /^\/observe [a-z0-9_-]{1,32} --windows-json$/.test(assignment.task.goal);
+          outcome = { status: 'succeeded', result: windowInventory ? result :
+            click ? 'Application action completed.' : 'Application snapshot is ready.',
             artifact: { name: 'application-observation.txt', text: result } };
         } else if (this.worker) {
           if (this.worker.protocol === 'jsonl' && this.worker.includeFullInputArtifacts) {
