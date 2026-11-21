@@ -1157,7 +1157,7 @@ export class TaskStore {
     });
   }
 
-  claim(owner: string, workspace: string, device: string, now: number, leaseMs: number, goalPrefix = '', excludingPrefix = '', requestId?: string, worker?: WorkerConfiguration, desktopApps?: string[]) {
+  claim(owner: string, workspace: string, device: string, now: number, leaseMs: number, goalPrefix = '', excludingPrefix = '', requestId?: string, worker?: WorkerConfiguration, desktopApps?: string[], allowWorkerMemory = false) {
     return this.transaction(() => {
       const identity = [owner, workspace, goalPrefix, excludingPrefix];
       const fingerprint = JSON.stringify(desktopApps ? [...identity, desktopApps] : worker ? [...identity, worker] : identity);
@@ -1170,8 +1170,12 @@ export class TaskStore {
           const assignment = JSON.parse(String(receipt.response));
           const current = this.db.prepare(`SELECT r.expires AS expires FROM run r JOIN task t ON r.taskId=t.id
             WHERE r.id=? AND r.device=? AND r.expires>? AND r.version=t.version AND t.status='running'
-            AND NOT EXISTS(SELECT 1 FROM invalid_workflow_run i WHERE i.id=r.id)`)
-            .get(assignment.run.id, device, now);
+            AND NOT EXISTS(SELECT 1 FROM invalid_workflow_run i WHERE i.id=r.id)
+            AND NOT EXISTS(SELECT 1 FROM run_evidence_stop s WHERE s.run_id=r.id)
+            AND (? OR (
+              NOT EXISTS(SELECT 1 FROM task_app_evidence e WHERE e.task_id=t.id)
+              AND NOT EXISTS(SELECT 1 FROM task_memory_input m WHERE m.task_id=t.id)))`)
+            .get(assignment.run.id, device, now, Number(allowWorkerMemory));
           if (!current) return undefined;
           assignment.run.expires = Number(current.expires);
           return assignment as ReturnType<TaskStore['assignment']>;
@@ -1187,6 +1191,9 @@ export class TaskStore {
         AND status IN ('queued','waiting_device') AND (substr(goal,1,length(?))=? OR (?='/observe ' AND substr(goal,1,7)='/click '))
         AND (?='' OR (substr(goal,1,length(?))!=? AND substr(goal,1,9)!='/observe ' AND substr(goal,1,7)!='/click '))
         AND NOT EXISTS(SELECT 1 FROM task_desktop_device target WHERE target.task_id=task.id AND target.device_id<>?)
+        AND (? OR (
+          NOT EXISTS(SELECT 1 FROM task_app_evidence e WHERE e.task_id=task.id)
+          AND NOT EXISTS(SELECT 1 FROM task_memory_input m WHERE m.task_id=task.id)))
         AND (? IS NULL OR EXISTS(SELECT 1 FROM json_each(?) j WHERE
           substr(goal || ' ',1,length('/observe ' || j.value || ' '))='/observe ' || j.value || ' '
           OR substr(goal || ' ',1,length('/click ' || j.value || ' '))='/click ' || j.value || ' '))
@@ -1199,7 +1206,7 @@ export class TaskStore {
         ON d.owner=eligible.owner AND d.workspace=eligible.workspace AND d.channel=eligible.origin_channel
         AND d.goal_prefix=? AND d.excluding_prefix=?
       ORDER BY COALESCE(d.last_dispatch,0), eligible.queue_order LIMIT 1`).get(
-        owner, workspace, goalPrefix, goalPrefix, goalPrefix, excludingPrefix, excludingPrefix, excludingPrefix, device,
+        owner, workspace, goalPrefix, goalPrefix, goalPrefix, excludingPrefix, excludingPrefix, excludingPrefix, device, Number(allowWorkerMemory),
         desktopApps ? JSON.stringify(desktopApps) : null, desktopApps ? JSON.stringify(desktopApps) : null,
         goalPrefix, excludingPrefix) as unknown as (Task & { origin_channel: string }) | undefined;
       if (!task) {
@@ -1504,6 +1511,9 @@ export class TaskStore {
             WHEN substr(t.goal,1,9)='/preview ' THEN 'document.preview'
             WHEN substr(t.goal,1,9)='/observe ' OR substr(t.goal,1,7)='/click ' THEN 'computer.observe'
             ELSE 'agent.acp' END)
+          AND (p.capability='agent.acp' OR (
+            NOT EXISTS(SELECT 1 FROM task_app_evidence e WHERE e.task_id=t.id)
+            AND NOT EXISTS(SELECT 1 FROM task_memory_input m WHERE m.task_id=t.id)))
           AND NOT EXISTS(SELECT 1 FROM task_desktop_device target WHERE target.task_id=t.id AND target.device_id<>d.id)
           AND (a.aliases IS NULL OR EXISTS(SELECT 1 FROM json_each(a.aliases) j WHERE
             substr(t.goal || ' ',1,length('/observe ' || j.value || ' '))='/observe ' || j.value || ' '

@@ -79,6 +79,17 @@ test('a registered JSONL extension executes a real subprocess through Router and
     await rm(root, { recursive: true, force: true });
   });
 
+  const legacyDevice = store.registerDevice('owner', 'Legacy fixture', 'project');
+  const expectNoLegacyAssignment = async () => {
+    const claim = await fetch('http://127.0.0.1:' + address.port + '/v1/device/claim', {
+      method: 'POST',
+      headers: { Authorization: 'Bearer ' + legacyDevice.token, 'Content-Type': 'application/json' },
+      body: '{}',
+    });
+    assert.equal(claim.status, 200);
+    assert.deepEqual(await claim.json(), { assignment: null });
+  };
+
   const note = memory.remember('owner', 'project', 'Prefer notes in bullet points');
   memory.remember('owner', 'private', 'These notes are outside the workspace');
   const created = await fetch('http://127.0.0.1:' + address.port + '/v1/events', {
@@ -89,13 +100,14 @@ test('a registered JSONL extension executes a real subprocess through Router and
   });
   assert.equal(created.status, 202);
   const task = await created.json();
+  await expectNoLegacyAssignment();
   assert.equal(await client.runOnce(AbortSignal.timeout(5000)), true);
   assert.equal(store.get('owner', task.id)?.result, 'Fixture summary');
   assert.equal(store.snapshot('owner').artifacts.length, 1);
   const creation = store.timeline('owner', task.id)!.events.find(event => event.type === 'task.created')!;
   assert.deepEqual(creation.data.memoryInputs, [{ id: note, version: 1 }]);
   assert.doesNotMatch(JSON.stringify(creation.data), /Prefer notes in bullet points/);
-  const presence = store.devices('owner')[0];
+  const presence = store.devices('owner').find(item => item.id === device.id)!;
   assert.equal(presence.workerLabel, 'Fixture JSONL');
   assert.equal(presence.workerProtocol, 'jsonl');
   const execution = () => store.timeline('owner', task.id)!.events.find(event => event.type === 'run.started')!.data.worker;
@@ -171,6 +183,13 @@ test('a registered JSONL extension executes a real subprocess through Router and
   const creationWithEvidence = await createWithEvidence('app-evidence');
   assert.equal(creationWithEvidence.status, 202);
   const protectedTask = await creationWithEvidence.json();
+  await expectNoLegacyAssignment();
+  assert.equal(store.get('owner', protectedTask.id)?.status, 'queued');
+  assert.equal(store.timeline('owner', protectedTask.id)?.events.some(event => event.type === 'run.started'), false);
+  store.recordDeviceActivity(device.id, Date.now(), 'document.preview');
+  store.updateDeviceReadiness(Date.now());
+  assert.equal(store.get('owner', protectedTask.id)?.status, 'waiting_device');
+
   assert.equal(await client.runOnce(AbortSignal.timeout(5_000)), true);
   const file = store.snapshot('owner').artifacts.find(item => item.taskId === protectedTask.id)!;
   const download = (token: string) => fetch(base + '/v1/artifacts/' + file.id, {

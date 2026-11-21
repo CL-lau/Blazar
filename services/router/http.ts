@@ -438,7 +438,7 @@ function deviceOperation(store: TaskStore, bearer: string, pathname: string, dat
     store.expire(now);
     const assignment = store.claim(device.owner, device.workspace, device.id, now, leaseMs,
       data.capability === 'document.preview' ? '/preview ' : data.capability === 'computer.observe' ? '/observe ' : '',
-      data.capability === 'agent.acp' ? '/preview ' : '', key, worker, desktopApps);
+      data.capability === 'agent.acp' ? '/preview ' : '', key, worker, desktopApps, data.capability === 'agent.acp');
     if (assignment) {
       const refs = store.appEvidence(assignment.task.id);
       if (refs) {
