@@ -22,6 +22,9 @@ export async function executeDesktopAction(
   const click = goal.startsWith('/click ');
   const text = click ? await clickApp(config, root, goal, signal, authorize, expectedText)
     : await observeApp(config, root, goal, signal);
+  if (!click && expectedText && !text.includes(expectedText)) {
+    return { status: 'failed', result: 'The target window did not contain the expected visible text.' };
+  }
   const windowInventory = /^\/observe [a-z0-9_-]{1,32} --windows-json$/.test(goal);
   return {
     status: 'succeeded',

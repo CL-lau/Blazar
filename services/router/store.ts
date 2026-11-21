@@ -1180,13 +1180,14 @@ export class TaskStore {
     const attachments = this.db.prepare('SELECT name,text FROM task_attachment WHERE task_id=? ORDER BY position')
       .all(run.taskId) as unknown as TaskAttachment[];
     const task = this.get(owner, run.taskId)!;
-    const expected = task.goal.startsWith('/click ') ? this.db.prepare(`SELECT json_extract(data,'$.action.expectedText') AS text
+    const expected = /^\/(observe|click) /.test(task.goal) ? this.db.prepare(`SELECT json_extract(data,'$.action.expectedText') AS text
       FROM event WHERE taskId=? AND type='task.created' ORDER BY seq LIMIT 1`).get(run.taskId)?.text : undefined;
     const required = this.db.prepare('SELECT capability FROM task_worker_capability WHERE task_id=?').get(run.taskId)?.capability;
     return { run, task, instructions, predecessors, acceptanceCriteria,
       ...(required === 'full-input-artifacts' && { fullInputRequired: true }),
       ...(required === 'read-only' && { readOnlyRequired: true }),
-      ...(typeof expected === 'string' && { clickExpectedText: expected }),
+      ...(typeof expected === 'string' && (task.goal.startsWith('/click ')
+        ? { clickExpectedText: expected } : { observationExpectedText: expected })),
       ...(attachments.length && { attachments }),
       ...(memoryInputs.length && { memoryInputs }),
     };
@@ -1421,6 +1422,13 @@ export class TaskStore {
       if ((outcome.status === 'waiting_user' && !click) ||
           (click && outcome.status !== 'failed' && !this.db.prepare(`SELECT 1 FROM approval_use u
             JOIN approval a ON a.id=u.id WHERE a.runId=? AND a.version=?`).get(runId, row.runVersion!))) return false;
+      if (outcome.status === 'succeeded' && String(row.goal).startsWith('/observe ')) {
+        const action = this.workflowDesktopAction(taskId);
+        if (action?.kind === 'desktop.observe' && action.mode === 'window' && action.expectedText &&
+            !outcome.artifact?.text.includes(action.expectedText)) {
+          outcome = { status: 'failed', result: 'The target window observation did not verify the expected visible text.' };
+        }
+      }
       const pendingReview = outcome.status === 'succeeded' && !row.staleInputs && row.runVersion === row.version &&
         Boolean(this.db.prepare('SELECT 1 FROM task_review WHERE task_id=?').get(taskId));
       if (pendingReview) {

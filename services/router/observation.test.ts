@@ -293,9 +293,13 @@ console.log(JSON.stringify({ok:true,command,data}));
         action: { kind: 'desktop.click', alias: 'notes', deviceId: device.id, button: 'Save', expectedText: 'Saved',
           windowFrom: { step: 'windows', title: 'Draft' } } },
       { key: 'snapshot', goal: 'Read the saved Draft window', needs: ['windows', 'save'],
-        action: { kind: 'desktop.observe', alias: 'notes', deviceId: device.id, mode: 'window',
+        action: { kind: 'desktop.observe', alias: 'notes', deviceId: device.id, mode: 'window', expectedText: 'Saved',
           windowFrom: { step: 'windows', title: 'Draft' } } },
       { key: 'review', goal: 'Review the saved draft', needs: ['snapshot'] },
+      { key: 'missing', goal: 'Look for Published', needs: ['windows', 'snapshot'],
+        action: { kind: 'desktop.observe', alias: 'notes', deviceId: device.id, mode: 'window', expectedText: 'Published',
+          windowFrom: { step: 'windows', title: 'Draft' } } },
+      { key: 'blocked', goal: 'Review publication', needs: ['missing'] },
     ],
   });
   assert.equal(workflow.status, 202);
@@ -325,4 +329,16 @@ console.log(JSON.stringify({ok:true,command,data}));
   const handoff = store.claim('owner', 'project', 'review-worker', Date.now(), 45_000, '', '/preview ')!;
   assert.equal(handoff.task.id, steps[3].taskId);
   assert.match(handoff.predecessors[0].artifact?.excerpt ?? '', /Saved/);
+  assert.equal(await client.runOnce(signal), true);
+  assert.equal(store.get('owner', steps[4].taskId)?.status, 'failed');
+  assert.equal(store.get('owner', steps[5].taskId)?.status, 'waiting_dependency');
+  assert(store.command('owner', steps[4].taskId, 1, { action: 'retry' }));
+  const retry = store.claim('owner', 'project', device.id, Date.now(), 45_000, '/observe ')!;
+  assert.equal(retry.task.id, steps[4].taskId);
+  assert.equal(store.finish(retry.run.id, device.id, Date.now(), {
+    status: 'succeeded', result: 'An older client reported success',
+    artifact: { name: 'application-observation.txt', text: 'Saved' },
+  }), true);
+  assert.equal(store.get('owner', steps[4].taskId)?.status, 'failed');
+  assert.equal(store.get('owner', steps[5].taskId)?.status, 'waiting_dependency');
 });

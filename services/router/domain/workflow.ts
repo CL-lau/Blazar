@@ -65,19 +65,20 @@ function workflowAction(value: unknown): WorkflowAction {
       reference = { step, title };
     }
   }
-  if (kind === 'desktop.observe' && mode === 'window' && reference) {
-    return { kind, alias, deviceId, mode, windowFrom: reference };
+  if (expectedText !== undefined && (typeof expectedText !== 'string' || !expectedText.trim() ||
+      expectedText.length > 160 || /[\x00-\x1f\x7f]/.test(expectedText))) {
+    throw new InvalidWorkflow('Invalid expected desktop text');
   }
-  if (kind === 'desktop.observe' && (mode === undefined || mode === 'windows') && windowFrom === undefined) {
+  const expectation = expectedText ? { expectedText: expectedText.trim() } : {};
+  if (kind === 'desktop.observe' && mode === 'window' && reference) {
+    return { kind, alias, deviceId, mode, windowFrom: reference, ...expectation };
+  }
+  if (kind === 'desktop.observe' && (mode === undefined || mode === 'windows') && windowFrom === undefined && expectedText === undefined) {
     return { kind, alias, deviceId, ...(mode && { mode }) };
   }
   if (kind === 'desktop.click' && typeof button === 'string' && button.trim() &&
       button.length <= 120 && !/[\x00-\x1f\x7f]/.test(button)) {
-    if (expectedText !== undefined && (typeof expectedText !== 'string' || !expectedText.trim() ||
-        expectedText.length > 160 || /[\x00-\x1f\x7f]/.test(expectedText))) {
-      throw new InvalidWorkflow('Invalid expected desktop text');
-    }
-    const click = { kind, alias, deviceId, button, ...(expectedText && { expectedText: expectedText.trim() }) } as const;
+    const click = { kind, alias, deviceId, button, ...expectation } as const;
     if (windowFrom === undefined && typeof windowId === 'string' && /^w-[0-9]{1,20}$/.test(windowId) &&
         typeof windowIdentity === 'string' && /^[a-f0-9]{64}$/.test(windowIdentity)) {
       return { ...click, windowId, windowIdentity };
