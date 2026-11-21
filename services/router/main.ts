@@ -71,6 +71,7 @@ documentSyncTimer.unref();
 const watchdog = setInterval(() => {
   const now = Date.now();
   store.expire(now);
+  store.watchSilentRuns(now);
   store.updateDeviceReadiness(now);
   server.flushStopNotifications();
 }, 1_000);

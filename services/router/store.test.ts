@@ -124,6 +124,28 @@ test('progress requires a current run and consecutive device sequences', t => {
   assert.equal(db.events('owner', 0).filter(event => event.type === 'run.progress').length, 2);
 });
 
+test('the watchdog reports silent live runs once and clears the warning after new progress', t => {
+  const db = new TaskStore(':memory:');
+  t.after(() => db.close());
+  const task = db.create('owner', 'desktop', 'silence', 'project', 'Read notes');
+  const now = Date.now();
+  const { run } = db.claim('owner', 'project', 'device', now, 45_000)!;
+  for (const elapsed of [30_000, 60_000, 90_000, 119_999]) {
+    assert.ok(db.renew(run.id, 'device', now + elapsed, 45_000));
+  }
+  assert.equal(db.watchSilentRuns(now + 119_999), 0);
+  assert.equal(db.watchSilentRuns(now + 120_000), 1);
+  assert.equal(db.watchSilentRuns(now + 120_001), 0);
+  assert.match(String(db.snapshot('owner').progress[0].message), /No recent Worker output/);
+  assert.equal(db.snapshot('other').progress.length, 0);
+  assert.equal(db.get('owner', task.id)?.status, 'running');
+  assert.equal(db.timeline('owner', task.id)?.events.filter(event => event.type === 'run.stalled').length, 1);
+  assert.equal(db.progress(run.id, 'device', now + 120_002, 1, 'Reading again'), true);
+  assert.equal(db.snapshot('owner').progress[0].message, 'Reading again');
+  assert.equal(db.watchSilentRuns(now + 120_003), 0);
+  assert.equal(db.watchSilentRuns(now + 250_000), 0);
+});
+
 test('timeline pages stay scoped to the task and owner', t => {
   const db = new TaskStore(':memory:');
   t.after(() => db.close());

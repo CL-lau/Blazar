@@ -7,6 +7,7 @@ import type { DesktopAppControls, PredecessorInput, Run, RunOutcome, Task, TaskA
 import { displayTaskStatus, windowImageLifetimeMs } from '../../packages/protocol/task.ts';
 
 const runLimitMs = 10 * 60_000;
+const runSilenceMs = 2 * 60_000;
 
 export type AppEvidence = { query: string; sources: string[]; refs: { id: string; version: number }[] };
 
@@ -176,6 +177,10 @@ export class TaskStore {
         id TEXT PRIMARY KEY, taskId TEXT NOT NULL UNIQUE REFERENCES task(id),
         device TEXT NOT NULL, version INTEGER NOT NULL, expires INTEGER NOT NULL
       );
+      CREATE TABLE IF NOT EXISTS run_activity (
+        run_id TEXT PRIMARY KEY REFERENCES run(id) ON DELETE CASCADE,
+        last_output INTEGER NOT NULL, stalled INTEGER NOT NULL DEFAULT 0
+      );
       CREATE TABLE IF NOT EXISTS run_deadline (
         run_id TEXT PRIMARY KEY REFERENCES run(id) ON DELETE CASCADE, deadline INTEGER NOT NULL
       );
@@ -276,6 +281,7 @@ export class TaskStore {
           SELECT seq,? FROM event WHERE type='run.progress'`).run(Date.now());
       }
       this.db.prepare('INSERT OR IGNORE INTO run_deadline SELECT id,expires+? FROM run').run(runLimitMs);
+      this.db.prepare('INSERT OR IGNORE INTO run_activity(run_id,last_output) SELECT id,? FROM run').run(Date.now());
       this.updateWorkflowReadiness();
     });
   }
@@ -397,10 +403,13 @@ export class TaskStore {
         WHERE NOT EXISTS(SELECT 1 FROM invalid_workflow_run i WHERE i.id=r.id)
         AND t.owner=? AND t.status='waiting_user' AND a.version=t.version AND a.decision IS NULL
         AND a.expires>? AND r.expires>? ORDER BY a.rowid DESC`).all(owner, Date.now(), Date.now());
-      const progress = this.db.prepare(`SELECT r.taskId,r.id AS runId,p.message
-        FROM run r JOIN task t ON t.id=r.taskId JOIN run_progress p ON p.run_id=r.id
+      const progress = this.db.prepare(`SELECT r.taskId,r.id AS runId,
+        CASE WHEN a.stalled=1 THEN 'No recent Worker output. The run is still active.' ELSE p.message END AS message
+        FROM run r JOIN task t ON t.id=r.taskId JOIN run_activity a ON a.run_id=r.id
+        LEFT JOIN run_progress p ON p.run_id=r.id
+          AND p.device_seq=(SELECT MAX(device_seq) FROM run_progress WHERE run_id=r.id)
         WHERE t.owner=? AND t.status='running' AND r.version=t.version
-        AND p.device_seq=(SELECT MAX(device_seq) FROM run_progress WHERE run_id=r.id)`).all(owner);
+        AND (p.device_seq IS NOT NULL OR a.stalled=1)`).all(owner);
       const workflowSteps = this.db.prepare(`SELECT s.workflow_id AS workflowId,s.step_key AS stepKey,
         s.task_id AS taskId,d.predecessor AS predecessorId FROM workflow_step s
         JOIN workflow w ON w.id=s.workflow_id LEFT JOIN workflow_dependency d ON d.task_id=s.task_id
@@ -1003,6 +1012,7 @@ export class TaskStore {
             AND NOT EXISTS(SELECT 1 FROM run_evidence_stop s WHERE s.run_id=run.id))`)
           .run(decision, command.approvalId, taskId, version, now, now);
         if (!changed.changes) return undefined;
+        this.db.prepare('UPDATE run_activity SET last_output=?,stalled=0 WHERE run_id=?').run(now, liveRun?.id ?? null);
         this.db.prepare("UPDATE task SET status='running' WHERE id=?").run(taskId);
         this.event(taskId, 'approval.decided', { approvalId: command.approvalId, decision });
       } else if (command.action === 'accept_result' || command.action === 'reject_result') {
@@ -1419,6 +1429,7 @@ export class TaskStore {
       const run: Run = { id: randomUUID(), taskId: task.id, version: task.version, device, expires: now + Math.min(leaseMs, runLimitMs) };
       this.db.prepare('INSERT INTO run VALUES(?,?,?,?,?)').run(run.id, task.id, device, run.version, run.expires);
       this.db.prepare('INSERT INTO run_deadline VALUES(?,?)').run(run.id, now + runLimitMs);
+      this.db.prepare('INSERT INTO run_activity(run_id,last_output) VALUES(?,?)').run(run.id, now);
       this.db.prepare("UPDATE task SET status='running' WHERE id=?").run(task.id);
       const predecessors = this.predecessorInputs(task.id);
       if (predecessors.length) {
@@ -1546,6 +1557,7 @@ export class TaskStore {
         .get(runId);
       if (seq !== Number(prior?.seq) + 1) return false;
       this.db.prepare('INSERT INTO run_progress VALUES(?,?,?)').run(runId, seq, message);
+      this.db.prepare('UPDATE run_activity SET last_output=?,stalled=0 WHERE run_id=?').run(now, runId);
       this.event(String(run.taskId), 'run.progress', { runId, deviceSeq: seq, message });
       return true;
     });
@@ -1736,6 +1748,22 @@ export class TaskStore {
         });
       }
       return tasks.length;
+    });
+  }
+
+  watchSilentRuns(now: number) {
+    return this.transaction(() => {
+      const silent = this.db.prepare(`UPDATE run_activity SET stalled=1 WHERE stalled=0 AND last_output<=?
+        AND EXISTS(SELECT 1 FROM run r JOIN task t ON t.id=r.taskId
+          WHERE r.id=run_activity.run_id AND r.expires>? AND r.version=t.version AND t.status='running'
+          AND NOT EXISTS(SELECT 1 FROM invalid_workflow_run i WHERE i.id=r.id))
+        RETURNING run_id, last_output`).all(now - runSilenceMs, now);
+      for (const run of silent) {
+        const runId = String(run.run_id);
+        const task = this.db.prepare('SELECT taskId FROM run WHERE id=?').get(runId)!;
+        this.event(String(task.taskId), 'run.stalled', { runId, lastOutput: Number(run.last_output) });
+      }
+      return silent.length;
     });
   }
 
