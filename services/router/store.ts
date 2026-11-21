@@ -136,6 +136,11 @@ export class TaskStore {
       CREATE TABLE IF NOT EXISTS device_worker (
         device_id TEXT PRIMARY KEY REFERENCES device(id), label TEXT NOT NULL, protocol TEXT NOT NULL
       );
+      CREATE TABLE IF NOT EXISTS channel_attachment_intent (
+        owner TEXT NOT NULL, channel TEXT NOT NULL, chat TEXT NOT NULL, sender TEXT NOT NULL,
+        task_id TEXT NOT NULL REFERENCES task(id), command_id TEXT NOT NULL, expires INTEGER NOT NULL,
+        PRIMARY KEY(owner,channel,chat,sender)
+      );
       CREATE TABLE IF NOT EXISTS task_attachment (
         task_id TEXT NOT NULL REFERENCES task(id) ON DELETE CASCADE,
         position INTEGER NOT NULL, name TEXT NOT NULL, text TEXT NOT NULL,
@@ -601,11 +606,35 @@ export class TaskStore {
       .get(owner, channel, message.chat, workspace, message.taskId ?? null, message.thread, message.taskId ?? null, message.id);
   }
 
+  expectChannelAttachment(owner: string, channel: string, workspace: string,
+                          message: { id: string; chat: string; thread: string; taskId: string; sender: string }, now: number) {
+    return this.transaction(() => {
+      if (!this.channelAttachmentTask(owner, channel, workspace, message)) return false;
+      this.db.prepare('DELETE FROM channel_attachment_intent WHERE expires<=?').run(now);
+      this.db.prepare('INSERT INTO channel_message VALUES(?,?,?)').run(owner, channel, message.id);
+      this.db.prepare(`INSERT INTO channel_attachment_intent VALUES(?,?,?,?,?,?,?)
+        ON CONFLICT(owner,channel,chat,sender) DO UPDATE SET
+        task_id=excluded.task_id,command_id=excluded.command_id,expires=excluded.expires`)
+        .run(owner, channel, message.chat, message.sender, message.taskId, message.id, now + 5 * 60_000);
+      return true;
+    });
+  }
+
+  channelAttachmentIntent(owner: string, channel: string, chat: string, sender: string, now: number) {
+    const row = this.db.prepare(`SELECT task_id,command_id FROM channel_attachment_intent
+      WHERE owner=? AND channel=? AND chat=? AND sender=? AND expires>?`).get(owner, channel, chat, sender, now);
+    return row && { taskId: String(row.task_id), commandId: String(row.command_id) };
+  }
+
   addChannelAttachment(owner: string, channel: string, workspace: string, taskId: string,
-                       message: { id: string; chat: string; thread: string; taskId?: string }, attachment: TaskAttachment) {
+                       message: { id: string; chat: string; thread: string; taskId?: string }, attachment: TaskAttachment,
+                       intent?: { sender: string; commandId: string }) {
     return this.transaction(() => {
       const task = this.channelAttachmentTask(owner, channel, workspace, message);
       if (task?.id !== taskId) return false;
+      if (intent && this.channelAttachmentIntent(owner, channel, message.chat, intent.sender, Date.now())?.commandId !== intent.commandId) {
+        return false;
+      }
       const refs = this.appEvidence(taskId);
       if (refs && this.canUseChannelAppEvidence?.(owner, workspace, refs) !== true) return false;
       const totals = this.db.prepare(`SELECT COUNT(*) AS count,COALESCE(SUM(length(CAST(text AS BLOB))),0) AS bytes
@@ -613,6 +642,8 @@ export class TaskStore {
       const size = Buffer.byteLength(attachment.text);
       if (Number(totals.count) >= 4 || Number(totals.bytes) + size > 16_384) return false;
       this.db.prepare('INSERT INTO channel_message VALUES(?,?,?)').run(owner, channel, message.id);
+      if (intent) this.db.prepare('DELETE FROM channel_attachment_intent WHERE owner=? AND channel=? AND chat=? AND sender=?')
+        .run(owner, channel, message.chat, intent.sender);
       this.db.prepare('INSERT INTO task_attachment VALUES(?,?,?,?)').run(taskId, totals.count!, attachment.name, attachment.text);
       const run = this.db.prepare('SELECT id FROM run WHERE taskId=?').get(taskId);
       if (run) this.db.prepare('DELETE FROM run_steering WHERE run_id=?').run(run.id!);

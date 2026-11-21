@@ -1,13 +1,44 @@
 import { DWClient, TOPIC_ROBOT } from 'dingtalk-stream';
-import { dingTalkReplyWindow, parseDingTalk, sendDingTalkNotice, type DingTalkConfig, type ReplyWindow } from '../../packages/channels/dingtalk.ts';
+import { createDingTalkAttachmentReader, dingTalkReplyWindow, parseDingTalk, parseDingTalkAttachment, sendDingTalkNotice, type DingTalkConfig, type ReplyWindow } from '../../packages/channels/dingtalk.ts';
 import type { TaskStore } from './store.ts';
 
-type ConnectionConfig = DingTalkConfig & { clientId: string; clientSecret: string; workspace: string };
+type ConnectionConfig = DingTalkConfig & { clientId: string; clientSecret: string; workspace: string; mediaHosts?: ReadonlySet<string> };
+
+export async function receiveDingTalkEvent(store: TaskStore, owner: string, channel: string, config: ConnectionConfig,
+                                          raw: string, download?: (code: string) => Promise<string | undefined>,
+                                          signal?: AbortSignal) {
+  const event = parseDingTalk(raw, config);
+  if (event) {
+    if ('taskId' in event && event.text === '/attach') {
+      if (download && event.privateChat) {
+        store.expectChannelAttachment(owner, channel, config.workspace, { ...event, taskId: event.taskId }, Date.now());
+      }
+    } else {
+      store.receiveChannelMessage(owner, channel, config.workspace, event);
+    }
+    return event.chat;
+  }
+  if (!download) return undefined;
+  const file = parseDingTalkAttachment(raw, config);
+  if (!file) return undefined;
+  const intent = store.channelAttachmentIntent(owner, channel, file.chat, file.sender, Date.now());
+  if (!intent) return undefined;
+  const message = { ...file, taskId: intent.taskId };
+  if (!store.channelAttachmentTask(owner, channel, config.workspace, message)) return undefined;
+  const text = await download(file.code);
+  if (!signal?.aborted && text !== undefined) {
+    store.addChannelAttachment(owner, channel, config.workspace, intent.taskId, message, { name: file.name, text },
+      { sender: file.sender, commandId: intent.commandId });
+  }
+  return file.chat;
+}
 
 export function startDingTalk(store: TaskStore, owner: string, config: ConnectionConfig, onMessage?: () => void) {
   const channel = JSON.stringify(['dingtalk', config.clientId, config.robotCode]);
   const connectionOptions = { clientId: config.clientId, clientSecret: config.clientSecret, autoReconnect: true };
   const client = new DWClient(connectionOptions);
+  const stop = new AbortController();
+  const download = config.mediaHosts?.size ? createDingTalkAttachmentReader(config, config.mediaHosts) : undefined;
   let active = true;
   let sending = false;
   const windows = new Map<string, ReplyWindow>();
@@ -30,18 +61,15 @@ export function startDingTalk(store: TaskStore, owner: string, config: Connectio
   dispatcher.unref();
   client.registerCallbackListener(TOPIC_ROBOT, frame => {
     if (!active) return;
-    try {
-      const event = parseDingTalk(frame.data, config);
-      if (event) {
-        store.receiveChannelMessage(owner, channel, config.workspace, event);
+    void receiveDingTalkEvent(store, owner, channel, config, frame.data, download, stop.signal).then(chat => {
+      if (!active) return;
+      if (chat) {
         onMessage?.();
         const window = dingTalkReplyWindow(frame.data, Date.now());
-        if (window) windows.set(event.chat, window);
+        if (window) windows.set(chat, window);
       }
       if (frame.headers.messageId) client.socketCallBackResponse(frame.headers.messageId, { success: true });
-    } catch {
-      console.error('DingTalk callback was not committed');
-    }
+    }).catch(() => { if (active) console.error('DingTalk callback was not committed'); });
   });
   void client.connect().then(() => {
     if (!active) client.disconnect();
@@ -50,6 +78,7 @@ export function startDingTalk(store: TaskStore, owner: string, config: Connectio
   });
   return () => {
     active = false;
+    stop.abort();
     clearInterval(dispatcher);
     client.disconnect();
   };
@@ -67,5 +96,6 @@ export function dingTalkConfig(env: NodeJS.ProcessEnv): ConnectionConfig | undef
   if (!clientId || !clientSecret || !robotCode || !workspace || !senders.size || !conversations.size) {
     throw new Error('Set all Blazar DingTalk configuration values before enabling Stream mode');
   }
-  return { clientId, clientSecret, robotCode, workspace, senders, conversations };
+  const mediaHosts = split(env.BLAZAR_DINGTALK_MEDIA_HOSTS?.toLowerCase());
+  return { clientId, clientSecret, robotCode, workspace, senders, conversations, mediaHosts };
 }

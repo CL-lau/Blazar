@@ -1,7 +1,8 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { TaskStore } from './store.ts';
-import { dingTalkReplyWindow, parseDingTalk, sendDingTalkNotice } from '../../packages/channels/dingtalk.ts';
+import { receiveDingTalkEvent } from './dingtalk.ts';
+import { createDingTalkAttachmentReader, dingTalkReplyWindow, parseDingTalk, sendDingTalkNotice } from '../../packages/channels/dingtalk.ts';
 
 test('DingTalk Stream events deduplicate and can follow tasks only from their original conversation', t => {
   const store = new TaskStore(':memory:');
@@ -56,4 +57,51 @@ test('DingTalk notices use an unexpired official reply window and do not retry u
     throw new Error('Connection lost after possible delivery');
   }));
   assert.equal(store.leaseChannelNotice('dingtalk', Date.now() + 31_000, ['chat'], true), undefined);
+});
+
+test('a DingTalk private file consumes only its sender’s pending task attachment request', async t => {
+  const store = new TaskStore(':memory:');
+  t.after(() => store.close());
+  const config = { clientId: 'app', clientSecret: 'secret', robotCode: 'robot', workspace: 'workspace',
+    senders: new Set(['sender', 'other']), conversations: new Set(['chat', 'other-chat']) };
+  const channel = JSON.stringify(['dingtalk', 'app', 'robot']);
+  const requests: string[] = [];
+  const download = createDingTalkAttachmentReader(config, new Set(['files.dingtalk.com']), async (url, init) => {
+    const address = String(url);
+    requests.push(address);
+    assert.equal(init?.redirect, 'error');
+    if (address.endsWith('/oauth2/accessToken')) {
+      assert.deepEqual(JSON.parse(String(init?.body)), { appKey: 'app', appSecret: 'secret' });
+      return Response.json({ accessToken: 'token', expireIn: 3600 });
+    }
+    if (address.endsWith('/robot/messageFiles/download')) {
+      assert.equal(new Headers(init?.headers).get('x-acs-dingtalk-access-token'), 'token');
+      assert.deepEqual(JSON.parse(String(init?.body)), { robotCode: 'robot', downloadCode: 'fixture-code' });
+      return Response.json({ downloadUrl: 'https://files.dingtalk.com/download' });
+    }
+    assert.equal(new Headers(init?.headers).has('x-acs-dingtalk-access-token'), false);
+    return new Response('DingTalk fixture text');
+  });
+  const receive = (body: object) => receiveDingTalkEvent(store, 'owner', channel, config, JSON.stringify({
+    robotCode: 'robot', senderStaffId: 'sender', conversationType: '1', conversationId: 'chat', ...body,
+  }), download);
+  const sendText = (id: string, content: string) => receive({ msgId: id, msgtype: 'text', text: { content } });
+  const sendFile = (id: string, overrides: object = {}) => receive({ msgId: id, msgtype: 'file',
+    content: { fileName: 'notes.txt', downloadCode: 'fixture-code' }, ...overrides });
+  await sendText('root', '/blazar Summarize the attachment');
+  const [task] = store.snapshot('owner').tasks;
+  await sendFile('before-selection');
+  await sendText('select', '/blazar follow ' + task.id + ' /attach');
+  await sendFile('other-sender', { senderStaffId: 'other' });
+  await sendFile('other-chat', { conversationId: 'other-chat' });
+  await sendFile('group', { conversationType: '2' });
+  assert.deepEqual(requests, []);
+  await sendFile('attachment');
+  await sendFile('attachment');
+  await sendText('select', '/blazar follow ' + task.id + ' /attach');
+  await sendFile('second-without-selection');
+  assert.equal(requests.length, 3);
+  assert.equal(store.get('owner', task.id)?.version, 2);
+  assert.deepEqual({ ...store.taskAttachment('owner', task.id, 0) }, { name: 'notes.txt', text: 'DingTalk fixture text' });
+  assert.equal(store.taskAttachment('owner', task.id, 1), undefined);
 });
