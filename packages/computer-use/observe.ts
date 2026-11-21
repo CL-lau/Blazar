@@ -15,6 +15,7 @@ export type ObservationConfig = {
   driver: ComputerDriver;
   apps: ReadonlyMap<string, string>;
   visualApps?: ReadonlySet<string>;
+  textFields?: ReadonlyMap<string, ReadonlySet<string>>;
   buttons?: ReadonlyMap<string, ReadonlySet<string>>;
   desktopLockPath?: string;
   sessionLocked?: (signal: AbortSignal) => Promise<boolean>;
@@ -35,7 +36,7 @@ export class DesktopSessionLocked extends Error {
 }
 
 export class DesktopInputTakenOver extends Error {
-  constructor() { super('Local input interrupted the click. Retry when the desktop is available.'); }
+  constructor(action = 'click') { super('Local input interrupted the ' + action + '. Retry when the desktop is available.'); }
 }
 
 async function macLastInput(signal: AbortSignal) {
@@ -79,22 +80,30 @@ export function observationConfig(env: NodeJS.ProcessEnv, desktopLockPath?: stri
     apps.set(alias, app);
   }
   if (!apps.size || apps.size > 25) throw new Error('Configure 1 to 25 approved applications');
-  const configured = JSON.parse(env.BLAZAR_COMPUTER_BUTTONS ?? '{}');
-  if (!configured || typeof configured !== 'object' || Array.isArray(configured)) throw new Error('Invalid button configuration');
-  const buttons = new Map<string, ReadonlySet<string>>();
-  for (const [alias, values] of Object.entries(configured)) {
-    if (!apps.has(alias) || !Array.isArray(values) || values.length > 25 ||
-        values.some(value => typeof value !== 'string' || !value.trim() || value.length > 120 || /[\x00-\x1f\x7f]/.test(value))) {
-      throw new Error('Invalid configured button');
+  function controls(raw: string | undefined, label: string) {
+    const configured = JSON.parse(raw ?? '{}');
+    if (!configured || typeof configured !== 'object' || Array.isArray(configured)) {
+      throw new Error('Invalid ' + label + ' configuration');
     }
-    buttons.set(alias, new Set(values as string[]));
+    const configuredControls = new Map<string, ReadonlySet<string>>();
+    for (const [alias, values] of Object.entries(configured)) {
+      if (!apps.has(alias) || !Array.isArray(values) || values.length > 25 ||
+          values.some(value => typeof value !== 'string' || !value.trim() || value.length > 120 || /[\x00-\x1f\x7f]/.test(value))) {
+        throw new Error('Invalid configured ' + label);
+      }
+      configuredControls.set(alias, new Set(values as string[]));
+    }
+    return configuredControls;
   }
+  const buttons = controls(env.BLAZAR_COMPUTER_BUTTONS, 'button');
+  const textFields = controls(env.BLAZAR_COMPUTER_TEXT_FIELDS, 'text field');
+  if (textFields.size && driverKind !== 'cua') throw new Error('Desktop text fields require the CUA driver');
   const visual = JSON.parse(env.BLAZAR_COMPUTER_VISUAL_APPS ?? '[]');
   if (!Array.isArray(visual) || visual.length > apps.size || visual.some(alias => !apps.has(alias))) {
     throw new Error('Configure visual capture with approved application aliases.');
   }
   return { executable, driver: driverKind === 'cua' ? cuaDesktop(executable, cuaSocket) : agentDesktop(executable),
-    apps, buttons, visualApps: new Set(visual), desktopLockPath,
+    apps, buttons, textFields, visualApps: new Set(visual), desktopLockPath,
     sessionLocked: process.platform === 'darwin' ? macSessionLocked : undefined,
     lastInput: process.platform === 'darwin' ? macLastInput : undefined };
 }
@@ -234,22 +243,21 @@ async function observeWindow(config: ObservationConfig, root: string, goal: stri
   return description;
 }
 
-function buttonIn(tree: DesktopElement, label: string) {
-  const matches: { ref: string; path: string }[] = [];
+function elementIn<T>(tree: DesktopElement, identify: (node: DesktopElement) => T | undefined, control: string) {
+  const matches: { target: T; path: string }[] = [];
   function visit(node: DesktopElement, path: string, depth: number) {
-    if (depth > 16) return;
-    if (node.name === label && (node.role === 'button' || node.role === 'AXButton') && node.pressReference) {
-      matches.push({ ref: node.pressReference, path });
-    }
+    if (depth > 16 || /secure|password/i.test(node.role ?? '')) return;
+    const target = identify(node);
+    if (target !== undefined) matches.push({ target, path });
     node.children.forEach((child, index) => visit(child, path + '.' + index, depth + 1));
   }
   visit(tree, '0', 0);
-  if (matches.length !== 1) throw new Error('The configured button must be uniquely visible.');
+  if (matches.length !== 1) throw new Error('The configured ' + control + ' must be uniquely visible.');
   return matches[0];
 }
 
 export class DesktopResultUnverified extends Error {
-  constructor() { super('The click may have been applied. Check the application before retrying.'); }
+  constructor(action = 'click') { super('The ' + action + ' may have been applied. Check the application before retrying.'); }
 }
 
 export async function clickApp(config: ObservationConfig, root: string, goal: string, signal: AbortSignal,
@@ -261,23 +269,87 @@ export async function clickApp(config: ObservationConfig, root: string, goal: st
   const windowId = match[2];
   const identity = match[3];
   const label = match[4];
-  const { initialWindow, initial, button, summary } = await withDesktopLock(config, signal, async () => {
+  const expected = expectedText ? ` Expected visible text: "${expectedText}".` : '';
+  return approvedDesktopAction(config, root, app, windowId, identity, signal, authorize, {
+    summary: `Click "${label}" in ${app}${windowId ? ` window ${windowId}` : ''}.${expected}`,
+    name: 'click',
+    locate: tree => elementIn(tree, node => node.name === label && (node.role === 'button' || node.role === 'AXButton')
+      ? node.pressReference : undefined, 'button'),
+    inspect(tree) {
+      const summary = describeTree(tree);
+      if (expectedText && summary.includes(expectedText)) {
+        throw new Error('The expected text is already visible. Review the window before clicking.');
+      }
+      return summary;
+    },
+    apply: (reference, session) => config.driver.click(root, reference, signal, session),
+    verify(tree, previous) {
+      const result = describeTree(tree);
+      return result && result !== previous && (!expectedText || result.includes(expectedText)) ? result : undefined;
+    },
+  });
+}
+
+export async function setAppText(
+  config: ObservationConfig, root: string,
+  target: { alias: string; windowId: string; identity: string; label: string; value: string },
+  signal: AbortSignal, authorize: DesktopAuthorization,
+) {
+  const { alias, windowId, identity, label, value } = target;
+  const app = config.apps.get(alias);
+  const setText = config.driver.setText;
+  if (!app || !setText || !config.textFields?.get(alias)?.has(label)) throw new Error('Choose a configured desktop text field.');
+  if (!/^w-[0-9]{1,20}$/.test(windowId) || !/^[a-f0-9]{64}$/.test(identity)) {
+    throw new Error('Choose an identified desktop window for the text edit.');
+  }
+  if (value.length > 500 || /[\x00-\x1f\x7f]/.test(value)) throw new Error('Invalid desktop text value');
+  const locate = (tree: DesktopElement) => elementIn(tree, node =>
+    node.editableText?.label === label ? node.editableText : undefined, 'text field');
+  return approvedDesktopAction(config, root, app, windowId, identity, signal, authorize, {
+    summary: `Set "${label}" in ${app} window ${windowId} to ${JSON.stringify(value)}.`,
+    name: 'text edit',
+    locate,
+    inspect(tree) {
+      if (locate(tree).target.value === value) throw new Error('The text field already has the requested value.');
+      return '';
+    },
+    apply(field, session) {
+      if (!session) throw new Error('The text edit requires a fresh action session.');
+      return setText(root, field.reference, value, signal, session);
+    },
+    verify(tree, _previous, originalPath) {
+      const updated = locate(tree);
+      return updated.path === originalPath && updated.target.value === value ? `Verified text in "${label}".` : undefined;
+    },
+  });
+}
+
+type DesktopAuthorization = (summary: string, signal: AbortSignal) => Promise<(() => Promise<boolean>) | undefined>;
+
+async function approvedDesktopAction<T>(
+  config: ObservationConfig, root: string, app: string, windowId: string | undefined, identity: string | undefined,
+  signal: AbortSignal, authorize: DesktopAuthorization, action: {
+    summary: string;
+    name: string;
+    locate(tree: DesktopElement): { path: string; target: T };
+    inspect(tree: DesktopElement): string;
+    apply(target: T, actionSession?: string): Promise<void>;
+    verify(tree: DesktopElement, previous: string, originalPath: string): string | undefined;
+  },
+) {
+  const { initialWindow, initial, selected, summary } = await withDesktopLock(config, signal, async () => {
     const initialWindow = windowId ? await accessibleWindow(config, root, app, windowId, signal, identity) : undefined;
     if (initialWindow && !initialWindow.instance) throw new Error('The driver cannot identify the selected window process.');
     const initial = await config.driver.snapshot(root, app, signal, windowId);
-    return { initialWindow, initial, button: buttonIn(initial.tree, label), summary: describeTree(initial.tree) };
+    return { initialWindow, initial, selected: action.locate(initial.tree), summary: action.inspect(initial.tree) };
   });
-  if (expectedText && summary.includes(expectedText)) {
-    throw new Error('The expected text is already visible. Review the window before clicking.');
-  }
-  const expected = expectedText ? ` Expected visible text: "${expectedText}".` : '';
-  const consume = await authorize(`Click "${label}" in ${app}${windowId ? ` window ${windowId}` : ''}.${expected}`, signal);
+  const consume = await authorize(action.summary, signal);
   if (!consume) throw new Error('Desktop action was not approved.');
   return withDesktopLock(config, signal, async () => {
     const baseline = await config.lastInput?.(signal);
     const assertNoTakeover = async () => {
       const latest = await config.lastInput?.(signal);
-      if (baseline && latest && latest.earliest > baseline.latest) throw new DesktopInputTakenOver();
+      if (baseline && latest && latest.earliest > baseline.latest) throw new DesktopInputTakenOver(action.name);
       signal.throwIfAborted();
     };
     if (windowId) {
@@ -288,8 +360,8 @@ export async function clickApp(config: ObservationConfig, root: string, goal: st
     }
     const current = await config.driver.snapshot(root, app, signal, windowId, true);
     try {
-      const latest = buttonIn(current.tree, label);
-      if (current.fingerprint !== initial.fingerprint || latest.path !== button.path ||
+      const latest = action.locate(current.tree);
+      if (current.fingerprint !== initial.fingerprint || latest.path !== selected.path ||
           initial.windowId !== current.windowId || initial.pid !== current.pid) {
         throw new Error('The application changed after review. Request a new action.');
       }
@@ -299,19 +371,19 @@ export async function clickApp(config: ObservationConfig, root: string, goal: st
       try {
         await assertDesktopUnlocked(config, signal);
         await assertNoTakeover();
-        await config.driver.click(root, latest.ref, signal, current.actionSession);
+        await action.apply(latest.target, current.actionSession);
         const refreshed = await config.driver.snapshot(root, app, signal, windowId);
         if (initial.windowId !== refreshed.windowId || initial.pid !== refreshed.pid) throw new DesktopResultUnverified();
         if (windowId) {
           const verifiedWindow = await accessibleWindow(config, root, app, windowId, signal);
           if (verifiedWindow.instance !== initialWindow?.instance) throw new DesktopResultUnverified();
         }
-        const result = describeTree(refreshed.tree);
-        if (!result || result === summary || (expectedText && !result.includes(expectedText))) throw new DesktopResultUnverified();
+        const result = action.verify(refreshed.tree, summary, selected.path);
+        if (!result) throw new DesktopResultUnverified(action.name);
         return result;
       } catch (error) {
         if (error instanceof DesktopInputTakenOver) throw error;
-        throw new DesktopResultUnverified();
+        throw new DesktopResultUnverified(action.name);
       }
     } finally {
       if (current.actionSession) await config.driver.releaseActionSession?.(root, current.actionSession);

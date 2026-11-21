@@ -4,7 +4,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
 import { cuaDesktop } from '../../packages/computer-use/cua.ts';
-import { clickApp, observeApp, observeWindowWithImage } from '../../packages/computer-use/observe.ts';
+import { clickApp, observeApp, observeWindowWithImage, setAppText } from '../../packages/computer-use/observe.ts';
 
 test('CUA scopes hybrid observations and approved clicks to the configured window', { skip: process.platform !== 'darwin' }, async t => {
   const root = realpathSync(mkdtempSync(join(tmpdir(), 'blazar-cua-')));
@@ -62,7 +62,7 @@ console.log(JSON.stringify(response, null, 2));
 console.log('Human-readable output');
 `, { mode: 0o700 });
   const config = { executable, driver: cuaDesktop(executable, join(root, 'cua.sock')), apps: new Map([['notes', 'bundle:com.example.notes']]),
-    visualApps: new Set(['notes']), buttons: new Map([['notes', new Set(['Save'])]]) };
+    visualApps: new Set(['notes']), textFields: new Map([['notes', new Set(['Title'])]]), buttons: new Map([['notes', new Set(['Save'])]]) };
   const signal = AbortSignal.timeout(8_000);
   const windows = JSON.parse(await observeApp(config, root, '/observe notes --windows-json', signal));
   assert.equal(windows.length, 1);
@@ -82,12 +82,16 @@ console.log('Human-readable output');
   const children = snapshot.tree.children[0].children;
   assert.deepEqual(children[2].editableText, { label: 'Title', reference: 's00000003:3', value: 'Old title' });
   assert.equal(children[3].editableText, undefined);
-  try {
-    await config.driver.setText!(root, 's00000003:3', 'New title', signal, snapshot.actionSession);
-    const updated = await config.driver.snapshot(root, 'bundle:com.example.notes', signal, 'w-30');
-    assert.equal(updated.tree.children[0].children[2].editableText?.value, 'New title');
-  } finally {
-    await config.driver.releaseActionSession!(root, snapshot.actionSession);
-  }
-
+  await config.driver.releaseActionSession!(root, snapshot.actionSession);
+  const target = { alias: 'notes', windowId: 'w-30', identity: windows[0].identity, label: 'Title', value: 'New title' };
+  await assert.rejects(setAppText(config, root, { ...target, label: 'Password' }, signal, async () => {
+    assert.fail('A blocked field cannot request approval');
+  }), /configured desktop text field/);
+  await assert.rejects(setAppText(config, root, target, signal, async () => undefined), /was not approved/);
+  assert.equal(await setAppText(config, root, target, signal, async summary => {
+    assert.match(summary, /Set "Title".*"New title"/);
+    return async () => true;
+  }), 'Verified text in "Title".');
+  assert.equal(readFileSync(join(root, 'edited'), 'utf8'), 'New title');
+  assert.equal(readFileSync(join(root, 'ended'), 'utf8'), readFileSync(join(root, 'action-session'), 'utf8'));
 });
