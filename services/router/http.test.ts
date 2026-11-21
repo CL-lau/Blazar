@@ -23,6 +23,7 @@ test('Router authenticates, deduplicates commands and replays task changes over 
   let routingMemory: string[] | undefined;
   let routingMemoryId: string | undefined;
   let revokeDuringAnswer: string | undefined;
+  let githubStatus = 200;
   const server = routerServer(store, {
     owner: 'test', token, memory, pushEnabled: true,
     documents: [feishuDocuments('feishu', 'project account', 'fixture', async (url, init) => {
@@ -32,7 +33,7 @@ test('Router authenticates, deduplicates commands and replays task changes over 
     }), githubDocuments('engineering', 'example/handbook', 'other-fixture', async (url, init) => {
       assert.equal(String(url), 'https://api.github.com/repos/example/handbook/contents/docs/review.md');
       assert.equal(new Headers(init?.headers).get('authorization'), 'Bearer other-fixture');
-      return new Response('Engineering review findings');
+      return new Response(githubStatus === 200 ? 'Engineering review findings' : null, { status: githubStatus });
     })],
     async answerMemory(question, evidence) {
       memoryAnswers++;
@@ -229,6 +230,15 @@ test('Router authenticates, deduplicates commands and replays task changes over 
   assert.deepEqual(await (await fetch(url + authorized, { headers })).json(), { items: [] });
   const remaining = await (await fetch(url + mixedRecall, { headers })).json();
   assert.deepEqual(remaining.items.map(item => item.connection), [github]);
+  githubStatus = 503;
+  assert.equal((await post(repoImport, 'transient-github', { workspace: 'demo', document: 'docs/review.md' })).status, 502);
+  assert.equal(memory.recall('test', 'demo', 'findings', [github]).length, 1);
+  githubStatus = 404;
+  assert.equal((await post(repoImport, 'missing-github', { workspace: 'demo', document: 'docs/review.md' })).status, 502);
+  assert.deepEqual(memory.recall('test', 'demo', 'findings', [github]), []);
+  githubStatus = 200;
+  assert.equal((await post(repoImport, 'restored-github', { workspace: 'demo', document: 'docs/review.md' })).status, 200);
+  assert.equal(memory.recall('test', 'demo', 'findings', [github]).length, 1);
 
   const registerDevice = async (name: string, workspace: string) => {
     const response = await post('/v1/admin/devices', name, { name, workspace });

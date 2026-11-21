@@ -28,6 +28,10 @@ export class MemoryStore {
         connection TEXT NOT NULL REFERENCES app_connection(id), resource TEXT NOT NULL,
         PRIMARY KEY(connection,resource)
       );
+      CREATE TABLE IF NOT EXISTS document_access (
+        connection TEXT NOT NULL REFERENCES app_connection(id), resource TEXT NOT NULL,
+        allowed INTEGER NOT NULL, request_id INTEGER NOT NULL, PRIMARY KEY(connection,resource)
+      );
       CREATE TABLE IF NOT EXISTS app_usage (
         id INTEGER PRIMARY KEY, connection TEXT NOT NULL REFERENCES app_connection(id),
         workspace TEXT NOT NULL, operation TEXT NOT NULL, status TEXT NOT NULL, started INTEGER NOT NULL
@@ -166,12 +170,20 @@ export class MemoryStore {
       .all(connection);
   }
 
+  recordDocumentAccess(connection: string, resource: string, requestId: number | bigint, allowed: boolean) {
+    this.db.prepare(`INSERT INTO document_access VALUES(?,?,?,?) ON CONFLICT(connection,resource) DO UPDATE
+      SET allowed=excluded.allowed,request_id=excluded.request_id WHERE excluded.request_id>=document_access.request_id`)
+      .run(connection, resource, Number(allowed), requestId);
+  }
+
   importDocument(owner: string, workspace: string, body: string, source: ResourceRef,
                  requestId?: number | bigint): string | undefined {
     this.db.exec('BEGIN IMMEDIATE');
     try {
       let id: string | undefined;
-      if (this.connection(owner, source.connection, workspace) && !this.resourceRevoked(source.connection, source.resource)) {
+      const available = this.connection(owner, source.connection, workspace) && !this.resourceRevoked(source.connection, source.resource);
+      if (available && requestId !== undefined) this.recordDocumentAccess(source.connection, source.resource, requestId, true);
+      if (available && !this.documentAccessDenied(source.connection, source.resource)) {
         const identical = this.db.prepare(`SELECT id FROM memory WHERE owner=? AND workspace=?
           AND connection=? AND resource=? AND revision=? AND expires IS NULL
           AND (body=? OR EXISTS(SELECT 1 FROM memory_revision r WHERE r.id=memory.id AND r.body=?))
@@ -214,9 +226,10 @@ export class MemoryStore {
         SELECT 1 FROM app_connection a WHERE a.id=? AND a.owner=? AND a.active=1
         AND (a.workspace IS NULL OR a.workspace=?)
         AND NOT EXISTS(SELECT 1 FROM revoked_resource r WHERE r.connection=a.id AND r.resource=?)
+        AND NOT EXISTS(SELECT 1 FROM document_access x WHERE x.connection=a.id AND x.resource=? AND x.allowed=0)
       )`).run(id, owner, workspace, body, source?.connection ?? null, source?.resource ?? null,
       source?.revision ?? null, Date.now(), expires ?? null, source?.connection ?? null,
-      source?.connection ?? null, owner, workspace, source?.resource ?? null);
+      source?.connection ?? null, owner, workspace, source?.resource ?? null, source?.resource ?? null);
     return inserted.changes === 1 ? id : undefined;
   }
 
@@ -241,6 +254,7 @@ export class MemoryStore {
     if (!term || term.length > 256) return [];
     const allowed = JSON.stringify(allowedSources);
     const filter = `m.owner=? AND m.workspace=? AND COALESCE(s.disabled,0)=? AND (m.expires IS NULL OR m.expires>?)
+      AND NOT EXISTS(SELECT 1 FROM document_access x WHERE x.connection=m.connection AND x.resource=m.resource AND x.allowed=0)
       AND (NOT EXISTS(SELECT 1 FROM document_import i WHERE i.id=m.id) OR EXISTS (
         SELECT 1 FROM document_head h WHERE h.owner=m.owner AND h.workspace=m.workspace
           AND h.connection=m.connection AND h.resource=m.resource AND h.memory_id=m.id
@@ -287,6 +301,7 @@ export class MemoryStore {
       const row = this.db.prepare(`SELECT m.body,COALESCE(s.version,1) AS version,COALESCE(s.pinned,0) AS pinned,COALESCE(s.disabled,0) AS disabled
         FROM memory m LEFT JOIN memory_state s ON s.id=m.id
         WHERE m.id=? AND m.owner=? AND (m.expires IS NULL OR m.expires>?)
+        AND NOT EXISTS(SELECT 1 FROM document_access x WHERE x.connection=m.connection AND x.resource=m.resource AND x.allowed=0)
         AND (m.connection IS NULL OR EXISTS (
           SELECT 1 FROM app_connection a WHERE a.id=m.connection AND a.owner=m.owner AND a.active=1 AND (a.workspace IS NULL OR a.workspace=m.workspace)
         ))`).get(id, owner, Date.now());
@@ -324,6 +339,11 @@ export class MemoryStore {
 
   resourceRevoked(connection: string, resource: string) {
     return Boolean(this.db.prepare('SELECT 1 FROM revoked_resource WHERE connection=? AND resource=?')
+      .get(connection, resource));
+  }
+
+  private documentAccessDenied(connection: string, resource: string) {
+    return Boolean(this.db.prepare('SELECT 1 FROM document_access WHERE connection=? AND resource=? AND allowed=0')
       .get(connection, resource));
   }
 

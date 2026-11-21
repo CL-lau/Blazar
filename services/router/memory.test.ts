@@ -115,6 +115,12 @@ test('a delayed document import cannot replace the newer revision in recall', t 
   assert.ok(latest && earlier && latest !== earlier);
   assert.deepEqual(store.recall('owner', 'project', 'review', [connection]).map(row => row.id), [latest]);
   assert.equal(store.recall('owner', 'project', 'Outdated', [connection]).length, 0);
+  store.recordDocumentAccess(connection, source.resource, 1, false);
+  assert.equal(store.recall('owner', 'project', 'review', [connection])[0]?.id, latest);
+  store.recordDocumentAccess(connection, source.resource, 3, false);
+  assert.equal(store.importDocument('owner', 'project', 'Current review template', { ...source, revision: 'v2' }, 2), undefined);
+  assert.equal(store.recall('owner', 'project', 'review', [connection]).length, 0);
+  assert.equal(store.importDocument('owner', 'project', 'Current review template', { ...source, revision: 'v2' }, 4), latest);
   assert.equal(store.remove('owner', latest), true);
   assert.equal(store.recall('owner', 'project', 'review', [connection]).length, 0);
   assert.equal(store.revokeResource('owner', connection, source.resource), 1);

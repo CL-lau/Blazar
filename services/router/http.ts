@@ -3,7 +3,7 @@ import { artifactDiff } from './artifact-diff.ts';
 import { workerCatalog } from '../../packages/workers/registry.ts';
 import { performance } from 'node:perf_hooks';
 import { RouterMetrics } from './metrics.ts';
-import { DocumentUnavailable, type DocumentConnector } from '../../packages/apps/documents.ts';
+import { DocumentAccessDenied, DocumentUnavailable, type DocumentConnector } from '../../packages/apps/documents.ts';
 import { WebSocket, WebSocketServer } from 'ws';
 import { createQQHandler, qqChannel, type QQConfig } from '../../packages/channels/qq.ts';
 import { feishuChannel, parseFeishu, type FeishuConfig } from '../../packages/channels/feishu.ts';
@@ -142,6 +142,9 @@ async function handleMemory(
     try {
       content = await reader.read(document, AbortSignal.timeout(10_000));
     } catch (error) {
+      if (error instanceof DocumentAccessDenied) {
+        store.recordDocumentAccess(importPath[1], document, usageId, false);
+      }
       store.finishAppUsage(usageId, 'failed');
       throw new RequestError(502, error instanceof DocumentUnavailable ? error.message : 'Document read failed');
     }
