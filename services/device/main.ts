@@ -19,9 +19,10 @@ await mkdir(stateDirectory, { recursive: true, mode: 0o700 });
 const mode = process.env.BLAZAR_DEVICE_WORKER ?? 'preview';
 const observation = mode === 'observe' ? observationConfig(process.env, join(stateDirectory, 'desktop-lock.sqlite')) : undefined;
 const worker = observation ? undefined : await resolveWorker(mode, process.env.BLAZAR_WORKER_MANIFEST, process.env.BLAZAR_WORKER_EXECUTABLE);
-const workspaceLock = lockWorkspace(workspace, stateDirectory);
+const isolated = Boolean(worker && process.env.BLAZAR_WORKER_GIT_WORKTREE === '1');
+const workspaceLock = lockWorkspace(workspace, stateDirectory, isolated ? token : undefined);
 try {
-  const worktrees = worker && process.env.BLAZAR_WORKER_GIT_WORKTREE === '1'
+  const worktrees = isolated
     ? await gitRunWorktrees(workspaceLock.root, stateDirectory, process.env.BLAZAR_WORKER_GIT_PATCH === '1') : undefined;
   if (worker && !worktrees && (worker.protocol ?? 'acp') === 'acp') {
     try {
@@ -32,6 +33,9 @@ try {
   }
   const ledger = new DeviceLedger(join(stateDirectory, 'ledger.sqlite'));
   try {
+    const competing = isolated ? ledger.interrupted(workspaceLock.workspaceIdentity)
+      : ledger.workspaceExecutions(workspaceLock.workspaceIdentity).find(row => row.identity !== workspaceLock.identity)?.runId;
+    if (competing) throw new Error('A previous workspace run requires reconciliation: ' + competing);
     const interrupted = ledger.interrupted(workspaceLock.identity);
     if (interrupted) console.error('Workspace has an interrupted run that requires reconciliation: ' + interrupted);
     const device = new DeviceClient(router, token, workspaceLock.root, ledger, worker, observation, workspaceLock.identity, worktrees);

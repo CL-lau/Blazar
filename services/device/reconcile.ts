@@ -17,11 +17,12 @@ if (!workspace || !runId || extra.length || !/^[a-f0-9-]{36}$/.test(runId)) {
   try {
     const ledger = new DeviceLedger(join(state, 'ledger.sqlite'));
     try {
+      const interrupted = ledger.workspaceExecutions(locked.workspaceIdentity).find(row => row.runId === runId);
+      if (!interrupted) throw new Error('No matching interrupted run');
       if (inspect) {
-        if (ledger.interrupted(locked.identity) !== runId) throw new Error('No matching interrupted run');
         console.log(JSON.stringify(await inspectRunWorktree(locked.root, join(state, 'run-worktrees'), runId), null, 2));
       } else {
-        if (!ledger.clearExecution(locked.identity, runId)) throw new Error('No matching interrupted run');
+        if (!ledger.clearExecution(interrupted.identity, runId)) throw new Error('No matching interrupted run');
         console.log('Cleared interrupted run ' + runId);
       }
     } finally {

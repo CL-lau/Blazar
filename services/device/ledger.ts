@@ -66,6 +66,14 @@ export class DeviceLedger {
     return row ? String(row.run_id) : undefined;
   }
 
+  workspaceExecutions(workspace: string) {
+    // Isolated identities use the source digest followed by a colon and a device digest.
+    return this.db.prepare(`SELECT workspace,run_id FROM active_execution
+      WHERE workspace=? OR (workspace>=? AND workspace<?) ORDER BY workspace`)
+      .all(workspace, workspace + ':', workspace + ';')
+      .map(row => ({ identity: String(row.workspace), runId: String(row.run_id) }));
+  }
+
   clearExecution(workspace: string, runId: string) {
     return this.db.prepare('DELETE FROM active_execution WHERE workspace=? AND run_id=?')
       .run(workspace, runId).changes === 1;
