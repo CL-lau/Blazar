@@ -109,6 +109,10 @@ console.log(JSON.stringify({ok:true,command:'snapshot',data:{tree:{role:'window'
   const pictureResponse = await fetch(picture, { headers: { Authorization: 'Bearer admin' } });
   assert.equal(pictureResponse.headers.get('Content-Type'), 'image/png');
   assert.equal(Buffer.from(await pictureResponse.arrayBuffer()).subarray(0, 8).toString('hex'), '89504e470d0a1a0a');
+  const jsonPicture = new URL(picture.href + '/image');
+  assert.equal((await fetch(jsonPicture)).status, 401);
+  const jsonImage = await (await fetch(jsonPicture, { headers: { Authorization: 'Bearer admin' } })).json();
+  assert.equal(Buffer.from(jsonImage.png, 'base64').subarray(0, 8).toString('hex'), '89504e470d0a1a0a');
   assert.equal(store.artifact('owner', String(image.id), Number(image.expires)), undefined);
   store.updateDeviceReadiness(Date.now());
   assert.equal(store.get('owner', denied.id)?.status, 'waiting_device');

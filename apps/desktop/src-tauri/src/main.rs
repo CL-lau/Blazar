@@ -57,10 +57,11 @@ fn allowed(method: &Method, path: &str) -> bool {
             "POST",
             ["", "events" | "conversation" | "workflows" | "pairings" | "app-connections" | "memory"],
         ) => true,
-        ("POST", ["", "app-connections", id, "import-document" | "revoke-resource"]) => {
+        ("POST", ["", "app-connections", id, "import-document" | "test-document" | "revoke-resource"])
+        | ("GET", ["", "app-connections", id, "usage"]) => {
             identifier(id)
         }
-        ("PATCH", ["", "memory", id]) | ("DELETE", ["", "app-connections" | "memory", id]) => {
+        ("PATCH" | "DELETE", ["", "app-connections" | "memory", id]) => {
             identifier(id)
         }
         ("GET", ["", "admin", "mobile-clients" | "devices" | "workers"]) => true,
@@ -71,9 +72,9 @@ fn allowed(method: &Method, path: &str) -> bool {
         }
         ("PATCH", ["", "admin", "devices", id]) => identifier(id),
         ("POST", ["", "memory", "answer"]) => true,
-        ("GET", ["", "artifacts", id] | ["", "artifacts", id, "diff"]) => identifier(id),
+        ("GET", ["", "artifacts", id] | ["", "artifacts", id, "diff" | "image"]) => identifier(id),
         ("GET", ["", "tasks", id, "timeline"]) => identifier(id),
-        ("POST", ["", "tasks", id, "commands"]) => identifier(id),
+        ("POST", ["", "tasks", id, "commands" | "remember-result"]) => identifier(id),
         ("DELETE", ["", "admin", "mobile-clients" | "devices", id]) => identifier(id),
         _ => false,
     }
@@ -173,6 +174,15 @@ mod tests {
             &Method::PATCH,
             "/memory/00000000-0000-0000-0000-000000000000"
         ));
+        for (method, path) in [
+            (Method::GET, "/artifacts/00000000-0000-0000-0000-000000000000/image"),
+            (Method::GET, "/app-connections/00000000-0000-0000-0000-000000000000/usage"),
+            (Method::PATCH, "/app-connections/00000000-0000-0000-0000-000000000000"),
+            (Method::POST, "/app-connections/00000000-0000-0000-0000-000000000000/test-document"),
+            (Method::POST, "/tasks/00000000-0000-0000-0000-000000000000/remember-result"),
+        ] {
+            assert!(allowed(&method, path), "{method} {path}");
+        }
         assert!(!allowed(&Method::GET, "//other.example/v1/state"));
         assert!(allowed(&Method::GET, "/stream?once=1&after=10"));
         assert!(!allowed(&Method::GET, "/stream?after=10"));

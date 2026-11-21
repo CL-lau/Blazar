@@ -640,10 +640,15 @@ export function routerServer(store: TaskStore, config: { owner: string; token: s
         reply(response, 200, { text: artifactDiff(previous.name, decode(previous.content), current.name, decode(current.content)) });
         return;
       }
-      const artifactPath = /^\/v1\/artifacts\/([a-f0-9-]{36})$/.exec(url.pathname);
+      const artifactPath = /^\/v1\/artifacts\/([a-f0-9-]{36})(\/image)?$/.exec(url.pathname);
       if (request.method === 'GET' && artifactPath) {
         const file = store.artifact(owner, artifactPath[1]);
         if (!file) throw new RequestError(404, 'Artifact not found');
+        if (artifactPath[2]) {
+          if (file.mime !== 'image/png') throw new RequestError(404, 'Window image not found');
+          reply(response, 200, { png: Buffer.from(file.content).toString('base64') });
+          return;
+        }
         response.writeHead(200, {
           'Content-Type': file.mime ?? 'text/plain; charset=utf-8',
           'Content-Length': String(file.content.byteLength),

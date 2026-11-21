@@ -2,6 +2,7 @@
 * { box-sizing: border-box; }
 body { margin: 0; }
 main { max-width: 1120px; margin: auto; padding: 24px; }
+.window-image { display: block; max-width: 100%; height: auto; }
 header { display: flex; justify-content: space-between; align-items: center; border-bottom: 1px solid #34343a; padding-bottom: 16px; }
 h1, h2, h3 { margin: 0 0 12px; line-height: 1.2; overflow-wrap: anywhere; }
 h1 { font-size: 25px; margin: 0; }
