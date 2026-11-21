@@ -220,11 +220,15 @@ export class DeviceClient {
       signal.throwIfAborted();
     }
     const claimStarted = performance.now();
+    const observation = this.observation;
     const claim = await this.post('claim', {
       capability: this.observation ? 'computer.observe' : this.worker ? 'agent.acp' : 'document.preview', requestId: this.claimId, platform: platform(),
       worker: this.workerConfiguration,
       desktopPermissions: this.desktopPermissions,
-      desktopApps: this.observation ? [...this.observation.apps.keys()] : undefined,
+      desktopApps: observation ? [...observation.apps.keys()] : undefined,
+      desktopControls: observation ? [...observation.apps.keys()].map(alias => ({
+        alias, buttons: [...observation.buttons?.get(alias) ?? []], visual: observation.visualApps?.has(alias) === true,
+      })) : undefined,
     }, signal);
     if (!claim.ok) throw new Error(`Task claim failed (${claim.status})`);
     const { assignment, leaseRemainingMs } = await claim.json() as { assignment: Assignment | null; leaseRemainingMs?: number };

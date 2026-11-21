@@ -3,7 +3,7 @@ import { orderWorkflow } from './workflow.ts';
 import type { ConversationTurn, Decision, RouteRequest } from './harness.ts';
 import { createHash, randomBytes, randomUUID } from 'node:crypto';
 import { DatabaseSync } from 'node:sqlite';
-import type { PredecessorInput, Run, RunOutcome, Task, TaskEvent, WorkerConfiguration, WorkflowStep } from '../../packages/protocol/task.ts';
+import type { DesktopAppControls, PredecessorInput, Run, RunOutcome, Task, TaskEvent, WorkerConfiguration, WorkflowStep } from '../../packages/protocol/task.ts';
 import { windowImageLifetimeMs } from '../../packages/protocol/task.ts';
 
 const runLimitMs = 10 * 60_000;
@@ -120,6 +120,9 @@ export class TaskStore {
       );
       CREATE TABLE IF NOT EXISTS device_desktop_apps (
         device_id TEXT PRIMARY KEY REFERENCES device(id), aliases TEXT NOT NULL
+      );
+      CREATE TABLE IF NOT EXISTS device_desktop_controls (
+        device_id TEXT PRIMARY KEY REFERENCES device(id), controls TEXT NOT NULL
       );
       CREATE TABLE IF NOT EXISTS device_desktop_permissions (
         device_id TEXT PRIMARY KEY REFERENCES device(id), states TEXT NOT NULL
@@ -821,7 +824,13 @@ export class TaskStore {
     };
   }
 
-  recordDesktopApps(device: string, aliases?: string[], permissions?: Record<string, string>) {
+  recordDesktopApps(device: string, aliases?: string[], permissions?: Record<string, string>, controls?: DesktopAppControls[]) {
+    if (controls) {
+      this.db.prepare(`INSERT INTO device_desktop_controls VALUES(?,?) ON CONFLICT(device_id)
+        DO UPDATE SET controls=excluded.controls WHERE controls<>excluded.controls`).run(device, JSON.stringify(controls));
+    } else {
+      this.db.prepare('DELETE FROM device_desktop_controls WHERE device_id=?').run(device);
+    }
     if (permissions) {
       this.db.prepare(`INSERT INTO device_desktop_permissions VALUES(?,?) ON CONFLICT(device_id)
         DO UPDATE SET states=excluded.states WHERE states<>excluded.states`).run(device, JSON.stringify(permissions));
@@ -839,15 +848,18 @@ export class TaskStore {
   desktopTargets(owner: string, now = Date.now()) {
     return this.db.prepare(`SELECT d.workspace,d.id AS deviceId,d.name AS deviceName,j.value AS alias,
       json_extract(xp.states,'$.accessibility') AS accessibility,
-      json_extract(xp.states,'$.screen_recording') AS screenRecording
+      json_extract(xp.states,'$.screen_recording') AS screenRecording,
+      (SELECT value FROM json_each(c.controls) WHERE json_extract(value,'$.alias')=j.value) AS controls
       FROM device d
       JOIN device_presence p ON p.device_id=d.id JOIN device_desktop_apps a ON a.device_id=d.id
       LEFT JOIN device_desktop_permissions xp ON xp.device_id=d.id
+      LEFT JOIN device_desktop_controls c ON c.device_id=d.id
       JOIN json_each(a.aliases) j WHERE d.owner=? AND d.revoked=0 AND p.last_seen>=?
       AND p.capability='computer.observe'
       AND NOT EXISTS(SELECT 1 FROM device_interruption i WHERE i.device_id=d.id)
       AND NOT EXISTS(SELECT 1 FROM device_pause x WHERE x.device_id=d.id)
-      ORDER BY d.workspace,d.name,d.id,j.value LIMIT 250`).all(owner, now - 45_000);
+      ORDER BY d.workspace,d.name,d.id,j.value LIMIT 250`).all(owner, now - 45_000)
+      .map(({ controls, ...target }) => ({ ...target, controls: controls ? JSON.parse(String(controls)) as DesktopAppControls : null }));
   }
 
   ownsDesktopTarget(owner: string, workspace: string, id: string) {

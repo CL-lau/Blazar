@@ -2,12 +2,17 @@ import Foundation
 
 struct RouterSnapshot: Decodable {
     struct DesktopTarget: Decodable {
+        struct Controls: Decodable {
+            let buttons: [String]
+            let visual: Bool
+        }
         let workspace: String
         let alias: String
         let deviceId: String?
         let deviceName: String?
         let accessibility: String?
         let screenRecording: String?
+        let controls: Controls?
     }
     struct Task: Decodable, Identifiable {
         let id: String

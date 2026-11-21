@@ -1,4 +1,4 @@
-import type { RunOutcome, WorkerConfiguration } from '../../packages/protocol/task.ts';
+import type { DesktopAppControls, RunOutcome, WorkerConfiguration } from '../../packages/protocol/task.ts';
 import { artifactDiff } from './artifact-diff.ts';
 import { workerCatalog } from '../../packages/workers/registry.ts';
 import { performance } from 'node:perf_hooks';
@@ -31,6 +31,7 @@ function requiredText(value: unknown, field: string, limit: number): string {
 }
 
 const maxDeviceFinishBytes = 1_350_000;
+const maxDeviceClaimBytes = 400_000;
 
 async function jsonBody(request: IncomingMessage, limit = 65_536) {
   if (request.headers['content-type']?.split(';')[0]?.trim() !== 'application/json') {
@@ -355,7 +356,23 @@ function deviceOperation(store: TaskStore, bearer: string, pathname: string, dat
         desktopPermissions[name] = state;
       }
     }
-    store.recordDesktopApps(device.id, desktopApps, desktopPermissions);
+    let desktopControls: DesktopAppControls[] | undefined;
+    if (data.desktopControls !== undefined) {
+      if (!desktopApps || !Array.isArray(data.desktopControls) || data.desktopControls.length !== desktopApps.length) {
+        throw new RequestError(400, 'Invalid desktop controls');
+      }
+      const remaining = new Set(desktopApps);
+      desktopControls = data.desktopControls.map(entry => {
+        if (!entry || typeof entry !== 'object' || !remaining.delete(entry.alias) ||
+            typeof entry.visual !== 'boolean' || !Array.isArray(entry.buttons) || entry.buttons.length > 25 ||
+            entry.buttons.some((label: unknown) => typeof label !== 'string' || !label.trim()
+              || label.length > 120 || /[\x00-\x1f\x7f]/.test(label))) {
+          throw new RequestError(400, 'Invalid desktop controls');
+        }
+        return { alias: entry.alias, visual: entry.visual, buttons: [...new Set<string>(entry.buttons)] };
+      });
+    }
+    store.recordDesktopApps(device.id, desktopApps, desktopPermissions, desktopControls);
     store.recordDeviceWorker(device.id, worker);
     store.recordDeviceActivity(device.id, now, data.capability, platform);
     store.expire(now);
@@ -512,7 +529,8 @@ export function routerServer(store: TaskStore, config: { owner: string; token: s
       if (url.pathname.startsWith('/v1/device/')) {
         if (request.method !== 'POST') throw new RequestError(405, 'Expected POST');
         if (!auth.startsWith('Bearer ')) throw new RequestError(401, 'Device authentication required');
-        const result = deviceOperation(store, auth.slice(7), url.pathname, await jsonObject(request, url.pathname.endsWith('/finish') ? maxDeviceFinishBytes : undefined));
+        const result = deviceOperation(store, auth.slice(7), url.pathname, await jsonObject(request, url.pathname.endsWith('/finish') ? maxDeviceFinishBytes :
+          url.pathname === '/v1/device/claim' ? maxDeviceClaimBytes : undefined));
         reply(response, result.status, result.body);
         return;
       }
@@ -851,7 +869,9 @@ export function routerServer(store: TaskStore, config: { owner: string; token: s
             return;
           }
           id = frame.id;
-          if (!Array.isArray(raw) && raw.byteLength > 65_536 && !frame.path.endsWith('/finish')) {
+          const limit = frame.path.endsWith('/finish') ? maxDeviceFinishBytes :
+            frame.path === 'claim' ? maxDeviceClaimBytes : 65_536;
+          if (!Array.isArray(raw) && raw.byteLength > limit) {
             throw new RequestError(413, 'Request too large');
           }
           if (connection.bufferedAmount > 256_000) {

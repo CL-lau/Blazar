@@ -65,6 +65,8 @@ struct DesktopControl: View {
     }
 
     private var command: String? {
+        if operation == .visual && appControls?.visual == false { return nil }
+        if operation == .click, let appControls, !appControls.buttons.contains(button) { return nil }
         let identity = windows?.first { $0.id == window }?.identity
         return operation.command(alias: alias, window: window, button: button, identity: identity)
     }
@@ -92,6 +94,10 @@ struct DesktopControl: View {
 
     private var selectedComputer: RouterSnapshot.DesktopTarget? {
         computers.first { $0.deviceId == targetDevice }
+    }
+
+    private var appControls: RouterSnapshot.DesktopTarget.Controls? {
+        available.first { $0.deviceId == targetDevice && $0.alias == alias }?.controls
     }
 
     var body: some View {
@@ -142,11 +148,24 @@ struct DesktopControl: View {
                     .font(.caption)
             }
             if operation == .click {
-                TextField("Configured button label", text: $button)
+                if let appControls {
+                    if appControls.buttons.isEmpty {
+                        Text("No buttons are configured for this application.").font(.caption)
+                    } else {
+                        Picker("Button", selection: $button) {
+                            Text("Choose a button").tag("")
+                            ForEach(appControls.buttons, id: \.self) { Text($0).tag($0) }
+                        }
+                    }
+                } else {
+                    TextField("Configured button label", text: $button)
+                }
                 Text("Blazar will ask for approval before clicking.")
                     .font(.caption)
             }
-            if operation == .visual && selectedComputer?.screenRecording == "denied" {
+            if operation == .visual && appControls?.visual == false {
+                Text("Window images are disabled for this application.").font(.caption)
+            } else if operation == .visual && selectedComputer?.screenRecording == "denied" {
                 Text("Screen Recording is disabled on the selected computer.").font(.caption)
             } else if (operation == .inspect || operation == .click) && selectedComputer?.accessibility == "denied" {
                 Text("Accessibility is disabled on the selected computer.").font(.caption)
@@ -192,6 +211,10 @@ struct DesktopControl: View {
         .onChange(of: alias) { _, _ in
             inventoryId = nil
             window = ""
+            button = ""
+        }
+        .onChange(of: appControls?.buttons) { _, next in
+            if let next, !next.contains(button) { button = "" }
         }
         .onChange(of: aliases) { _, next in
             if !next.isEmpty && !next.contains(alias) { alias = "" }

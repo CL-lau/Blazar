@@ -44,6 +44,7 @@ console.log(JSON.stringify({ok:true,command:'snapshot',data:{tree:{role:'window'
   const observation = observationConfig({
     BLAZAR_COMPUTER_DRIVER: executable, BLAZAR_COMPUTER_APPS: '{"calculator":"Calculator"}',
     BLAZAR_COMPUTER_VISUAL_APPS: '["calculator"]',
+    BLAZAR_COMPUTER_BUTTONS: '{"calculator":["Add"]}',
   });
   const store = new TaskStore(':memory:');
   const ledger = new DeviceLedger(':memory:');
@@ -90,9 +91,10 @@ console.log(JSON.stringify({ok:true,command:'snapshot',data:{tree:{role:'window'
   });
   assert.deepEqual((await state.json()).desktopTargets, [
     { workspace: 'work', deviceId: computer, deviceName: 'Computer', alias: 'calculator',
-      accessibility: 'granted', screenRecording: 'denied' },
+      accessibility: 'granted', screenRecording: 'denied',
+      controls: { alias: 'calculator', visual: true, buttons: ['Add'] } },
     { workspace: 'work', deviceId: second.id, deviceName: 'Second computer', alias: 'calculator',
-      accessibility: null, screenRecording: null },
+      accessibility: null, screenRecording: null, controls: null },
   ]);
   const { artifacts } = store.snapshot('owner');
   assert.equal(artifacts.length, 1);

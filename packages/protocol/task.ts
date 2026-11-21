@@ -42,6 +42,12 @@ export interface WorkflowStep {
 }
 
 
+export interface DesktopAppControls {
+  alias: string;
+  buttons: string[];
+  visual: boolean;
+}
+
 export interface WorkerConfiguration {
   label: string;
   protocol: string;
