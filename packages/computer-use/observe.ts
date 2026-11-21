@@ -1,4 +1,5 @@
 import { isAbsolute } from 'node:path';
+import { createHash } from 'node:crypto';
 import { lockDatabaseFile } from '../storage/exclusive.ts';
 import { spawnWorker } from '../workers/process.ts';
 
@@ -77,10 +78,19 @@ async function windowsFor(config: ObservationConfig, root: string, app: string, 
     }));
 }
 
-async function accessibleWindow(config: ObservationConfig, root: string, app: string, id: string, signal: AbortSignal) {
+function windowIdentity(app: string, window: { id: string; instance?: string; title: string }) {
+  if (!window.instance) return undefined;
+  return createHash('sha256').update(JSON.stringify([app, window.id, window.instance, window.title])).digest('hex');
+}
+
+async function accessibleWindow(config: ObservationConfig, root: string, app: string, id: string, signal: AbortSignal,
+                                identity?: string) {
   const windows = await windowsFor(config, root, app, signal);
   const found = windows.filter(window => window.id === id && window.accessible);
   if (found.length !== 1) throw new Error('The selected window is unavailable or inaccessible.');
+  if (identity && windowIdentity(app, found[0]) !== identity) {
+    throw new Error('The selected window changed. Refresh the window list.');
+  }
   return found[0];
 }
 
@@ -98,20 +108,22 @@ export function observeApp(config: ObservationConfig, root: string, goal: string
 }
 
 async function observeWindow(config: ObservationConfig, root: string, goal: string, signal: AbortSignal) {
-  const match = /^\/observe ([a-z0-9_-]{1,32})(?: (--windows(?:-json)?)| --window (w-[0-9]{1,20}))?$/.exec(goal);
+  const match = /^\/observe ([a-z0-9_-]{1,32})(?: (--windows(?:-json)?)| --window (w-[0-9]{1,20})(?: --instance ([a-f0-9]{64}))?)?$/.exec(goal);
   const app = match && config.apps.get(match[1]);
   if (!app || !match) throw new Error('Choose a configured application alias for /observe.');
   if (match[2]) {
     const windows = await windowsFor(config, root, app, signal);
     if (match[2] === '--windows-json') {
-      return JSON.stringify(windows.slice(0, 25).map(({ id, title, accessible }) => ({ id, title, accessible })));
+      return JSON.stringify(windows.slice(0, 25).map(window => ({
+        id: window.id, title: window.title, accessible: window.accessible, identity: windowIdentity(app, window),
+      })));
     }
     return windows.slice(0, 25).map(window =>
       [window.id, window.title || 'Untitled', window.accessible ? 'Accessible' : 'Accessibility unavailable'].join(' · ')
     ).join('\n') || 'No visible windows found.';
   }
   const windowId = match[3];
-  if (windowId) await accessibleWindow(config, root, app, windowId, signal);
+  if (windowId) await accessibleWindow(config, root, app, windowId, signal, match[4]);
   const snapshot = await readSnapshot(config, root, app, signal, windowId);
   const description = describeTree(snapshot.tree);
   if (!description) throw new Error('No accessible elements were found.');
@@ -177,13 +189,14 @@ function buttonIn(tree: unknown, label: string) {
 
 export async function clickApp(config: ObservationConfig, root: string, goal: string, signal: AbortSignal,
                                authorize: (summary: string, signal: AbortSignal) => Promise<(() => Promise<boolean>) | undefined>) {
-  const match = /^\/click ([a-z0-9_-]{1,32})(?: --window (w-[0-9]{1,20}))? (.{1,120})$/.exec(goal);
+  const match = /^\/click ([a-z0-9_-]{1,32})(?: --window (w-[0-9]{1,20})(?: --instance ([a-f0-9]{64}))?)? (.{1,120})$/.exec(goal);
   const app = match && config.apps.get(match[1]);
-  if (!app || !match || !config.buttons?.get(match[1])?.has(match[3])) throw new Error('Choose a configured application button.');
+  if (!app || !match || !config.buttons?.get(match[1])?.has(match[4])) throw new Error('Choose a configured application button.');
   const windowId = match[2];
-  const label = match[3];
+  const identity = match[3];
+  const label = match[4];
   const { initialWindow, initial, button, summary } = await withDesktopLock(config, signal, async () => {
-    const initialWindow = windowId ? await accessibleWindow(config, root, app, windowId, signal) : undefined;
+    const initialWindow = windowId ? await accessibleWindow(config, root, app, windowId, signal, identity) : undefined;
     if (initialWindow && !initialWindow.instance) throw new Error('The driver cannot identify the selected window process.');
     const initial = await readSnapshot(config, root, app, signal, windowId);
     return { initialWindow, initial, button: buttonIn(initial.tree, label), summary: describeTree(initial.tree) };
@@ -192,7 +205,7 @@ export async function clickApp(config: ObservationConfig, root: string, goal: st
   if (!consume) throw new Error('Desktop action was not approved.');
   return withDesktopLock(config, signal, async () => {
     if (windowId) {
-      const currentWindow = await accessibleWindow(config, root, app, windowId, signal);
+      const currentWindow = await accessibleWindow(config, root, app, windowId, signal, identity);
       if (currentWindow.instance !== initialWindow?.instance) {
         throw new Error('The application changed after review. Request a new action.');
       }

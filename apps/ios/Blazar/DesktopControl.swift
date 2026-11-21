@@ -7,14 +7,19 @@ enum DesktopOperation: String, CaseIterable, Identifiable {
 
     var id: Self { self }
 
-    func command(alias rawAlias: String, window rawWindow: String, button rawButton: String) -> String? {
+    func command(alias rawAlias: String, window rawWindow: String, button rawButton: String,
+                 identity: String? = nil) -> String? {
         let alias = rawAlias.trimmingCharacters(in: .whitespacesAndNewlines)
         let window = rawWindow.trimmingCharacters(in: .whitespacesAndNewlines)
         let button = rawButton.trimmingCharacters(in: .whitespacesAndNewlines)
         guard alias.wholeMatch(of: #/[a-z0-9_-]{1,32}/#) != nil else { return nil }
         if self == .windows { return "/observe \(alias) --windows-json" }
         guard window.isEmpty || window.wholeMatch(of: #/w-[0-9]{1,20}/#) != nil else { return nil }
-        let target = window.isEmpty ? alias : "\(alias) --window \(window)"
+        var target = window.isEmpty ? alias : "\(alias) --window \(window)"
+        if let identity {
+            guard !window.isEmpty, identity.wholeMatch(of: #/[a-f0-9]{64}/#) != nil else { return nil }
+            target += " --instance \(identity)"
+        }
         if self == .inspect { return "/observe \(target)" }
         guard (1...120).contains(button.utf16.count),
               button.rangeOfCharacter(from: .controlCharacters.union(.newlines)) == nil else { return nil }
@@ -27,6 +32,7 @@ struct DesktopControl: View {
         let id: String
         let title: String
         let accessible: Bool
+        let identity: String?
 
         var label: String { title.isEmpty ? id : "\(title) · \(id)" }
     }
@@ -57,7 +63,8 @@ struct DesktopControl: View {
     }
 
     private var command: String? {
-        operation.command(alias: alias, window: window, button: button)
+        let identity = windows?.first { $0.id == window }?.identity
+        return operation.command(alias: alias, window: window, button: button, identity: identity)
     }
 
     private var available: [RouterSnapshot.DesktopTarget] {

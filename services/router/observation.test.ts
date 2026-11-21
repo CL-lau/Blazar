@@ -7,7 +7,7 @@ import { join } from 'node:path';
 import test from 'node:test';
 import { DeviceClient } from '../device/client.ts';
 import { DeviceLedger } from '../device/ledger.ts';
-import { observationConfig } from '../../packages/computer-use/observe.ts';
+import { observationConfig, observeApp } from '../../packages/computer-use/observe.ts';
 import { routerServer } from './http.ts';
 import { TaskStore } from './store.ts';
 
@@ -146,7 +146,15 @@ if (op === 'list-windows') {
     return async () => { assert.fail('A replacement process must not consume approval'); };
   }), /changed after review/);
   rmSync(join(directory, 'replaced'));
-  const result = await clickApp(config, directory, '/click calc --window w-10 Add', signal, async summary => {
+  const [{ identity }] = JSON.parse(await observeApp(config, directory, '/observe calc --windows-json', signal));
+  assert.match(identity, /^[a-f0-9]{64}$/);
+  const targetedClick = '/click calc --window w-10 --instance ' + identity + ' Add';
+  writeFileSync(join(directory, 'replaced'), '');
+  await assert.rejects(clickApp(config, directory, targetedClick, signal, async () => {
+    assert.fail('A stale inventory must not request approval');
+  }), /Refresh the window list/);
+  rmSync(join(directory, 'replaced'));
+  const result = await clickApp(config, directory, targetedClick, signal, async summary => {
     assert.match(summary, /Click "Add" in Calculator/);
     lockDatabaseFile(lockPath, 'Desktop locked while awaiting review')();
     writeFileSync(join(directory, 'reviewed'), '');
@@ -161,7 +169,6 @@ if (op === 'list-windows') {
 });
 
 test('selected window must belong to the configured application and be accessible', async t => {
-  const { observeApp } = await import('../../packages/computer-use/observe.ts');
   const root = mkdtempSync(join(tmpdir(), 'blazar-window-scope-'));
   t.after(() => rmSync(root, { recursive: true, force: true }));
   const driver = join(root, 'driver.cjs');
