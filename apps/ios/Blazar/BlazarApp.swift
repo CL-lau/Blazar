@@ -221,6 +221,7 @@ private struct TaskScreen: View {
                                     if let action = step.action {
                                         if let button = action.button, let window = action.windowId {
                                             Text("Click \(button) in \(action.alias), window \(window)").font(.caption)
+                                            if let expected = action.expectedText { Text("Expected text: \(expected)").font(.caption) }
                                         } else {
                                             Text("Observe \(action.alias) on device \(action.deviceId)").font(.caption)
                                         }

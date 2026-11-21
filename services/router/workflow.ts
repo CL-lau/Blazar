@@ -34,7 +34,7 @@ export function workflowSteps(input: unknown): WorkflowStep[] {
 
 function workflowAction(value: unknown): WorkflowAction {
   if (!value || typeof value !== 'object') throw new InvalidWorkflow('Invalid workflow action');
-  const { kind, alias, deviceId, windowId, windowIdentity, button } = value as Record<string, unknown>;
+  const { kind, alias, deviceId, windowId, windowIdentity, button, expectedText } = value as Record<string, unknown>;
   if (typeof alias !== 'string' || !/^[a-z0-9_-]{1,32}$/.test(alias) ||
       typeof deviceId !== 'string' || !/^[a-f0-9-]{36}$/.test(deviceId)) {
     throw new InvalidWorkflow('Invalid workflow desktop target');
@@ -43,7 +43,12 @@ function workflowAction(value: unknown): WorkflowAction {
   if (kind === 'desktop.click' && typeof windowId === 'string' && /^w-[0-9]{1,20}$/.test(windowId) &&
       typeof windowIdentity === 'string' && /^[a-f0-9]{64}$/.test(windowIdentity) &&
       typeof button === 'string' && button.trim() && button.length <= 120 && !/[\x00-\x1f\x7f]/.test(button)) {
-    return { kind, alias, deviceId, windowId, windowIdentity, button };
+    if (expectedText !== undefined && (typeof expectedText !== 'string' || !expectedText.trim() ||
+        expectedText.length > 160 || /[\x00-\x1f\x7f]/.test(expectedText))) {
+      throw new InvalidWorkflow('Invalid expected desktop text');
+    }
+    return { kind, alias, deviceId, windowId, windowIdentity, button,
+      ...(expectedText && { expectedText: expectedText.trim() }) };
   }
   throw new InvalidWorkflow('Invalid workflow action');
 }

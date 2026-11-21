@@ -765,7 +765,7 @@ test('Router capability tools only expose active connections and devices in the 
     body: JSON.stringify({ workspace: 'project', steps: [{
       key: 'click', goal: 'Add an item in Notes', needs: [], action: {
         kind: 'desktop.click', alias: 'notes', deviceId: desktop.id, windowId: 'w-10',
-        windowIdentity: 'a'.repeat(64), button,
+        windowIdentity: 'a'.repeat(64), button, expectedText: 'Saved',
       },
     }] }),
   });
@@ -775,6 +775,7 @@ test('Router capability tools only expose active connections and devices in the 
   const clicked = await admitted.json();
   const action = store.claim('owner', 'project', desktop.id, now, 45_000, '/observe ', '', undefined, undefined, ['notes'])!;
   assert.equal(action.task.id, clicked.steps[0].taskId);
+  assert.equal(action.clickExpectedText, 'Saved');
   assert.equal(action.task.goal, '/click notes --window w-10 --instance ' + 'a'.repeat(64) + ' Add');
 });
 

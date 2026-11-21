@@ -1771,7 +1771,11 @@ export class TaskStore {
       .all(run.taskId) as unknown as TaskMemoryInput[];
     const attachments = this.db.prepare('SELECT name,text FROM task_attachment WHERE task_id=? ORDER BY position')
       .all(run.taskId) as unknown as TaskAttachment[];
-    return { run, task: this.get(owner, run.taskId)!, instructions, predecessors, acceptanceCriteria,
+    const task = this.get(owner, run.taskId)!;
+    const expected = task.goal.startsWith('/click ') ? this.db.prepare(`SELECT json_extract(data,'$.action.expectedText') AS text
+      FROM event WHERE taskId=? AND type='task.created' ORDER BY seq LIMIT 1`).get(run.taskId)?.text : undefined;
+    return { run, task, instructions, predecessors, acceptanceCriteria,
+      ...(typeof expected === 'string' && { clickExpectedText: expected }),
       ...(attachments.length && { attachments }),
       ...(memoryInputs.length && { memoryInputs }),
     };

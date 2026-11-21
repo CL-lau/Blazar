@@ -44,7 +44,7 @@ export interface RunOutcome {
 
 export type WorkflowAction =
   | { kind: 'desktop.observe'; alias: string; deviceId: string }
-  | { kind: 'desktop.click'; alias: string; deviceId: string; windowId: string; windowIdentity: string; button: string };
+  | { kind: 'desktop.click'; alias: string; deviceId: string; windowId: string; windowIdentity: string; button: string; expectedText?: string };
 
 export interface WorkflowStep {
   key: string;

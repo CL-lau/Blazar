@@ -18,7 +18,7 @@ import { maintainLease } from './lease.ts';
 import { platform } from 'node:os';
 import { preview } from './preview.ts';
 
-type Assignment = { run: Run; task: Task; instructions: string[]; predecessors: PredecessorInput[]; acceptanceCriteria?: string[]; memoryInputs?: TaskMemoryInput[]; attachments?: TaskAttachment[] };
+type Assignment = { clickExpectedText?: string; run: Run; task: Task; instructions: string[]; predecessors: PredecessorInput[]; acceptanceCriteria?: string[]; memoryInputs?: TaskMemoryInput[]; attachments?: TaskAttachment[] };
 
 export class DeviceClient {
   private socket: DeviceSocket;
@@ -283,7 +283,7 @@ export class DeviceClient {
                   const decision = await this.approve(prefix, summary, signal);
                   if (decision?.decision !== 'approved') return undefined;
                   return () => this.consumeApproval(prefix, decision.id, signal);
-                })
+                }, assignment.clickExpectedText)
               : await observeApp(this.observation, this.root, assignment.task.goal, active);
             const windowInventory = /^\/observe [a-z0-9_-]{1,32} --windows-json$/.test(assignment.task.goal);
             outcome = { status: 'succeeded', result: windowInventory ? result :

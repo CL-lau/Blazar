@@ -242,7 +242,8 @@ export class DesktopResultUnverified extends Error {
 }
 
 export async function clickApp(config: ObservationConfig, root: string, goal: string, signal: AbortSignal,
-                               authorize: (summary: string, signal: AbortSignal) => Promise<(() => Promise<boolean>) | undefined>) {
+                               authorize: (summary: string, signal: AbortSignal) => Promise<(() => Promise<boolean>) | undefined>,
+                               expectedText?: string) {
   const match = /^\/click ([a-z0-9_-]{1,32})(?: --window (w-[0-9]{1,20})(?: --instance ([a-f0-9]{64}))?)? (.{1,120})$/.exec(goal);
   const app = match && config.apps.get(match[1]);
   if (!app || !match || !config.buttons?.get(match[1])?.has(match[4])) throw new Error('Choose a configured application button.');
@@ -255,7 +256,11 @@ export async function clickApp(config: ObservationConfig, root: string, goal: st
     const initial = await readSnapshot(config, root, app, signal, windowId);
     return { initialWindow, initial, button: buttonIn(initial.tree, label), summary: describeTree(initial.tree) };
   });
-  const consume = await authorize(`Click "${label}" in ${app}${windowId ? ` window ${windowId}` : ''}.`, signal);
+  if (expectedText && summary.includes(expectedText)) {
+    throw new Error('The expected text is already visible. Review the window before clicking.');
+  }
+  const expected = expectedText ? ` Expected visible text: "${expectedText}".` : '';
+  const consume = await authorize(`Click "${label}" in ${app}${windowId ? ` window ${windowId}` : ''}.${expected}`, signal);
   if (!consume) throw new Error('Desktop action was not approved.');
   return withDesktopLock(config, signal, async () => {
     if (windowId) {
@@ -278,7 +283,7 @@ export async function clickApp(config: ObservationConfig, root: string, goal: st
       const refreshed = await readSnapshot(config, root, app, signal, windowId);
       if (initial.window_id !== refreshed.window_id || initial.pid !== refreshed.pid) throw new DesktopResultUnverified();
       const result = describeTree(refreshed.tree);
-      if (!result || result === summary) throw new DesktopResultUnverified();
+      if (!result || result === summary || (expectedText && !result.includes(expectedText))) throw new DesktopResultUnverified();
       return result;
     } catch {
       throw new DesktopResultUnverified();

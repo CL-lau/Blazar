@@ -192,6 +192,7 @@ if (op === 'list-windows') {
   rmSync(join(directory, 'replaced'));
   const result = await clickApp(config, directory, targetedClick, signal, async summary => {
     assert.match(summary, /Click "Add" in Calculator/);
+    assert.match(summary, /Expected visible text: "Done"/);
     lockDatabaseFile(lockPath, 'Desktop locked while awaiting review')();
     writeFileSync(join(directory, 'reviewed'), '');
     return async () => {
@@ -199,9 +200,12 @@ if (op === 'list-windows') {
       writeFileSync(join(directory, 'consumed'), '');
       return true;
     };
-  });
+  }, 'Done');
   assert.match(result, /Done/);
   assert.equal(readFileSync(join(directory, 'clicked'), 'utf8'), 'yes');
+  await assert.rejects(clickApp(config, directory, targetedClick, signal, async () => {
+    assert.fail('An already visible postcondition must not request another click');
+  }, 'Done'), /already visible/);
 });
 
 test('selected window must belong to the configured application and be accessible', async t => {

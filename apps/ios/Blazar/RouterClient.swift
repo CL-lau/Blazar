@@ -218,6 +218,7 @@ struct RouterClient: Equatable {
             let windowId: String?
             let windowIdentity: String?
             let button: String?
+            let expectedText: String?
         }
         var action: Action? = nil
         let key: String
