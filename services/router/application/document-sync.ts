@@ -50,7 +50,7 @@ export async function accessDocument(store: DocumentMemory, owner: string, works
   }
   const id = store.importDocument(owner, workspace, content.text, {
     connection, resource: document, revision: content.revision,
-  }, usageId);
+  }, usageId, content.backend);
   store.finishAppUsage(usageId, id ? 'succeeded' : 'access_changed', id ? content.backend : undefined);
   if (!id) throw new RequestError(409, 'Source access changed during import');
   return { id, revision: content.revision };

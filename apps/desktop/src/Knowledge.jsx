@@ -476,6 +476,8 @@ export function Knowledge({ token }) {
               {history.sourceRevisions.length > 0 && <ul aria-label="Source revisions">{history.sourceRevisions.map(revision =>
                 <li key={revision.id}><code>{revision.revision}</code> · {new Date(revision.created).toLocaleString()}
                   {revision.current ? ' · Current source' : ''}
+                  {revision.backend && <> · {revision.backend.kind === 'github' ? 'GitHub API' : 'MCP'}
+                    {revision.backend.fallback && ' fallback'}</>}
                 </li>)}</ul>}
             </section>}
             {source && <button onClick={() => {

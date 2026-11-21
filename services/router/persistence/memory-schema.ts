@@ -57,7 +57,7 @@ export function initializeMemorySchema(db: DatabaseSync): boolean {
       PRIMARY KEY(id,version)
     );
     CREATE TABLE IF NOT EXISTS document_import (
-      id TEXT PRIMARY KEY REFERENCES memory(id) ON DELETE CASCADE
+      id TEXT PRIMARY KEY REFERENCES memory(id) ON DELETE CASCADE, read_backend TEXT
     );
     CREATE TABLE IF NOT EXISTS memory_task_origin (
       id TEXT PRIMARY KEY REFERENCES memory(id) ON DELETE CASCADE,
@@ -83,6 +83,9 @@ export function initializeMemorySchema(db: DatabaseSync): boolean {
   }
   if (!db.prepare("SELECT 1 FROM pragma_table_info('app_usage') WHERE name='read_backend'").get()) {
     db.exec('ALTER TABLE app_usage ADD COLUMN read_backend TEXT');
+  }
+  if (!db.prepare("SELECT 1 FROM pragma_table_info('document_import') WHERE name='read_backend'").get()) {
+    db.exec('ALTER TABLE document_import ADD COLUMN read_backend TEXT');
   }
   db.exec(`CREATE INDEX IF NOT EXISTS app_usage_connection_health ON app_usage(connection,scope_version,id)
     WHERE operation='health' AND status<>'started'`);

@@ -181,7 +181,7 @@ export class MemoryStore {
   }
 
   importDocument(owner: string, workspace: string, body: string, source: ResourceRef,
-                 requestId?: number | bigint): string | undefined {
+                 requestId?: number | bigint, backend?: DocumentReadBackend): string | undefined {
     return sqliteTransaction(this.db, () => {
       let id: string | undefined;
       const available = this.connection(owner, source.connection, workspace) && !this.resourceRevoked(source.connection, source.resource);
@@ -195,7 +195,8 @@ export class MemoryStore {
         if (identical) id = String(identical.id);
         else id = this.remember(owner, workspace, body, source);
         if (id) {
-          this.db.prepare('INSERT OR IGNORE INTO document_import VALUES(?)').run(id);
+          this.db.prepare('INSERT OR IGNORE INTO document_import(id,read_backend) VALUES(?,?)')
+            .run(id, backend ? JSON.stringify(backend) : null);
           this.db.prepare(`INSERT INTO document_head(owner,workspace,connection,resource,memory_id,request_id)
             VALUES(?,?,?,?,?,?) ON CONFLICT(owner,workspace,connection,resource) DO UPDATE
             SET memory_id=excluded.memory_id,request_id=excluded.request_id
@@ -367,12 +368,15 @@ export class MemoryStore {
       .get(id, owner, now);
     if (!item) return undefined;
     const edits = this.db.prepare('SELECT version,changed AS replacedAt FROM memory_revision WHERE id=? ORDER BY version DESC LIMIT 50').all(id);
-    const sourceRevisions = item.connection === null ? [] : this.db.prepare(`SELECT m.id,m.revision,m.created,
+    const sourceRevisions = item.connection === null ? [] : this.db.prepare(`SELECT m.id,m.revision,m.created,i.read_backend,
       CASE WHEN h.memory_id=m.id THEN 1 ELSE 0 END AS current
       FROM memory m JOIN document_import i ON i.id=m.id
       LEFT JOIN document_head h ON h.owner=m.owner AND h.workspace=m.workspace AND h.connection=m.connection AND h.resource=m.resource
       WHERE m.owner=? AND m.workspace=? AND m.connection=? AND m.resource=? AND (m.expires IS NULL OR m.expires>?)
-      ORDER BY m.created DESC,m.rowid DESC LIMIT 50`).all(owner, item.workspace!, item.connection!, item.resource!, now);
+      ORDER BY m.created DESC,m.rowid DESC LIMIT 50`).all(owner, item.workspace!, item.connection!, item.resource!, now)
+      .map(({ read_backend, ...entry }) => ({
+        ...entry, ...(typeof read_backend === 'string' && { backend: JSON.parse(read_backend) as DocumentReadBackend }),
+      }));
     const evidence = this.db.prepare('SELECT evidence_id AS id,evidence_version AS version FROM memory_derivation WHERE id=?').get(id);
     return { item, edits, sourceRevisions, ...(evidence && { derivedFrom: evidence }) };
   }
