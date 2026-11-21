@@ -925,6 +925,10 @@ test('Router decisions can consume versioned text results without crossing works
       if (input.text === 'Change during routing') {
         assert.ok(store.command('owner', resultTask.id, 1, { action: 'append', text: 'Inspect again' }));
       }
+      if (input.text.startsWith('Plan')) return {
+        kind: 'propose_workflow', text: 'Review the draft.',
+        steps: [{ key: 'review', goal: 'Review the draft', needs: [] }],
+      };
       return { kind: 'reply', text: 'A draft is visible.' };
     },
   });
@@ -942,7 +946,22 @@ test('Router decisions can consume versioned text results without crossing works
     body: JSON.stringify({ workspace: 'project', text }),
   });
   assert.deepEqual(await (await ask('What was visible?')).json(), { kind: 'reply', text: 'A draft is visible.' });
+  const { proposalKey, steps } = await (await ask('Plan the review')).json();
+  assert.equal(proposalKey, 'Plan the review');
+  const confirm = (key: string, proposal: string, selected = steps) =>
+    fetch('http://127.0.0.1:' + address.port + '/v1/workflows', {
+      method: 'POST',
+      headers: { Authorization: 'Bearer admin', 'Content-Type': 'application/json', 'Idempotency-Key': key },
+      body: JSON.stringify({ workspace: 'project', steps: selected, proposalKey: proposal }),
+    });
+  assert.equal((await confirm('altered', proposalKey, [{ key: 'different', goal: 'Different plan', needs: [] }])).status, 409);
+  const admitted = await confirm('original', proposalKey);
+  assert.equal(admitted.status, 202);
+  const { id } = await admitted.json();
+  assert.equal((await (await confirm('retry', proposalKey)).json()).id, id);
+  const stale = await (await ask('Plan a second review')).json();
   assert.equal((await ask('Change during routing')).status, 409);
   assert.equal((await ask('What was visible?')).status, 409);
+  assert.equal((await confirm('outdated', stale.proposalKey, stale.steps)).status, 409);
   assert.deepEqual(store.recentConversation('owner', 'project'), []);
 });

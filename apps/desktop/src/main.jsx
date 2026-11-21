@@ -144,7 +144,7 @@ function App() {
   const api = (path, options) => callRouter(connected, path, options);
   const createWorkflow = appMemory => submit(async () => {
     const created = await api('/workflows', {
-      method: 'POST', key: plan.key, body: { workspace: plan.workspace, steps: plan.steps, appMemory },
+      method: 'POST', key: plan.key, body: { workspace: plan.workspace, steps: plan.steps, proposalKey: plan.proposalKey, appMemory },
     });
     setSelected(created.steps[0].taskId);
     setPlan(null);
@@ -416,7 +416,7 @@ function App() {
                     setAnswer(result.text);
                     if (result.kind === 'append_task') setFollowUp({ ...result, key: crypto.randomUUID() });
                     setPlan(result.kind === 'propose_workflow'
-                      ? { workspace, steps: result.steps, key: crypto.randomUUID() } : null);
+                      ? { workspace, steps: result.steps, proposalKey: result.proposalKey, key: crypto.randomUUID() } : null);
                     return;
                   }
                   const created = ask ? result.task : result;

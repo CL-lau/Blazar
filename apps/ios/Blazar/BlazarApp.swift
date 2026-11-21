@@ -27,6 +27,7 @@ private struct TaskScreen: View {
     private struct ProposedWorkflow {
         let workspace: String
         let steps: [RouterClient.WorkflowStep]
+        let proposalKey: String?
         let key = UUID()
     }
     private struct ProposedFollowUp {
@@ -174,7 +175,7 @@ private struct TaskScreen: View {
                                         followUp = nil
                                     }
                                     if reply.kind == "propose_workflow", let steps = reply.steps, !steps.isEmpty {
-                                        plan = ProposedWorkflow(workspace: submittedWorkspace, steps: steps)
+                                        plan = ProposedWorkflow(workspace: submittedWorkspace, steps: steps, proposalKey: reply.proposalKey)
                                     } else {
                                         plan = nil
                                     }
@@ -252,7 +253,7 @@ private struct TaskScreen: View {
                                 Task {
                                     defer { sending = false }
                                     do {
-                                        try await client.createWorkflow(workspace: plan.workspace, steps: plan.steps, key: plan.key)
+                                        try await client.createWorkflow(workspace: plan.workspace, steps: plan.steps, key: plan.key, proposalKey: plan.proposalKey)
                                         self.plan = nil
                                         answer = nil
                                         await reload()

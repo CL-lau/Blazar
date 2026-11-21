@@ -198,6 +198,6 @@ export function createConversationRouter(store: ConversationTasks, config: Conve
       const task = store.create(owner, admin ? 'conversation' : 'conversation:' + caller, key, input.workspace, goal);
       return { status: 202, body: { kind: decision.kind, task } };
     }
-    return { status: 200, body: decision };
+    return { status: 200, body: decision.kind === 'propose_workflow' ? { ...decision, proposalKey: key } : decision };
   };
 }

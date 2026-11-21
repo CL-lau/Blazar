@@ -577,7 +577,8 @@ export function routerServer(store: TaskStore, config: { owner: string; token: s
         }
         const appEvidence = data.appMemory === undefined ? undefined :
           selectAppEvidence(config.memory, owner, workspace, data.appMemory);
-        reply(response, 202, store.createWorkflow(owner, key, workspace, steps, appEvidence, mobile?.id));
+        const proposalKey = data.proposalKey === undefined ? undefined : requiredText(data.proposalKey, 'proposal key', 128);
+        reply(response, 202, store.createWorkflow(owner, key, workspace, steps, appEvidence, mobile?.id, proposalKey));
         return;
       }
       if (request.method === 'POST' && url.pathname === '/v1/conversation') {

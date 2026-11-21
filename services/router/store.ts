@@ -5,7 +5,7 @@ import { TaskReadRepository } from './persistence/task-read-repository.ts';
 import { initializeTaskSchema } from './persistence/task-schema.ts';
 import { IdempotencyConflict, StaleRoutingEvidence } from './domain/idempotency.ts';
 import { MobileRepository } from './persistence/mobile-repository.ts';
-import { orderWorkflow, workflowActionGoal } from './domain/workflow.ts';
+import { orderWorkflow, workflowActionGoal, workflowSteps } from './domain/workflow.ts';
 import type { Decision, RouteRequest } from './harness.ts';
 import { createHash, randomBytes, randomUUID } from 'node:crypto';
 import { DatabaseSync } from 'node:sqlite';
@@ -202,12 +202,16 @@ export class TaskStore {
     const row = this.db.prepare('SELECT request,decision FROM routing_decision WHERE owner=? AND caller=? AND key=?').get(owner, caller, key);
     if (!row) return undefined;
     if (row.request !== fingerprint) throw new IdempotencyConflict();
+    this.assertRoutingEvidence(owner, caller, key);
+    return JSON.parse(String(row.decision)) as Decision;
+  }
+
+  private assertRoutingEvidence(owner: string, caller: string, key: string) {
     if (this.db.prepare(`SELECT 1 FROM routing_task_evidence e LEFT JOIN task t ON t.id=e.task_id
       WHERE e.owner=? AND e.caller=? AND e.request_key=?
       AND (t.status IS NOT 'succeeded' OR t.version IS NOT e.version)`).get(owner, caller, key)) {
       throw new StaleRoutingEvidence();
     }
-    return JSON.parse(String(row.decision)) as Decision;
   }
 
   persistRoutingDecision(owner: string, caller: string, key: string, request: RouteRequest, decision: Decision, taskEvidence: ReadonlyMap<string, number> = new Map()) {
@@ -741,10 +745,11 @@ export class TaskStore {
     if (!wasStopping) this.event(taskId, 'run.memory_access_changed', { runId, status: 'waiting_user' });
   }
 
-  createWorkflow(owner: string, key: string, workspace: string, steps: WorkflowStep[], appEvidence?: AppEvidence, caller?: string) {
+  createWorkflow(owner: string, key: string, workspace: string, steps: WorkflowStep[], appEvidence?: AppEvidence, caller?: string, proposalKey?: string) {
     const ordered = orderWorkflow(steps);
     // Mobile keys exceed the public 128-character limit to preserve existing administrator receipts.
-    const requestKey = caller ? 'mobile:' + createHash('sha512').update(JSON.stringify([caller, key])).digest('hex') : key;
+    const requestKey = proposalKey ? 'proposal:' + createHash('sha512').update(JSON.stringify([caller ?? 'admin', proposalKey])).digest('hex')
+      : caller ? 'mobile:' + createHash('sha512').update(JSON.stringify([caller, key])).digest('hex') : key;
 
     return this.transaction(() => {
       const fingerprint = JSON.stringify(appEvidence
@@ -755,6 +760,16 @@ export class TaskStore {
       if (existing) {
         if (existing.fingerprint !== fingerprint) throw new IdempotencyConflict();
         return { id: String(existing.id), steps: this.workflowSteps(String(existing.id)) };
+      }
+      if (proposalKey) {
+        const identity = caller ?? 'admin';
+        const proposal = this.db.prepare(`SELECT decision FROM routing_decision WHERE owner=? AND caller=? AND key=?
+          AND json_extract(request,'$[0]')=?`).get(owner, identity, proposalKey, workspace);
+        const saved = proposal ? JSON.parse(String(proposal.decision)) as Decision : undefined;
+        if (saved?.kind !== 'propose_workflow' || JSON.stringify(workflowSteps(saved.steps)) !== JSON.stringify(steps)) {
+          throw new IdempotencyConflict();
+        }
+        this.assertRoutingEvidence(owner, identity, proposalKey);
       }
       const id = randomUUID();
       this.db.prepare('INSERT INTO workflow VALUES(?,?,?,?)').run(id, owner, requestKey, fingerprint);

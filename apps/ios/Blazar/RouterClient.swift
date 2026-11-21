@@ -240,6 +240,7 @@ struct RouterClient: Equatable {
         let taskId: String?
         let instruction: String?
         let expectedVersion: Int?
+        let proposalKey: String?
     }
 
     func ask(workspace: String, text: String, key: UUID, usePersonalMemory: Bool = false) async throws -> ConversationReply {
@@ -248,9 +249,10 @@ struct RouterClient: Equatable {
         ))
     }
 
-    func createWorkflow(workspace: String, steps: [WorkflowStep], key: UUID) async throws {
+    func createWorkflow(workspace: String, steps: [WorkflowStep], key: UUID, proposalKey: String? = nil) async throws {
         let encoded = try JSONEncoder().encode(steps)
-        let body = ["workspace": workspace, "steps": try JSONSerialization.jsonObject(with: encoded)]
+        var body: [String: Any] = ["workspace": workspace, "steps": try JSONSerialization.jsonObject(with: encoded)]
+        body["proposalKey"] = proposalKey
         _ = try await request("v1/workflows", body: body, key: key)
     }
 
