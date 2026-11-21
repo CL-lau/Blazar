@@ -220,6 +220,7 @@ if (op === 'list-windows') {
     ]}}}));
 } else if (op === 'click' && process.argv[3] === '@s2:e1' && fs.existsSync('consumed')) {
   fs.writeFileSync('clicked', 'yes');
+  if (fs.existsSync('replace-on-click')) fs.writeFileSync('replaced', '');
   console.log(JSON.stringify({ok:true,command:op,data:{}}));
 } else process.exit(2);
 `, { mode: 0o700 });
@@ -278,6 +279,14 @@ if (op === 'list-windows') {
   await assert.rejects(clickApp(config, directory, targetedClick, signal, async () => {
     assert.fail('An already visible postcondition must not request another click');
   }, 'Done'), /already visible/);
+  rmSync(join(directory, 'clicked'));
+  rmSync(join(directory, 'consumed'));
+  writeFileSync(join(directory, 'replace-on-click'), '');
+  await assert.rejects(clickApp(config, directory, targetedClick, signal, async () => async () => {
+    writeFileSync(join(directory, 'consumed'), '');
+    return true;
+  }, 'Done'), /click may have been applied/);
+  assert.equal(readFileSync(join(directory, 'clicked'), 'utf8'), 'yes');
 });
 
 test('selected window must belong to the configured application and be accessible', async t => {

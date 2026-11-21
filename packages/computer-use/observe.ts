@@ -306,6 +306,10 @@ export async function clickApp(config: ObservationConfig, root: string, goal: st
       await runDriver(config, root, ['click', latest.ref], signal);
       const refreshed = await readSnapshot(config, root, app, signal, windowId);
       if (initial.window_id !== refreshed.window_id || initial.pid !== refreshed.pid) throw new DesktopResultUnverified();
+      if (windowId) {
+        const verifiedWindow = await accessibleWindow(config, root, app, windowId, signal);
+        if (verifiedWindow.instance !== initialWindow?.instance) throw new DesktopResultUnverified();
+      }
       const result = describeTree(refreshed.tree);
       if (!result || result === summary || (expectedText && !result.includes(expectedText))) throw new DesktopResultUnverified();
       return result;
