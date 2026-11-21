@@ -837,3 +837,24 @@ test('IM result review requires the current version of a linked task', t => {
   assert.equal(db.timeline('owner', task.id)?.events.filter(event => event.type === 'task.result_accepted').length, 1);
   assert.equal(db.claim('owner', 'project', 'device', now, 45_000)?.task.goal, 'Summarize notes');
 });
+
+test('IM review result uses the fresh passive reply window after the linked window closes', t => {
+  const db = new TaskStore(':memory:');
+  t.after(() => db.close());
+  const now = Date.now();
+  db.createWorkflow('owner', 'flow', 'project', [{ key: 'draft', goal: 'Draft notes', needs: [], requireReview: true }]);
+  const { task, run } = db.claim('owner', 'project', 'device', now, 45_000)!;
+  const code = db.createTaskLink('owner', task.id, now)!.code;
+  db.receiveChannelMessage('owner', 'qq', 'project', {
+    id: 'root', chat: 'chat', thread: 'root', root: true, text: '/link ' + code, replyExpires: now - 1,
+  });
+  assert.ok(db.finish(run.id, run.device, now, { status: 'succeeded', result: 'Private draft' }));
+  db.receiveChannelMessage('owner', 'qq', 'project', {
+    id: 'review', chat: 'chat', thread: 'root', root: false, text: '/accept 1', replyExpires: now + 60_000,
+  });
+  const notice = db.leasePassiveNotice('qq', Date.now(), ['chat']);
+  assert.equal(notice?.messageId, 'review');
+  assert.match(notice?.text ?? '', /completed/);
+  assert.doesNotMatch(notice?.text ?? '', /Private draft/);
+  assert.equal(db.leasePassiveNotice('qq', Date.now(), ['chat']), undefined);
+});

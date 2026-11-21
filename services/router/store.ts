@@ -10,6 +10,8 @@ const runLimitMs = 10 * 60_000;
 const runSilenceMs = 2 * 60_000;
 const queueLatencyBounds = [1, 5, 10, 25, 50, 100, 250, 500, 1_000, 5_000, 15_000, 60_000, 300_000];
 
+type ChannelReply = { channel: string; chat: string; thread: string; messageId: string };
+
 export type AppEvidence = { query: string; sources: string[]; refs: { id: string; version: number }[] };
 
 export class IdempotencyConflict extends Error {
@@ -423,7 +425,7 @@ export class TaskStore {
     this.db.prepare('INSERT INTO channel_notice_binding VALUES(?,?,?,?,?)').run(id, owner, channel, chat, thread);
   }
 
-  private event(taskId: string, type: string, data: unknown) {
+  private event(taskId: string, type: string, data: unknown, reply?: ChannelReply) {
     this.db.prepare('INSERT INTO event(taskId,type,data) VALUES(?,?,?)')
       .run(taskId, type, JSON.stringify(data));
     if (['run.finished', 'run.superseded', 'task.instruction_added', 'task.result_accepted'].includes(type)) {
@@ -444,7 +446,9 @@ export class TaskStore {
     const text = `Blazar task ${notice}. Open Blazar to view details. Task: ${taskId}`;
     for (const route of routes) {
       const thread = String(route.thread);
-      this.queueChannelNotice(String(task?.owner), String(route.channel), String(route.chat), thread, thread, text, now);
+      const messageId = reply && reply.channel === route.channel && reply.chat === route.chat && reply.thread === thread
+        ? reply.messageId : thread;
+      this.queueChannelNotice(String(task?.owner), String(route.channel), String(route.chat), thread, messageId, text, now);
     }
   }
 
@@ -862,18 +866,20 @@ export class TaskStore {
         if (pause) this.pauseTask(taskId, previous, { channel });
         if ((resume || retry) && canContinue()) this.requeueTask(taskId, previous, retry ? 'retry' : 'resume', { channel });
         const current = this.get(owner, taskId)!;
-        if (review && /^[1-9]\d*$/.test(review[2] ?? '') && Number(review[2]) === current.version) {
-          const accepted = review[1] === 'accept' || review[1] === '验收';
-          if ((!accepted || canContinue()) && this.reviewResult(current, accepted, { channel })) return;
-        }
         const now = Date.now();
         const thread = String(link.thread);
-        const replyId = message.replyExpires === undefined ? thread : message.id;
-        if (message.replyExpires !== undefined) {
-          if (message.replyExpires <= now) return;
+        let reply: ChannelReply | undefined;
+        if (message.replyExpires !== undefined && message.replyExpires > now) {
           this.db.prepare('INSERT OR IGNORE INTO channel_reply_window VALUES(?,?,?,?)')
-            .run(channel, message.chat, replyId, message.replyExpires);
+            .run(channel, message.chat, message.id, message.replyExpires);
+          reply = { channel, chat: message.chat, thread, messageId: message.id };
         }
+        if (review && /^[1-9]\d*$/.test(review[2] ?? '') && Number(review[2]) === current.version) {
+          const accepted = review[1] === 'accept' || review[1] === '验收';
+          if ((!accepted || canContinue()) && this.reviewResult(current, accepted, { channel }, reply)) return;
+        }
+        if (message.replyExpires !== undefined && !reply) return;
+        const replyId = reply?.messageId ?? thread;
         const chinese = ['/状态', '/暂停', '/继续', '/重试'].includes(message.text) || review?.[1] === '验收' || review?.[1] === '退回';
         const state = displayTaskStatus(current.status, chinese);
         const text = chinese ? `Blazar 任务${state}。版本 ${current.version}。任务 ID ${link.id}`
@@ -890,7 +896,7 @@ export class TaskStore {
     });
   }
 
-  private reviewResult(task: Task, accepted: boolean, metadata: Record<string, string> = {}) {
+  private reviewResult(task: Task, accepted: boolean, metadata: Record<string, string> = {}, reply?: ChannelReply) {
     if (task.status !== 'waiting_review' || this.db.prepare('SELECT 1 FROM run WHERE taskId=?').get(task.id)) return false;
     const { id: taskId, version } = task;
     if (accepted && this.db.prepare(`SELECT 1 FROM review_input i JOIN task p ON p.id=i.predecessor
@@ -902,7 +908,7 @@ export class TaskStore {
         AND artifact_id IN (SELECT id FROM artifact WHERE taskId=?)`).run(version + 1, version, taskId);
     }
     this.db.prepare('DELETE FROM review_input WHERE task_id=?').run(taskId);
-    this.event(taskId, accepted ? 'task.result_accepted' : 'task.result_rejected', { status, ...metadata });
+    this.event(taskId, accepted ? 'task.result_accepted' : 'task.result_rejected', { status, ...metadata }, reply);
     return true;
   }
 
