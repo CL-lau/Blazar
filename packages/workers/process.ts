@@ -44,9 +44,15 @@ export function spawnWorker(worker: WorkerCommand, root: string) {
     }
   }
   let stopping: Promise<void> | undefined;
-  async function stop() {
+  async function stop(graceful: boolean) {
     if (child.exitCode !== null || child.signalCode !== null) {
       if (!groupExists()) return closed;
+    }
+    if (graceful && child.exitCode === null && child.signalCode === null) {
+      // Give a completed stdio session a bounded chance to flush its checkpoint.
+      child.stdin.end();
+      const exited = await Promise.race([closed.then(() => true), delay(1_000, false, { ref: false })]);
+      if (exited && !groupExists()) return;
     }
     const grace = new AbortController();
     const elapsed = delay(500, false, { signal: grace.signal }).catch(() => false);
@@ -69,6 +75,6 @@ export function spawnWorker(worker: WorkerCommand, root: string) {
 
   return {
     child, closed,
-    stop: () => stopping ??= stop().catch(error => { throw new WorkerCleanupError(error); }),
+    stop: (graceful = false) => stopping ??= stop(graceful).catch(error => { throw new WorkerCleanupError(error); }),
   };
 }

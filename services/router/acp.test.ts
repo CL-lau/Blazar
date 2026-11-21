@@ -54,6 +54,19 @@ test('ACP starts a subprocess, initializes a session, and assembles streamed tex
   assert.deepEqual(progress, ['Worker is using a tool', 'Worker completed a tool call']);
 });
 
+test('ACP allows a successful Worker to checkpoint on stdin EOF', async t => {
+  const root = mkdtempSync(join(tmpdir(), 'blazar-acp-checkpoint-'));
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  const checkpointing = { ...worker, args: ['-e', fixture.replace(
+    "createInterface({ input: process.stdin }).on('line'", `createInterface({ input: process.stdin })
+      .on('close', () => setTimeout(() => require('node:fs').writeFileSync('checkpoint', 'saved'), 75))
+      .on('line'`)] };
+  assert.equal(await runAcp(checkpointing, root, {
+    goal: 'Review notes', instructions: ['Three bullets'], predecessors: [],
+  }, AbortSignal.timeout(3_000)), 'Review notes: Three bullets');
+  assert.equal(readFileSync(join(root, 'checkpoint'), 'utf8'), 'saved');
+});
+
 test('ACP sends native cancellation to a worker that has an active prompt', async t => {
   const root = mkdtempSync(join(tmpdir(), 'blazar-acp-cancel-'));
   t.after(() => rmSync(root, { recursive: true, force: true }));

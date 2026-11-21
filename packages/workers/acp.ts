@@ -119,7 +119,7 @@ export async function runAcp(worker: AcpWorker, root: string, job: JobContext, s
       void reports.catch(() => {});
     });
   try {
-    return await peer.connectWith(ndJsonStream(Writable.toWeb(child.stdin), Readable.toWeb(child.stdout)), async ctx => {
+    const result = await peer.connectWith(ndJsonStream(Writable.toWeb(child.stdin), Readable.toWeb(child.stdout)), async ctx => {
       const options = { cancellationSignal: active, stopWaitingOnCancel: true };
       let cancelling: Promise<void> | undefined;
       const cancel = () => {
@@ -175,6 +175,8 @@ export async function runAcp(worker: AcpWorker, root: string, job: JobContext, s
         }
       }
     });
+    await stop(!active.aborted);
+    return result;
   } catch (error) {
     active.throwIfAborted();
     throw error;
