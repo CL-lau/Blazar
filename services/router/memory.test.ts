@@ -1,6 +1,37 @@
 import assert from 'node:assert/strict';
+import { mkdtempSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { DatabaseSync } from 'node:sqlite';
 import test from 'node:test';
 import { MemoryStore } from './memory.ts';
+
+test('workspace scope changes update the derived full-text index', t => {
+  const directory = mkdtempSync(join(tmpdir(), 'blazar-memory-index-'));
+  const path = join(directory, 'memory.sqlite');
+  const store = new MemoryStore(path);
+  const db = new DatabaseSync(path);
+  t.after(() => { db.close(); store.close(); rmSync(directory, { recursive: true, force: true }); });
+  if (db.prepare("SELECT sqlite_compileoption_used('ENABLE_FTS5') AS enabled").get()?.enabled !== 1) {
+    return t.skip('SQLite does not include FTS5');
+  }
+  const connection = store.connect('owner', 'github', 'handbook');
+  const source = { connection, resource: 'guide', revision: '1' };
+  const older = store.remember('owner', 'one', 'alpha handbook', source)!;
+  store.remember('owner', 'two', 'bravo handbook', source);
+  const indexed = (term: string) =>
+    db.prepare('SELECT rowid FROM memory_search WHERE memory_search MATCH ?').all(term).length;
+  assert.equal(indexed('handbook'), 2);
+  assert.equal(store.setConnectionWorkspace('owner', connection, 'two'), true);
+  assert.equal(indexed('alpha'), 0);
+  assert.equal(indexed('bravo'), 1);
+  assert.equal(store.setConnectionWorkspace('owner', connection, null), true);
+  assert.equal(indexed('handbook'), 2);
+  assert.equal(store.disconnect('owner', connection), true);
+  assert.equal(indexed('handbook'), 0);
+  assert.equal(store.remove('owner', older), true);
+  assert.equal(indexed('alpha'), 0);
+});
 
 test('recall respects workspace, source account, expiration and revocation', t => {
   const store = new MemoryStore(':memory:');

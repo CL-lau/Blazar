@@ -40,6 +40,7 @@ export class MemoryStore {
         PRIMARY KEY(id,version)
       );
       CREATE INDEX IF NOT EXISTS memory_scope ON memory(owner,workspace,created);
+      CREATE INDEX IF NOT EXISTS memory_connection ON memory(connection);
     `);
     if (!this.db.prepare("SELECT 1 FROM pragma_table_info('memory_state') WHERE name='disabled'").get()) {
       this.db.exec('ALTER TABLE memory_state ADD COLUMN disabled INTEGER NOT NULL DEFAULT 0');
@@ -49,27 +50,63 @@ export class MemoryStore {
     }
     const option = this.db.prepare("SELECT sqlite_compileoption_used('ENABLE_FTS5') AS enabled").get();
     this.fullText = option?.enabled === 1;
+    const dropTriggers = `
+      DROP TRIGGER IF EXISTS memory_insert;
+      DROP TRIGGER IF EXISTS memory_delete;
+      DROP TRIGGER IF EXISTS memory_update;
+      DROP TRIGGER IF EXISTS memory_connection_scope;
+    `;
     if (!this.fullText) {
-      this.db.exec('DROP TRIGGER IF EXISTS memory_insert; DROP TRIGGER IF EXISTS memory_delete; DROP TRIGGER IF EXISTS memory_update;');
+      this.db.exec(dropTriggers);
       return;
     }
-    const initialized = this.db.prepare("SELECT 1 FROM sqlite_schema WHERE name='memory_insert'").get();
-    this.db.exec(`
-      CREATE VIRTUAL TABLE IF NOT EXISTS memory_search USING fts5(
-        body, content='memory', content_rowid='rowid', tokenize='trigram'
-      );
-      CREATE TRIGGER IF NOT EXISTS memory_insert AFTER INSERT ON memory BEGIN
-        INSERT INTO memory_search(rowid,body) VALUES(new.rowid,new.body);
-      END;
-      CREATE TRIGGER IF NOT EXISTS memory_update AFTER UPDATE OF body ON memory BEGIN
-        INSERT INTO memory_search(memory_search,rowid,body) VALUES('delete',old.rowid,old.body);
-        INSERT INTO memory_search(rowid,body) VALUES(new.rowid,new.body);
-      END;
-      CREATE TRIGGER IF NOT EXISTS memory_delete AFTER DELETE ON memory BEGIN
-        INSERT INTO memory_search(memory_search,rowid,body) VALUES('delete',old.rowid,old.body);
-      END;
-    `);
-    if (!initialized) this.db.exec("INSERT INTO memory_search(memory_search) VALUES('rebuild')");
+    this.db.exec('BEGIN IMMEDIATE');
+    try {
+      const initialized = this.db.prepare("SELECT 1 FROM sqlite_schema WHERE name='memory_connection_scope'").get();
+      if (!initialized) {
+        this.db.exec(dropTriggers);
+        this.db.exec('DROP TABLE IF EXISTS memory_search');
+      }
+      this.db.exec(`
+        CREATE VIEW IF NOT EXISTS memory_indexable AS
+          SELECT m.rowid,m.body FROM memory m LEFT JOIN app_connection a ON a.id=m.connection
+          WHERE m.connection IS NULL OR (
+            a.owner=m.owner AND a.active=1 AND (a.workspace IS NULL OR a.workspace=m.workspace)
+          );
+        CREATE VIRTUAL TABLE IF NOT EXISTS memory_search USING fts5(
+          body, content='memory_indexable', content_rowid='rowid', tokenize='trigram'
+        );
+        CREATE TRIGGER IF NOT EXISTS memory_insert AFTER INSERT ON memory
+        WHEN EXISTS(SELECT 1 FROM memory_indexable WHERE rowid=new.rowid) BEGIN
+          INSERT INTO memory_search(rowid,body) VALUES(new.rowid,new.body);
+        END;
+        CREATE TRIGGER IF NOT EXISTS memory_update AFTER UPDATE OF body ON memory
+        WHEN EXISTS(SELECT 1 FROM memory_indexable WHERE rowid=new.rowid) BEGIN
+          INSERT INTO memory_search(memory_search,rowid,body) VALUES('delete',old.rowid,old.body);
+          INSERT INTO memory_search(rowid,body) VALUES(new.rowid,new.body);
+        END;
+        CREATE TRIGGER IF NOT EXISTS memory_delete BEFORE DELETE ON memory
+        WHEN EXISTS(SELECT 1 FROM memory_indexable WHERE rowid=old.rowid) BEGIN
+          INSERT INTO memory_search(memory_search,rowid,body) VALUES('delete',old.rowid,old.body);
+        END;
+        CREATE TRIGGER IF NOT EXISTS memory_connection_scope AFTER UPDATE OF active,workspace ON app_connection BEGIN
+          INSERT INTO memory_search(memory_search,rowid,body)
+            SELECT 'delete',m.rowid,m.body FROM memory m WHERE m.connection=old.id AND m.owner=old.owner
+              AND old.active=1 AND (old.workspace IS NULL OR old.workspace=m.workspace)
+              AND (new.active=0 OR (new.workspace IS NOT NULL AND new.workspace<>m.workspace));
+          INSERT INTO memory_search(rowid,body)
+            SELECT m.rowid,m.body FROM memory m WHERE m.connection=new.id AND m.owner=new.owner
+              AND new.active=1 AND (new.workspace IS NULL OR new.workspace=m.workspace)
+              AND (old.active=0 OR (old.workspace IS NOT NULL AND old.workspace<>m.workspace));
+        END;
+      `);
+      if (!initialized) this.db.exec("INSERT INTO memory_search(memory_search) VALUES('rebuild')");
+      this.db.exec('COMMIT');
+    } catch (error) {
+      this.db.exec('ROLLBACK');
+      this.db.close();
+      throw error;
+    }
   }
 
   close() {
