@@ -182,6 +182,11 @@ tool receives that ID and returns `structuredContent` containing the same ID, a 
 and `evidence`. POST to `/v1/app-write-proposals/{id}/check-result` to run that lookup. Unknown or
 mismatched responses leave the proposal unresolved.
 
+An entry may also specify up to two ordered `fallbacks`, each with its own `endpoint`, `tool`,
+optional `tokenEnv` and optional `statusTool`. Configure fallbacks for the same account and external
+effect. Router switches only when the current backend reports unavailability before the write is
+dispatched. Outcome checks use the backend recorded for that write.
+
 
 Register the account in the desktop app with app type `mcp`, then use `review` as the document ID. For a server requiring bearer authentication, set `tokenEnv` to the name of a `BLAZAR_MCP_TOKEN_*` environment variable. The connector reads text resources by alias.
 

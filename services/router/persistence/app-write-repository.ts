@@ -81,12 +81,12 @@ export class AppWriteRepository {
       ORDER BY w.rowid DESC LIMIT 50`).all(owner, client, id ?? null, id ?? null);
   }
 
-  canCheck(owner: string, id: string, revision: string, now = Date.now()) {
+  canCheck(owner: string, id: string, revision: string, backend: string, now = Date.now()) {
     return Boolean(this.db.prepare(`SELECT 1 FROM app_write w JOIN app_connection a ON a.id=w.connection
-      WHERE w.owner=? AND w.id=? AND w.definition_revision=? AND w.backend IS NOT NULL
+      WHERE w.owner=? AND w.id=? AND w.definition_revision=? AND w.backend=?
         AND (w.status='outcome_unknown' OR (w.status='dispatching' AND w.expires+?<=?))
         AND a.owner=w.owner AND a.active=1 AND a.scope_version=w.scope_version
-        AND (a.workspace IS NULL OR a.workspace=w.workspace)`).get(owner, id, revision, applicationWriteTimeoutMs, now));
+        AND (a.workspace IS NULL OR a.workspace=w.workspace)`).get(owner, id, revision, backend, applicationWriteTimeoutMs, now));
   }
 
   reconciliation(owner: string, id: string) {

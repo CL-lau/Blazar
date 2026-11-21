@@ -161,27 +161,43 @@ function githubManifestReader(entry: Record<string, unknown>, env: NodeJS.Proces
 export function configuredApplicationWrites(env: NodeJS.ProcessEnv, transport = fetch) {
   const keys = new Set<string>();
   return entries(env, 'BLAZAR_MCP_ACTIONS').map(entry => {
-    const { app, capability, endpoint, tool, statusTool } = entry;
+    const { app, capability } = entry;
     const account = accountName(entry.account);
     if (typeof app !== 'string' || !/^(mcp|custom\.[a-z][a-z0-9-]{0,62})$/.test(app) ||
-        typeof capability !== 'string' || !/^action\.[a-z0-9.-]{1,120}$/.test(capability) ||
-        typeof endpoint !== 'string' || typeof tool !== 'string' ||
-        (statusTool !== undefined && (typeof statusTool !== 'string' || statusTool === tool))) {
+        typeof capability !== 'string' || !/^action\.[a-z0-9.-]{1,120}$/.test(capability)) {
       throw new Error('Invalid MCP application write configuration');
     }
     const key = JSON.stringify([app, account, capability]);
     if (keys.has(key)) throw new Error('Duplicate MCP application write capability');
     keys.add(key);
-    const token = entry.tokenEnv === undefined ? undefined
-      : accessToken(env, entry.tokenEnv, /^BLAZAR_MCP_TOKEN_[A-Z0-9_]+$/);
-    const revision = createHash('sha256').update(JSON.stringify([key, endpoint, tool, entry.tokenEnv, token,
-      ...(statusTool ? [statusTool] : [])])).digest('hex');
-    const binding = { id: 'mcp', connectionId: '', capability, endpoint, token };
-    const backend = mcpActionBackend({ ...binding, effect: 'write', tool, includeInvocationId: Boolean(statusTool) }, transport);
-    const lookup = typeof statusTool === 'string'
-      ? mcpActionBackend({ ...binding, effect: 'read', tool: statusTool }, transport)
-      : undefined;
-    return { app, account, capability, revision, backend, lookup };
+    const fallbacks = entry.fallbacks ?? [];
+    if (!Array.isArray(fallbacks) || fallbacks.length > 2 || fallbacks.some(item =>
+      !item || typeof item !== 'object' || Array.isArray(item) ||
+      Object.keys(item).some(field => !['endpoint', 'tool', 'statusTool', 'tokenEnv'].includes(field)))) {
+      throw new Error('Invalid MCP application write fallback configuration');
+    }
+    const candidates = [entry, ...fallbacks].map((candidate, index) => {
+      const { endpoint, tool, statusTool, tokenEnv } = candidate;
+      if (typeof endpoint !== 'string' || typeof tool !== 'string' ||
+          (statusTool !== undefined && (typeof statusTool !== 'string' || statusTool === tool))) {
+        throw new Error('Invalid MCP application write backend');
+      }
+      const token = tokenEnv === undefined ? undefined
+        : accessToken(env, tokenEnv, /^BLAZAR_MCP_TOKEN_[A-Z0-9_]+$/);
+      const binding = { id: index === 0 ? 'mcp' : 'mcp-' + index, connectionId: '', capability, endpoint, token };
+      const backend = mcpActionBackend({ ...binding, effect: 'write', tool, includeInvocationId: Boolean(statusTool) }, transport);
+      const lookup = typeof statusTool === 'string'
+        ? mcpActionBackend({ ...binding, effect: 'read', tool: statusTool }, transport)
+        : undefined;
+      return { backend, lookup, identity: [new URL(endpoint).href, tool, statusTool, tokenEnv, token] };
+    });
+    const targets = candidates.map(({ identity: [endpoint, tool, , , token] }) => JSON.stringify([endpoint, tool, token]));
+    if (new Set(targets).size !== targets.length) throw new Error('Duplicate MCP application write backend');
+    const fingerprint = candidates.length === 1
+      ? [key, entry.endpoint, entry.tool, entry.tokenEnv, candidates[0].identity[4], ...(entry.statusTool ? [entry.statusTool] : [])]
+      : [key, candidates.map(item => item.identity)];
+    const revision = createHash('sha256').update(JSON.stringify(fingerprint)).digest('hex');
+    return { app, account, capability, revision, candidates: candidates.map(({ backend, lookup }) => ({ backend, lookup })) };
   });
 }
 

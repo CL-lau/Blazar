@@ -45,7 +45,7 @@ export async function checkApplicationWrite(
 ) {
   const recorded = writes.reconciliation(owner, id);
   if (recorded) return recorded;
-  const permitted = () => writes.canCheck(owner, id, revision);
+  const permitted = () => writes.canCheck(owner, id, revision, lookup.id);
   if (!permitted()) return undefined;
   try {
     const result = await lookup.invoke({

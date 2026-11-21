@@ -139,10 +139,13 @@ test('Router requires explicit confirmation for a configured application write',
     BLAZAR_MCP_ACTIONS: JSON.stringify([{
       app: 'mcp', account: 'Handbook', capability: 'action.document.update',
       endpoint: 'http://127.0.0.1:4198/mcp', tool: 'update_document', statusTool: 'lookup_update',
+      fallbacks: [{ endpoint: 'http://127.0.0.1:4198/backup', tool: 'update_document', statusTool: 'lookup_update' }],
     }]),
-  }, async (_url, init) => {
+  }, async (url, init) => {
     const { id, method, params } = JSON.parse(String(init?.body));
     calls.push(method);
+    const fallback = String(url).endsWith('/backup');
+    if (loseToolResponse && !fallback && method === 'initialize') return new Response(null, { status: 503 });
     if (method === 'initialize') return Response.json({ jsonrpc: '2.0', id, result: {
       protocolVersion: params.protocolVersion, capabilities: { tools: {} },
       serverInfo: { name: 'fixture', version: '1' },
@@ -150,6 +153,7 @@ test('Router requires explicit confirmation for a configured application write',
     if (method === 'notifications/initialized') return new Response(null, { status: 202 });
     assert.equal(method, 'tools/call');
     if (params.name === 'lookup_update') {
+      assert.equal(fallback, true);
       assert.deepEqual(Object.keys(params.arguments), ['blazarInvocationId']);
       assert.ok(dispatchedIds.includes(params.arguments.blazarInvocationId));
       return Response.json({ jsonrpc: '2.0', id, result: { content: [], structuredContent: {
@@ -160,7 +164,10 @@ test('Router requires explicit confirmation for a configured application write',
     assert.equal(params.name, 'update_document');
     assert.equal(params.arguments.title, 'Approved');
     dispatchedIds.push(params.arguments.blazarInvocationId);
-    if (loseToolResponse) return new Response(null, { status: 503 });
+    if (loseToolResponse) {
+      assert.equal(fallback, true);
+      return new Response(null, { status: 503 });
+    }
     return Response.json({ jsonrpc: '2.0', id, result: { content: [] } });
   });
   const router = routerServer(store, { memory, owner: 'owner', token: 'fixture', applicationWrites: definitions });
@@ -217,6 +224,7 @@ test('Router requires explicit confirmation for a configured application write',
   assert.equal((await request(uncertain + '/share', 'POST', { client: iphone.id })).status, 200);
   assert.deepEqual(await (await request(uncertain + '/confirm', 'POST', undefined, iphone.token)).json(), { status: 'outcome_unknown' });
   assert.deepEqual(dispatchedIds, [id, uncertainId]);
+  assert.equal(memory.appWrites.get('owner', uncertainId)?.backend, 'mcp-1');
   assert.equal((await request(uncertain + '/check-result', 'POST', {}, iphone.token)).status, 404);
   assert.deepEqual(await (await request(uncertain + '/check-result', 'POST')).json(), { reconciliation: null });
   reportCorrectInvocation = true;

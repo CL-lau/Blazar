@@ -55,9 +55,10 @@ export async function handleApplicationWrites(
         inputPreview: JSON.stringify(view.input, null, 2) });
       return true;
     }
-    const lookup = definitionFor(proposal.connection, proposal.workspace, proposal.capability);
+    const definition = definitionFor(proposal.connection, proposal.workspace, proposal.capability);
+    const lookup = definition?.candidates.find(item => item.backend.id === proposal.backend)?.lookup;
     reply(response, 200, { ...view, reconciliation: writes.reconciliation(owner, id),
-      canCheckResult: Boolean(lookup?.lookup && writes.canCheck(owner, id, lookup.revision)) });
+      canCheckResult: Boolean(definition && lookup && writes.canCheck(owner, id, definition.revision, lookup.id)) });
     return true;
   }
   if (operation === 'share' && access.kind === 'admin') {
@@ -84,13 +85,14 @@ export async function handleApplicationWrites(
   }
   const definition = definitionFor(proposal.connection, proposal.workspace, proposal.capability);
   if (operation === 'check-result') {
-    if (!definition?.lookup) throw new RequestError(404, 'Application outcome lookup not configured');
-    const reconciliation = await checkApplicationWrite(writes, owner, id, definition.revision, definition.lookup,
+    const lookup = definition?.candidates.find(item => item.backend.id === proposal.backend)?.lookup;
+    if (!definition || !lookup) throw new RequestError(404, 'Application outcome lookup not configured');
+    const reconciliation = await checkApplicationWrite(writes, owner, id, definition.revision, lookup,
       AbortSignal.timeout(applicationWriteTimeoutMs));
     reply(response, 200, { reconciliation: reconciliation ?? null });
     return true;
   }
-  const backends = definition ? [{ ...definition.backend, connectionId: proposal.connection }] : [];
+  const backends = definition?.candidates.map(({ backend }) => ({ ...backend, connectionId: proposal.connection })) ?? [];
   const result = await confirmApplicationWrite(writes, owner, id, definition?.revision ?? '', backends, AbortSignal.timeout(applicationWriteTimeoutMs), authorized);
   reply(response, 200, result);
   return true;
