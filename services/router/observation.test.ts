@@ -232,3 +232,91 @@ else process.exit(2);
   await assert.rejects(observeApp(config, root, '/observe calculator --window w-11', signal), /inaccessible/);
   await assert.rejects(observeApp(config, root, '/observe calculator --window w-12', signal), /inaccessible/);
 });
+
+test('Router runs a window-observation workflow through phone approval and verified handoff', { timeout: 10_000 }, async t => {
+  const directory = realpathSync(mkdtempSync(join(tmpdir(), 'blazar-desktop-workflow-')));
+  const driver = join(directory, 'driver.cjs');
+  writeFileSync(driver, `#!${process.execPath}
+const fs = require('node:fs');
+const command = process.argv[2];
+let data;
+if (command === 'permissions') {
+  data = {accessibility:{state:'granted'},screen_recording:{state:'denied'},automation:{state:'unknown'}};
+} else if (command === 'list-windows') {
+  data = [{id:'w-18',app_name:'Notes',title:'Draft',visible:true,accessible:true,process_instance:'fixture'}];
+} else if (command === 'snapshot' && process.argv.slice(3).includes('w-18')) {
+  data = {window_id:'w-18',pid:42,tree:{role:'window',name:'Draft',children:[
+    {role:'button',name:'Save',ref_id:'@save:e1',available_actions:['Click']},
+    {role:'label',name:fs.existsSync('saved')?'Saved':'Draft pending'}
+  ]}};
+} else if (command === 'click' && process.argv[3] === '@save:e1') {
+  fs.writeFileSync('saved', 'yes', {flag:'wx'});
+  data = {};
+} else process.exit(2);
+console.log(JSON.stringify({ok:true,command,data}));
+`, { mode: 0o700 });
+  const observation = observationConfig({
+    BLAZAR_COMPUTER_DRIVER: driver, BLAZAR_COMPUTER_APPS: '{"notes":"Notes"}',
+    BLAZAR_COMPUTER_BUTTONS: '{"notes":["Save"]}',
+  });
+  const store = new TaskStore(':memory:');
+  const ledger = new DeviceLedger(':memory:');
+  const server = routerServer(store, { owner: 'owner', token: 'admin' });
+  server.listen(0, '127.0.0.1');
+  await once(server, 'listening');
+  const address = server.address();
+  assert(address && typeof address !== 'string');
+  const base = new URL('http://127.0.0.1:' + address.port);
+  const device = store.registerDevice('owner', 'Notes desktop', 'project');
+  const phone = store.redeemPairing(store.createPairing('owner', Date.now()).code, 'Phone fixture', Date.now())!;
+  const client = new DeviceClient(base, device.token, directory, ledger, undefined, observation);
+  t.after(async () => {
+    client.close();
+    server.closeDeviceSockets();
+    await new Promise<void>(resolve => server.close(() => resolve()));
+    ledger.close();
+    store.close();
+    rmSync(directory, { recursive: true, force: true });
+  });
+  const signal = AbortSignal.timeout(8_000);
+  const post = (path: string, token: string, key: string, body: object) => fetch(new URL(path, base), {
+    method: 'POST', signal,
+    headers: { Authorization: 'Bearer ' + token, 'Content-Type': 'application/json', 'Idempotency-Key': key },
+    body: JSON.stringify(body),
+  });
+  assert.equal(await client.runOnce(signal), false);
+  const workflow = await post('/v1/workflows', phone.token, 'observe-and-click', {
+    workspace: 'project', steps: [
+      { key: 'windows', goal: 'List Notes windows', needs: [],
+        action: { kind: 'desktop.observe', alias: 'notes', deviceId: device.id, mode: 'windows' } },
+      { key: 'save', goal: 'Save the draft', needs: ['windows'],
+        action: { kind: 'desktop.click', alias: 'notes', deviceId: device.id, button: 'Save', expectedText: 'Saved',
+          windowFrom: { step: 'windows', title: 'Draft' } } },
+      { key: 'review', goal: 'Review the saved draft', needs: ['save'] },
+    ],
+  });
+  assert.equal(workflow.status, 202);
+  const { steps } = await workflow.json() as { steps: { taskId: string }[] };
+  assert.equal(await client.runOnce(signal), true);
+  const clicking = client.runOnce(signal);
+  void clicking.catch(() => {});
+  let approval;
+  while (!approval) {
+    signal.throwIfAborted();
+    const clickTask = store.get('owner', steps[1].taskId);
+    assert.notEqual(clickTask?.status, 'failed', clickTask?.result ?? 'Click failed');
+    approval = store.snapshot('owner').approvals.find(item => item.taskId === steps[1].taskId);
+    if (!approval) await new Promise(resolve => setTimeout(resolve, 20));
+  }
+  assert.equal(store.get('owner', steps[2].taskId)?.status, 'waiting_dependency');
+  assert.match(String(approval.summary), /Click "Save".*Expected visible text: "Saved"/);
+  const approved = await post('/v1/tasks/' + steps[1].taskId + '/commands', phone.token, 'approve-save', {
+    action: 'approve', expectedVersion: 1, approvalId: approval.id,
+  });
+  assert.equal(approved.status, 200);
+  assert.equal(await clicking, true);
+  assert.equal(store.get('owner', steps[1].taskId)?.status, 'succeeded');
+  const handoff = store.claim('owner', 'project', 'review-worker', Date.now(), 45_000, '', '/preview ')!;
+  assert.equal(handoff.task.id, steps[2].taskId);
+  assert.match(handoff.predecessors[0].artifact?.excerpt ?? '', /Saved/);
+});
