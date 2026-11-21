@@ -8,6 +8,8 @@ Use Node.js 22.19 or newer, then run `npm ci` and `npm test`. Start the Router w
 
 Register an execution device through `POST /v1/admin/devices` with the Router token and a JSON body containing `name` and `workspace`. Use the returned device token as `BLAZAR_DEVICE_TOKEN`, set `BLAZAR_WORKSPACE_PATH` to the local workspace directory, and run `npm run device`. The default executor supports `/preview relative-file.md`.
 
+Set `BLAZAR_WORKER_GIT_WORKTREE=1` on a Worker device to start each run in a separate detached checkout from the configured repository's committed HEAD. Configure the repository root as its workspace. Checkouts are retained at `~/.blazar-device/run-worktrees/<run-id>`, including after a failed or interrupted run. Review the changes there and remove the checkout with `git worktree remove` from the source repository after saving anything you need. The Worker runs with the device account's OS permissions. The checkout isolates ordinary relative-path edits.
+
 The Router holds an exclusive lock in the database directory. Set `BLAZAR_DB` to a file in a dedicated local directory to run a separate instance, and assign each instance a distinct port. Leave the lock file in place. The operating system releases its lock when the Router exits, including after a crash.
 
 The local administrator can query `GET /v1/admin/metrics` for task counts by status, device availability, routing counts, and latency summaries for direct event submissions, supported webhook intake, and model routing. Latency counters reset after restart. Each reported p95 is a histogram bucket upper bound in milliseconds.

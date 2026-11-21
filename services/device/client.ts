@@ -27,8 +27,10 @@ export class DeviceClient {
   private nextDesktopProbe = 0;
   private workspaceIdentity: string;
   private claimId = randomUUID();
+  private readonly prepareWorkerRoot?: (runId: string) => Promise<string>;
 
-  constructor(base: URL, token: string, root: string, ledger: DeviceLedger, worker?: Worker, observation?: ObservationConfig, workspaceIdentity = root) {
+  constructor(base: URL, token: string, root: string, ledger: DeviceLedger, worker?: Worker, observation?: ObservationConfig, workspaceIdentity = root,
+              prepareWorkerRoot?: (runId: string) => Promise<string>) {
     if (base.protocol !== 'https:' && !(base.protocol === 'http:' && base.hostname === '127.0.0.1')) {
       throw new Error('Router URL must use HTTPS or local loopback HTTP.');
     }
@@ -37,6 +39,7 @@ export class DeviceClient {
     this.workspaceIdentity = workspaceIdentity;
     this.ledger = ledger;
     this.worker = worker;
+    this.prepareWorkerRoot = prepareWorkerRoot;
     if (worker) {
       const protocol = worker.protocol ?? 'acp';
       const adapterVersion = 1;
@@ -44,6 +47,7 @@ export class DeviceClient {
       const revision = createHmac('sha256', token).update(JSON.stringify([
         adapterVersion, worker.label, protocol, worker.executable, worker.args, worker.env ?? [],
         worker.protocol === 'jsonl' && worker.includeFullInputArtifacts === true,
+        ...(prepareWorkerRoot ? ['git-worktree'] : []),
       ])).digest('hex');
       const capabilities: WorkerCapability[] = [];
       if (protocol === 'codex' || protocol === 'pi') capabilities.push('steer');
@@ -178,8 +182,10 @@ export class DeviceClient {
               return () => this.consumeApproval(prefix, decision.id, signal);
             }, assignment.clickExpectedText);
         } else if (this.worker) {
+          const root = this.prepareWorkerRoot ? await this.prepareWorkerRoot(assignment.run.id) : this.root;
+          active.throwIfAborted();
           const { result, checkpoint: session } = await executeWorker({
-            root: this.root, scope: this.scope, workspaceIdentity: this.workspaceIdentity,
+            root, scope: this.scope, workspaceIdentity: this.prepareWorkerRoot ? root : this.workspaceIdentity,
             revision: this.workerConfiguration?.revision, ledger: this.ledger,
             post: (path, data, signal) => this.post(path, data, signal),
             approve: (path, summary, signal) => this.approve(path, summary, signal),
@@ -188,7 +194,7 @@ export class DeviceClient {
             goal: assignment.task.goal, instructions: assignment.instructions, predecessors: assignment.predecessors,
             acceptanceCriteria: assignment.acceptanceCriteria, memoryInputs: assignment.memoryInputs, attachments: assignment.attachments,
           }, stop, active, assignment.fullInputRequired);
-          checkpoint = session;
+          checkpoint = this.prepareWorkerRoot ? undefined : session;
           outcome = { status: 'succeeded', result, artifact: { name: 'worker-result.txt', text: result } };
         } else {
           if (assignment.instructions.length) throw new Error('Submit a new preview to change the document path.');

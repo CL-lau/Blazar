@@ -8,6 +8,7 @@ import { mkdir } from 'node:fs/promises';
 import { setTimeout as delay } from 'node:timers/promises';
 import { DeviceClient } from './client.ts';
 import { lockWorkspace } from './workspace.ts';
+import { gitRunWorktrees } from './execution/git-worktree.ts';
 
 const token = process.env.BLAZAR_DEVICE_TOKEN;
 const workspace = process.env.BLAZAR_WORKSPACE_PATH;
@@ -20,7 +21,9 @@ const observation = mode === 'observe' ? observationConfig(process.env, join(sta
 const worker = observation ? undefined : await resolveWorker(mode, process.env.BLAZAR_WORKER_MANIFEST, process.env.BLAZAR_WORKER_EXECUTABLE);
 const workspaceLock = lockWorkspace(workspace, stateDirectory);
 try {
-  if (worker && (worker.protocol ?? 'acp') === 'acp') {
+  const prepareWorkerRoot = worker && process.env.BLAZAR_WORKER_GIT_WORKTREE === '1'
+    ? await gitRunWorktrees(workspaceLock.root, stateDirectory) : undefined;
+  if (worker && !prepareWorkerRoot && (worker.protocol ?? 'acp') === 'acp') {
     try {
       await probeAcp(worker, workspaceLock.root, AbortSignal.timeout(5_000));
     } catch (error) {
@@ -31,7 +34,7 @@ try {
   try {
     const interrupted = ledger.interrupted(workspaceLock.identity);
     if (interrupted) console.error('Workspace has an interrupted run that requires reconciliation: ' + interrupted);
-    const device = new DeviceClient(router, token, workspaceLock.root, ledger, worker, observation, workspaceLock.identity);
+    const device = new DeviceClient(router, token, workspaceLock.root, ledger, worker, observation, workspaceLock.identity, prepareWorkerRoot);
     const shutdown = new AbortController();
     process.once('SIGINT', () => shutdown.abort());
     process.once('SIGTERM', () => shutdown.abort());
