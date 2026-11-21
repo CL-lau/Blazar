@@ -1,5 +1,6 @@
 import type { DocumentConnector } from './documents.ts';
 import { feishuDocuments } from './feishu-docs.ts';
+import { mcpDocuments } from './mcp-docs.ts';
 import { githubDocuments } from './github-docs.ts';
 
 function entries(env: NodeJS.ProcessEnv, key: string): Record<string, unknown>[] {
@@ -50,6 +51,15 @@ export function configuredDocuments(env: NodeJS.ProcessEnv, transport = fetch): 
     if (typeof entry.repository !== 'string') throw new Error('Expected GitHub document repository');
     const token = accessToken(env, entry.tokenEnv, /^BLAZAR_GITHUB_TOKEN_[A-Z0-9_]+$/);
     register(githubDocuments(accountName(entry.account), entry.repository, token, transport));
+  }
+  for (const entry of entries(env, 'BLAZAR_MCP_DOCS')) {
+    if (typeof entry.endpoint !== 'string' || !entry.resources ||
+        typeof entry.resources !== 'object' || Array.isArray(entry.resources)) {
+      throw new Error('Expected an MCP endpoint and a resource alias map');
+    }
+    const token = entry.tokenEnv === undefined ? undefined
+      : accessToken(env, entry.tokenEnv, /^BLAZAR_MCP_TOKEN_[A-Z0-9_]+$/);
+    register(mcpDocuments(accountName(entry.account), entry.endpoint, entry.resources as Record<string, unknown>, token, transport));
   }
   return [...readers.values()];
 }
