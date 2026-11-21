@@ -9,6 +9,7 @@ export type DocumentConnector = {
   account: string;
   definition?: { label: string; version: number };
   documentAliases?: readonly string[];
+  discover?(signal: AbortSignal): Promise<{ aliases: string[]; complete: boolean }>;
   accepts(document: string): boolean;
   read(document: string, signal: AbortSignal): Promise<{ text: string; revision: string }>;
 };
@@ -20,6 +21,7 @@ const documentApps = new Map([
 const appCapabilities = [
   { id: 'document.test', label: 'Test document access', input: ['workspace', 'document'], effect: 'read' },
   { id: 'document.import', label: 'Import document', input: ['workspace', 'document'], effect: 'local_write' },
+  { id: 'document.discover', label: 'Discover available documents', input: ['workspace'], effect: 'read' },
   { id: 'document.search', label: 'Search imported documents', input: ['workspace', 'query'], effect: 'read' },
   { id: 'document.refresh', label: 'Refresh imported documents', input: ['workspace'], effect: 'local_write' },
 ] as const;
@@ -38,14 +40,15 @@ export function documentAppCatalog(connectors: readonly DocumentConnector[]) {
   return [...apps].map(([id, definition]) => ({
     id, ...definition,
     accounts: connectors.filter(connector => connector.app === id).map(connector => connector.account).sort(),
-    capabilities: appCapabilities,
+    capabilities: appCapabilities.filter(capability => capability.id !== 'document.discover' || id === 'mcp' ||
+      connectors.some(connector => connector.app === id && connector.discover)),
   }));
 }
 
 export function documentCapabilityState(connection: { active: number; app: string }, reader: DocumentConnector | undefined) {
   if (!reader && !documentApps.has(connection.app)) return [];
   const state = !connection.active ? 'disconnected' : reader ? 'configured' : 'configuration_required';
-  return appCapabilities.map(({ id, label }) => ({ id, label, state }));
+  return appCapabilities.filter(capability => capability.id !== 'document.discover' || connection.app === 'mcp' || reader?.discover).map(({ id, label }) => ({ id, label, state }));
 }
 
 export async function readDocumentResponse(response: Response): Promise<string> {

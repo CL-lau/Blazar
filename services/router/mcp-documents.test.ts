@@ -1,9 +1,11 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { configuredDocuments } from '../../packages/apps/config.ts';
+import { invokeDocumentCapability } from './application/document-sync.ts';
+import { MemoryStore } from './memory.ts';
 import { documentAppCatalog } from '../../packages/apps/documents.ts';
 
-test('a configured MCP account reads allowlisted text resources without invoking tools', async () => {
+test('a configured MCP account reads allowlisted text resources without invoking tools', async t => {
   const methods: string[] = [];
   const primary = 'http://127.0.0.1:4198/primary';
   let primaryStatus = 503;
@@ -28,6 +30,9 @@ test('a configured MCP account reads allowlisted text resources without invoking
       serverInfo: { name: 'fixture', version: '1' },
     } }, { headers: { 'Mcp-Session-Id': 'fixture-session' } });
     if (method === 'notifications/initialized') return new Response(null, { status: 202 });
+    if (method === 'resources/list') return Response.json({ jsonrpc: '2.0', id, result: params?.cursor
+      ? { resources: [{ uri: 'docs://handbook/review', name: 'Review' }] }
+      : { resources: [{ uri: 'docs://private/unlisted', name: 'Private' }], nextCursor: 'next' } });
     assert.equal(method, 'resources/read');
     assert.equal(params.uri, 'docs://handbook/review');
     return Response.json({ jsonrpc: '2.0', id, result: { contents: [
@@ -71,4 +76,18 @@ test('a configured MCP account reads allowlisted text resources without invoking
   primaryStatus = 403;
   await assert.rejects(extension.read('review', signal), /denied access/);
   assert.deepEqual(methods, ['primary']);
+  methods.length = 0;
+  primaryStatus = 503;
+  const store = new MemoryStore(':memory:');
+  t.after(() => store.close());
+  const connection = store.connect('owner', extension.app, extension.account, 'project');
+  const discover = (workspace: string) =>
+    invokeDocumentCapability(store, 'owner', connection, [extension], 'document.discover', { workspace });
+  await assert.rejects(discover('other'), /Active connection not found/);
+  assert.deepEqual(methods, []);
+  assert.deepEqual(await discover('project'), { aliases: ['review'], complete: true });
+  assert.deepEqual(methods, ['primary', 'initialize', 'notifications/initialized', 'resources/list', 'resources/list', 'close']);
+  store.revokeResource('owner', connection, 'review');
+  assert.deepEqual(await discover('project'), { aliases: [], complete: true });
+
 });

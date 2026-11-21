@@ -80,7 +80,7 @@ export class MemoryStore {
       .get(owner, id, workspace ?? null, workspace ?? null) as { app: string; account: string } | undefined;
   }
 
-  startAppUsage(connection: string, workspace: string, operation: 'import' | 'test' | 'refresh' | 'search') {
+  startAppUsage(connection: string, workspace: string, operation: 'import' | 'test' | 'refresh' | 'search' | 'discover') {
     return this.db.prepare("INSERT INTO app_usage(connection,workspace,operation,status,started) VALUES(?,?,?,'started',?)")
       .run(connection, workspace, operation, Date.now()).lastInsertRowid;
   }

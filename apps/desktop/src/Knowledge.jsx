@@ -191,7 +191,7 @@ export function Knowledge({ token }) {
           <h3>{usage.account}</h3>
           {usage.items.length === 0 ? <p>No connection activity yet.</p> : <ul>{usage.items.map(item => (
             <li key={item.id}>
-              {{ import: 'Document import', test: 'Access test', refresh: 'Document refresh', search: 'Document search', worker_memory: 'Worker memory access' }[item.operation]} · {item.workspace} ·{' '}
+              {{ import: 'Document import', test: 'Access test', refresh: 'Document refresh', search: 'Document search', discover: 'Document discovery', worker_memory: 'Worker memory access' }[item.operation]} · {item.workspace} ·{' '}
               {item.taskId && <><code>{item.taskId}</code> · </>}
               {item.status.replaceAll('_', ' ')} · {new Date(item.started).toLocaleString()}
             </li>

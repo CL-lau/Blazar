@@ -82,20 +82,22 @@ export function configuredDocuments(env: NodeJS.ProcessEnv, transport = fetch): 
     }
     const backends = [primary, ...fallbacks.map(backend =>
       mcpReader({ ...backend, account: entry.account, resources: entry.resources }))];
+    async function tryBackends<T>(signal: AbortSignal, invoke: (backend: typeof primary) => Promise<T>) {
+      for (const backend of backends.slice(0, -1)) {
+        signal.throwIfAborted();
+        try {
+          return await invoke(backend);
+        } catch (error) {
+          if (!(error instanceof DocumentBackendUnavailable)) throw error;
+        }
+      }
+      signal.throwIfAborted();
+      return invoke(backends[backends.length - 1]);
+    }
     register({
       ...primary, app: entry.id, definition: { label, version: entry.version },
-      async read(alias, signal) {
-        for (const backend of backends.slice(0, -1)) {
-          signal.throwIfAborted();
-          try {
-            return await backend.read(alias, signal);
-          } catch (error) {
-            if (!(error instanceof DocumentBackendUnavailable)) throw error;
-          }
-        }
-        signal.throwIfAborted();
-        return backends[backends.length - 1].read(alias, signal);
-      },
+      read: (alias, signal) => tryBackends(signal, backend => backend.read(alias, signal)),
+      discover: signal => tryBackends(signal, backend => backend.discover(signal)),
     });
   }
   return [...readers.values()];

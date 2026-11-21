@@ -61,6 +61,24 @@ export async function invokeDocumentCapability(store: DocumentMemory, owner: str
   if (!connection) throw new RequestError(404, 'Active connection not found');
   const reader = readers.find(candidate => candidate.app === connection.app && candidate.account === connection.account);
   if (!reader) throw new RequestError(409, 'No document reader is configured for this connection');
+  if (capability === 'document.discover') {
+    if (!reader.discover) throw new RequestError(404, 'Document discovery is unavailable for this connection');
+    const usage = store.startAppUsage(connectionId, workspace, 'discover');
+    let result: Awaited<ReturnType<NonNullable<DocumentConnector['discover']>>>;
+    try {
+      result = await reader.discover(AbortSignal.timeout(10_000));
+    } catch (error) {
+      store.finishAppUsage(usage, error instanceof DocumentAccessDenied ? 'access_denied' : 'failed');
+      throw new RequestError(502, error instanceof DocumentUnavailable ? error.message : 'Document discovery failed');
+    }
+    if (!store.connection(owner, connectionId, workspace)) {
+      store.finishAppUsage(usage, 'access_changed');
+      throw new RequestError(409, 'Source access changed during discovery');
+    }
+    const aliases = result.aliases.filter(alias => reader.accepts(alias) && !store.resourceRevoked(connectionId, alias));
+    store.finishAppUsage(usage, 'succeeded');
+    return { aliases, complete: result.complete };
+  }
   if (capability === 'document.search') {
     const query = requiredText(input.query, 'search terms', 256);
     const usage = store.startAppUsage(connectionId, workspace, 'search');
