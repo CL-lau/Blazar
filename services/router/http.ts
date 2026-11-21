@@ -4,7 +4,7 @@ import { artifactDiff } from './artifact-diff.ts';
 import { workerCatalog } from '../../packages/workers/registry.ts';
 import { performance } from 'node:perf_hooks';
 import { RouterMetrics } from './metrics.ts';
-import { DocumentAccessDenied, DocumentUnavailable, type DocumentConnector } from '../../packages/apps/documents.ts';
+import { documentAppCatalog, documentCapabilityState, DocumentAccessDenied, DocumentUnavailable, type DocumentConnector } from '../../packages/apps/documents.ts';
 import { WebSocket, WebSocketServer } from 'ws';
 import { createQQHandler, qqChannel, type QQConfig } from '../../packages/channels/qq.ts';
 import { feishuChannel, parseFeishu, type FeishuConfig } from '../../packages/channels/feishu.ts';
@@ -196,10 +196,19 @@ async function handleMemory(
     documents?.find(connector => connector.app === connection.app && connector.account === connection.account);
   if (pathname === '/v1/app-connections') {
     if (method === 'GET') {
-      reply(response, 200, { documentSync: store.documentSyncSettings(owner), connections: store.connections(owner).map(connection => {
-        const reader = connection.active ? readerFor(connection) : undefined;
-        return { ...connection, canImportDocument: Boolean(reader), documentAliases: reader?.documentAliases };
-      }) });
+      reply(response, 200, {
+        definitions: documentAppCatalog(documents ?? []),
+        documentSync: store.documentSyncSettings(owner),
+        connections: store.connections(owner).map(connection => {
+          const reader = readerFor(connection);
+          return {
+            ...connection,
+            canImportDocument: Boolean(connection.active && reader),
+            documentAliases: connection.active ? reader?.documentAliases : undefined,
+            capabilities: documentCapabilityState(connection, reader),
+          };
+        }),
+      });
       return true;
     }
     if (method === 'POST') {

@@ -180,9 +180,21 @@ test('Router authenticates, deduplicates commands and replays task changes over 
   const mixedRecall = importedRecall + '&source=' + github;
   const mixed = await (await fetch(url + mixedRecall, { headers })).json();
   assert.deepEqual(new Set(mixed.items.map(item => item.connection)), new Set([connection, github]));
+  const missingReader = await (await post('/v1/app-connections', 'manual-account', {
+    app: 'lark', account: 'not configured',
+  })).json();
   const configured = await (await fetch(url + '/v1/app-connections', { headers })).json();
   assert.equal(configured.connections.filter(item => item.canImportDocument).length, 3);
   assert.equal(configured.connections.find(item => item.id === scopedConnection)?.workspace, 'private');
+  const feishuDefinition = configured.definitions.find(item => item.id === 'feishu');
+  assert.deepEqual(feishuDefinition.accounts, ['project account']);
+  assert.deepEqual(feishuDefinition.capabilities.map(item => [item.id, item.effect]),
+    [['document.test', 'read'], ['document.import', 'local_write'], ['document.refresh', 'local_write']]);
+  assert.ok(configured.connections.find(item => item.id === scopedConnection).capabilities.every(item => item.state === 'configured'));
+  const unconfigured = configured.connections.find(item => item.id === missingReader.id);
+  assert.equal(unconfigured.capabilities.length, 3);
+  assert.ok(unconfigured.capabilities.every(item => item.state === 'configuration_required'));
+  assert.doesNotMatch(JSON.stringify(configured.definitions), /other-fixture|"token"|"secret"/);
   const scopedRecall = '/v1/memory?workspace=private&q=findings&source=' + scopedConnection;
   assert.equal((await (await fetch(url + scopedRecall, { headers })).json()).items.length, 1);
   const changedScope = await fetch(url + '/v1/app-connections/' + scopedConnection, {
@@ -229,6 +241,10 @@ test('Router authenticates, deduplicates commands and replays task changes over 
   assert.doesNotMatch(await revokedAnswer.text(), /design review findings/i);
   const disconnected = await fetch(url + '/v1/app-connections/' + connection, { method: 'DELETE', headers });
   assert.equal(disconnected.status, 200);
+  const updatedConnections = await (await fetch(url + '/v1/app-connections', { headers })).json();
+  const closedConnection = updatedConnections.connections.find(item => item.id === connection);
+  assert.equal(closedConnection.canImportDocument, false);
+  assert.ok(closedConnection.capabilities.every(item => item.state === 'disconnected'));
   assert.equal((await revise(3, { pinned: false })).status, 404);
   assert.equal((await post(importPath, 'revoked-import', { workspace: 'demo', document: 'doc123' })).status, 404);
   assert.deepEqual(await (await fetch(url + importedRecall, { headers })).json(), { items: [] });

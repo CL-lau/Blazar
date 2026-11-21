@@ -3,6 +3,8 @@ import { callRouter } from './router.js';
 
 export function Knowledge({ token }) {
   const [connections, setConnections] = useState([]);
+  const [definitions, setDefinitions] = useState([]);
+  const [appName, setAppName] = useState('');
   const [documentSync, setDocumentSync] = useState([]);
   const [results, setResults] = useState(null);
   const [searchQuery, setSearchQuery] = useState('');
@@ -33,6 +35,7 @@ export function Knowledge({ token }) {
       .then(data => {
         if (!current) return;
         setConnections(data.connections);
+        setDefinitions(data.definitions ?? []);
         setDocumentSync(data.documentSync ?? []);
       })
       .catch(failure => { if (current) setError(failure.message); });
@@ -47,6 +50,7 @@ export function Knowledge({ token }) {
   async function refreshConnections() {
     const data = await request('/app-connections');
     setConnections(data.connections);
+    setDefinitions(data.definitions ?? []);
     setDocumentSync(data.documentSync ?? []);
   }
 
@@ -57,6 +61,7 @@ export function Knowledge({ token }) {
     void perform(async () => {
       await request('/app-connections', { method: 'POST', body: { app, account, workspace: workspace.trim() || undefined } });
       form.reset();
+      setAppName('');
       await refreshConnections();
     });
   }
@@ -132,14 +137,25 @@ export function Knowledge({ token }) {
       <fieldset disabled={busy}>
         <legend>Source accounts</legend>
         <form onSubmit={saveAccount}>
-          <label>App<input name="app" required maxLength={128} /></label>
-          <label>Account<input name="account" required maxLength={256} /></label>
+          <label>App<input name="app" required maxLength={128} list="blazar-app-definitions" value={appName}
+            onChange={event => setAppName(event.target.value)} /></label>
+          <datalist id="blazar-app-definitions">{definitions.map(app =>
+            <option key={app.id} value={app.id}>{app.label}</option>)}</datalist>
+          <label>Account<input name="account" required maxLength={256} list="blazar-app-accounts" /></label>
+          <datalist id="blazar-app-accounts">{definitions.find(app => app.id === appName)?.accounts.map(account =>
+            <option key={account} value={account} />)}</datalist>
           <label>Limit to workspace<input name="workspace" maxLength={128} /></label>
           <button>Register source account</button>
         </form>
         <ul>{connections.map(connection => (
           <li key={connection.id}>
             <span>{accountName(connection)}{connection.workspace && ` · ${connection.workspace}`}</span>
+            {connection.capabilities?.length > 0 && <ul aria-label="Connection capabilities">
+              {connection.capabilities.map(capability => <li key={capability.id}>
+                {capability.label} · {{ configured: 'Configured', configuration_required: 'Configuration required',
+                  disconnected: 'Disconnected' }[capability.state]}
+              </li>)}
+            </ul>}
             {connection.active && <form onSubmit={event => changeWorkspace(event, connection)}>
               <label>Limit to workspace<input name="workspace" defaultValue={connection.workspace ?? ''} maxLength={128} /></label>
               <button>Save scope</button>

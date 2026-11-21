@@ -11,6 +11,32 @@ export type DocumentConnector = {
   read(document: string, signal: AbortSignal): Promise<{ text: string; revision: string }>;
 };
 
+const documentApps = new Map([
+  ['feishu', 'Feishu'], ['lark', 'Lark'], ['github', 'GitHub'], ['mcp', 'MCP'],
+]);
+
+const appCapabilities = [
+  { id: 'document.test', label: 'Test document access', input: ['workspace', 'document'], effect: 'read' },
+  { id: 'document.import', label: 'Import document', input: ['workspace', 'document'], effect: 'local_write' },
+  { id: 'document.refresh', label: 'Refresh imported documents', input: ['workspace'], effect: 'local_write' },
+] as const;
+
+export function documentAppCatalog(connectors: readonly DocumentConnector[]) {
+  const apps = new Map(documentApps);
+  for (const connector of connectors) if (!apps.has(connector.app)) apps.set(connector.app, connector.app);
+  return [...apps].map(([id, label]) => ({
+    id, label, version: 1,
+    accounts: connectors.filter(connector => connector.app === id).map(connector => connector.account).sort(),
+    capabilities: appCapabilities,
+  }));
+}
+
+export function documentCapabilityState(connection: { active: number; app: string }, reader: DocumentConnector | undefined) {
+  if (!reader && !documentApps.has(connection.app)) return [];
+  const state = !connection.active ? 'disconnected' : reader ? 'configured' : 'configuration_required';
+  return appCapabilities.map(({ id, label }) => ({ id, label, state }));
+}
+
 export async function readDocumentResponse(response: Response): Promise<string> {
   if (!response.ok || !response.body) {
     await response.body?.cancel();
