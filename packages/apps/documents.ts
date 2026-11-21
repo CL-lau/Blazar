@@ -67,6 +67,7 @@ export async function readDocumentResponse(response: Response): Promise<string> 
     if ([401, 404, 410].includes(response.status) || (response.status === 403 && !throttled)) {
       throw new DocumentAccessDenied('The configured account no longer has access to this document');
     }
+    if (response.status >= 500) throw new DocumentBackendUnavailable('Document backend unavailable');
     throw new DocumentUnavailable('Document could not be read with the configured account');
   }
   const reader = response.body.getReader();

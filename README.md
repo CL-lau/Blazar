@@ -170,6 +170,8 @@ To give a custom MCP application its own identity in the desktop catalog, add a 
 export BLAZAR_APP_MANIFESTS='[{"version":1,"id":"custom.handbook","label":"Team Handbook","connector":"mcp-resources","account":"Production","endpoint":"http://127.0.0.1:4198/mcp","resources":{"review":"docs://handbook/review"}}]'
 ```
 
+A `github-documents` manifest can bind fixed aliases to paths in one GitHub repository and configure MCP fallbacks. Use `repository`, a `BLAZAR_GITHUB_TOKEN_*` reference in `tokenEnv`, and a `documents` alias-to-path map. Every fallback must map the same aliases to approved MCP resource URIs in its own `resources` map. The manifest operator must ensure each URI denotes the same document and access scope as the GitHub path. Blazar tries the API first and switches on a backend failure. An access denial ends the request.
+
 Restart the Router, then connect `custom.handbook` with account `Production` in the desktop app. Credentials and endpoints stay on the Router. The catalog exposes the manifest name, account label, and document capabilities.
 
 A manifest can list up to two ordered `fallbacks` with an `endpoint` and optional `tokenEnv` each. Configure only mirrors of the same resources. Every endpoint uses the application account's existing resource URI map and its own credential reference. The Router tries the next backend after HTTP 502, 503, or 504. Authentication failures, access denials, and application errors end the read.

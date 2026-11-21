@@ -3,7 +3,8 @@ import { DocumentUnavailable, documentText, readDocumentResponse, type DocumentC
 const accepts = (path: string) => path.length <= 128 && /\.(md|markdown|txt)$/i.test(path) &&
   path.split('/').every(segment => /^[A-Za-z0-9_.-]+$/.test(segment) && segment !== '.' && segment !== '..');
 
-export function githubDocuments(account: string, repository: string, token: string, transport = fetch): DocumentConnector {
+export function githubDocuments(account: string, repository: string, token: string, transport = fetch):
+    DocumentConnector & Required<Pick<DocumentConnector, 'health'>> {
   if (!/^[A-Za-z0-9-]+\/[A-Za-z0-9_.-]+$/.test(repository) || /\/(\.|\.\.)$/.test(repository)) {
     throw new Error('GitHub document repository must use owner/repo format');
   }

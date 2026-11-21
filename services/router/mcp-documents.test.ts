@@ -9,7 +9,13 @@ test('a configured MCP account reads allowlisted text resources without invoking
   const methods: string[] = [];
   const primary = 'http://127.0.0.1:4198/primary';
   let primaryStatus = 503;
+  let githubStatus = 200;
   const transport: typeof fetch = async (input, init) => {
+    if (String(input) === 'https://api.github.com/repos/example/handbook/contents/docs/review.md') {
+      assert.equal(new Headers(init?.headers).get('authorization'), 'Bearer github-token');
+      methods.push('github');
+      return new Response(githubStatus === 200 ? 'GitHub review guidance' : null, { status: githubStatus });
+    }
     if (String(input) === primary) {
       assert.equal(new Headers(init?.headers).get('authorization'), 'Bearer primary-token');
       methods.push('primary');
@@ -103,5 +109,27 @@ test('a configured MCP account reads allowlisted text resources without invoking
   };
   await assert.rejects(invokeDocumentCapability(store, 'owner', connection, [changed], 'document.discover',
     { workspace: 'project' }), /Source access changed during discovery/);
+
+  const githubManifest = { version: 1, connector: 'github-documents', id: 'custom.repository',
+    label: 'Repository handbook', account: 'handbook', repository: 'example/handbook',
+    tokenEnv: 'BLAZAR_GITHUB_TOKEN_HANDBOOK', documents: { review: 'docs/review.md' },
+    fallbacks: [{ endpoint: account.endpoint, tokenEnv: account.tokenEnv, resources: account.resources }] };
+  const githubEnv = { ...env, BLAZAR_GITHUB_TOKEN_HANDBOOK: 'github-token' };
+  assert.throws(() => configuredDocuments({ ...githubEnv, BLAZAR_APP_MANIFESTS: JSON.stringify([{
+    ...githubManifest, fallbacks: [{ ...githubManifest.fallbacks[0], resources: { other: 'docs://handbook/other' } }],
+  }]) }, transport), /exactly the configured document aliases/);
+  const [repository] = configuredDocuments({ ...githubEnv, BLAZAR_MCP_DOCS: '[]',
+    BLAZAR_APP_MANIFESTS: JSON.stringify([githubManifest]) }, transport);
+  methods.length = 0;
+  assert.equal((await repository.read('review', signal)).text, 'GitHub review guidance');
+  assert.deepEqual(methods, ['github']);
+  methods.length = 0;
+  githubStatus = 401;
+  await assert.rejects(repository.read('review', signal), /no longer has access/);
+  assert.deepEqual(methods, ['github']);
+  methods.length = 0;
+  githubStatus = 503;
+  assert.equal((await repository.read('review', signal)).text, 'MCP review guidance');
+  assert.deepEqual(methods, ['github', 'initialize', 'notifications/initialized', 'resources/read', 'close']);
 
 });

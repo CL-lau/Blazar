@@ -1,4 +1,4 @@
-import { DocumentBackendUnavailable, type DocumentConnector } from './documents.ts';
+import { DocumentBackendUnavailable, DocumentUnavailable, type DocumentConnector } from './documents.ts';
 import { feishuDocuments } from './feishu-docs.ts';
 import { mcpDocuments } from './mcp-docs.ts';
 import { githubDocuments } from './github-docs.ts';
@@ -64,7 +64,7 @@ export function configuredDocuments(env: NodeJS.ProcessEnv, transport = fetch): 
   for (const entry of entries(env, 'BLAZAR_MCP_DOCS')) register(mcpReader(entry));
   const customLabels = new Map<string, string>();
   for (const entry of entries(env, 'BLAZAR_APP_MANIFESTS')) {
-    if (entry.version !== 1 || entry.connector !== 'mcp-resources' || typeof entry.id !== 'string' ||
+    if (entry.version !== 1 || (entry.connector !== 'mcp-resources' && entry.connector !== 'github-documents') || typeof entry.id !== 'string' ||
         !/^custom\.[a-z][a-z0-9-]{0,62}$/.test(entry.id) || typeof entry.label !== 'string' ||
         !entry.label.trim() || entry.label.length > 128 || /[\x00-\x1f\x7f]/.test(entry.label)) {
       throw new Error('Invalid application manifest with version 1');
@@ -73,15 +73,21 @@ export function configuredDocuments(env: NodeJS.ProcessEnv, transport = fetch): 
     const previousLabel = customLabels.get(entry.id);
     if (previousLabel !== undefined && previousLabel !== label) throw new Error('Conflicting application manifest labels');
     customLabels.set(entry.id, label);
-    const primary = mcpReader(entry);
+    const github = entry.connector === 'github-documents';
+    const primary = github ? githubManifestReader(entry, env, transport) : mcpReader(entry);
     const fallbacks = entry.fallbacks ?? [];
     if (!Array.isArray(fallbacks) || fallbacks.length > 2 || fallbacks.some(backend =>
       !backend || typeof backend !== 'object' || Array.isArray(backend) ||
-      Object.keys(backend).some(key => key !== 'endpoint' && key !== 'tokenEnv'))) {
+      Object.keys(backend).some(key => key !== 'endpoint' && key !== 'tokenEnv' && !(github && key === 'resources')))) {
       throw new Error('Invalid MCP fallback backends');
     }
-    const backends = [primary, ...fallbacks.map(backend =>
-      mcpReader({ ...backend, account: entry.account, resources: entry.resources }))];
+    const backups = fallbacks.map(backend => mcpReader({
+      ...backend, account: entry.account, resources: github ? backend.resources : entry.resources,
+    }));
+    if (github && backups.some(backend => JSON.stringify(backend.documentAliases) !== JSON.stringify(primary.documentAliases))) {
+      throw new Error('Each fallback must map exactly the configured document aliases');
+    }
+    const backends = [primary, ...backups];
     async function tryBackends<T>(signal: AbortSignal, invoke: (backend: typeof primary) => Promise<T>) {
       for (const backend of backends.slice(0, -1)) {
         signal.throwIfAborted();
@@ -98,8 +104,34 @@ export function configuredDocuments(env: NodeJS.ProcessEnv, transport = fetch): 
       ...primary, app: entry.id, definition: { label, version: entry.version },
       read: (alias, signal) => tryBackends(signal, backend => backend.read(alias, signal)),
       health: signal => tryBackends(signal, backend => backend.health(signal)),
-      discover: signal => tryBackends(signal, backend => backend.discover(signal)),
+      ...(!github && { discover: (signal: AbortSignal) => tryBackends(signal, backend => backend.discover!(signal)) }),
     });
   }
   return [...readers.values()];
+}
+
+function githubManifestReader(entry: Record<string, unknown>, env: NodeJS.ProcessEnv, transport: typeof fetch) {
+  if (typeof entry.repository !== 'string') throw new Error('Expected GitHub document repository');
+  const token = accessToken(env, entry.tokenEnv, /^BLAZAR_GITHUB_TOKEN_[A-Z0-9_]+$/);
+  const reader = githubDocuments(accountName(entry.account), entry.repository, token, transport);
+  const raw = entry.documents;
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) throw new Error('Expected a GitHub document alias map');
+  const documents = new Map<string, string>();
+  for (const [alias, path] of Object.entries(raw)) {
+    if (!/^[a-zA-Z0-9_-]{1,128}$/.test(alias) || typeof path !== 'string' || !reader.accepts(path)) {
+      throw new Error('Invalid GitHub document alias or path');
+    }
+    documents.set(alias, path);
+  }
+  if (!documents.size || documents.size > 100) throw new Error('Configure 1 to 100 GitHub document aliases');
+  return {
+    ...reader,
+    documentAliases: [...documents.keys()].sort(),
+    accepts: (alias: string) => documents.has(alias),
+    read(alias: string, signal: AbortSignal) {
+      const path = documents.get(alias);
+      if (!path) throw new DocumentUnavailable('Unknown GitHub document alias');
+      return reader.read(path, signal);
+    },
+  };
 }
