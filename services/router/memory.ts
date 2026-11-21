@@ -378,14 +378,27 @@ export class MemoryStore {
       COALESCE(s.version,1) AS version,COALESCE(s.pinned,0) AS pinned,COALESCE(s.disabled,0) AS disabled`;
     const state = 'LEFT JOIN memory_state s ON s.id=m.id LEFT JOIN memory_task_origin o ON o.id=m.id';
     const values = [owner, workspace, Number(disabled), Date.now(), Number(includePersonal), allowed] as const;
-    if (!this.fullText || Array.from(term).length < 3) {
-      return this.db.prepare(`SELECT ${fields} FROM memory m ${state} WHERE ${filter}
-        AND instr(lower(m.body),lower(?))>0 ORDER BY pinned DESC,m.created DESC,m.rowid DESC LIMIT 25`).all(...values, term);
-    }
-    const phrase = '"' + term.replaceAll('"', '""') + '"';
-    return this.db.prepare(`SELECT ${fields} FROM memory_search JOIN memory m ON m.rowid=memory_search.rowid ${state}
-      WHERE ${filter} AND memory_search MATCH ? ORDER BY pinned DESC,rank,m.created DESC,m.rowid DESC LIMIT 25`)
-      .all(...values, phrase);
+    const length = (text: string) => Array.from(text).length;
+    const quote = (text: string) => '"' + text.replaceAll('"', '""') + '"';
+    const exact = !this.fullText || length(term) < 3
+      ? this.db.prepare(`SELECT ${fields} FROM memory m ${state} WHERE ${filter}
+          AND instr(lower(m.body),lower(?))>0 ORDER BY pinned DESC,m.created DESC,m.rowid DESC LIMIT 25`).all(...values, term)
+      : this.db.prepare(`SELECT ${fields} FROM memory_search JOIN memory m ON m.rowid=memory_search.rowid ${state}
+          WHERE ${filter} AND memory_search MATCH ? ORDER BY pinned DESC,rank,m.created DESC,m.rowid DESC LIMIT 25`)
+        .all(...values, quote(term));
+    if (exact.length) return exact;
+
+    const terms = [...new Set(term.split(/\s+/u))];
+    if (terms.length < 2 || terms.length > 8 || terms.some(part => length(part) < 2)) return exact;
+    const indexed = this.fullText ? terms.filter(part => length(part) >= 3) : [];
+    const scan = indexed.length ? terms.filter(part => length(part) < 3) : terms;
+    const source = indexed.length ? 'memory_search JOIN memory m ON m.rowid=memory_search.rowid' : 'memory m';
+    const match = indexed.length ? 'AND memory_search MATCH ?' : '';
+    const order = indexed.length ? 'rank,' : '';
+    return this.db.prepare(`SELECT ${fields} FROM ${source} ${state} WHERE ${filter} ${match}
+      AND NOT EXISTS(SELECT 1 FROM json_each(?) word WHERE instr(lower(m.body),lower(word.value))=0)
+      ORDER BY pinned DESC,${order}m.created DESC,m.rowid DESC LIMIT 25`)
+      .all(...values, ...(indexed.length ? [indexed.map(quote).join(' AND ')] : []), JSON.stringify(scan));
   }
 
   personalContext(owner: string, workspace: string, text: string) {

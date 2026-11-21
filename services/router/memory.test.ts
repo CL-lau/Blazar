@@ -38,6 +38,27 @@ test('personal context finds unpinned Chinese preferences in a longer sentence',
   assert.deepEqual(store.personalContext('owner', 'project', '下次评审报告请用表格汇总').map(note => note.id), [match]);
 });
 
+test('memory recall matches separated Chinese keywords within the authorized workspace and sources', t => {
+  const store = new MemoryStore(':memory:');
+  t.after(() => store.close());
+  const feishu = store.connect('owner', 'feishu', 'review', 'team');
+  const github = store.connect('owner', 'github', 'handbook');
+  const write = (owner: string, workspace: string, connection: string, resource: string, body: string) =>
+    store.importDocument(owner, workspace, body, { connection, resource, revision: '1' });
+  const first = write('owner', 'team', feishu, 'review', '评审时请逐项列出交付风险。');
+  const second = write('owner', 'team', github, 'guide', '所有风险须在发布评审中汇报。');
+  write('owner', 'team', github, 'different', '交付评审需要记录会议结论。');
+  write('owner', 'private', github, 'private', '项目评审包含风险说明。');
+  const unrelated = store.connect('other', 'github', 'other');
+  write('other', 'team', unrelated, 'another', '评审里有风险说明。');
+  const recalls = (query: string, sources: string[]) => store.recall('owner', 'team', query, sources, false, false).map(item => item.id);
+  assert.deepEqual(new Set(recalls('评审 风险', [feishu, github])), new Set([first, second]));
+  assert.deepEqual(recalls('发布评审 风险', [github]), [second]);
+  assert.deepEqual(recalls('评审 风险', [feishu]), [first]);
+  assert.equal(store.disconnect('owner', feishu), true);
+  assert.deepEqual(recalls('评审 风险', [feishu, github]), [second]);
+});
+
 test('workspace scope changes update the derived full-text index', t => {
   const directory = mkdtempSync(join(tmpdir(), 'blazar-memory-index-'));
   const path = join(directory, 'memory.sqlite');
