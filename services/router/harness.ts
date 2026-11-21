@@ -38,6 +38,7 @@ const instructions = [
   'For an explicitly requested desktop click with a supplied window ID, window identity and button, a proposed step may use desktop.click with windowId, windowIdentity and button. Never guess window references. Include expectedText when the user specifies text that should appear after the click. Execution will ask for separate approval.',
   'When the user explicitly requests a Worker protocol for a task step, set workerProtocols to the allowed protocol names. For an explicit requirement to add instructions live use workerCapability steer, or use full-input-artifacts when the step requires full predecessor files.',
   'When the user gives a step time limit between 30 and 600 seconds, include runLimitSeconds on that step.',
+  'For an explicitly requested click by exact window title, use a desktop.observe step with mode windows followed by a desktop.click on the same device and alias. Set windowFrom to {"step":"observation step key","title":"exact user-supplied title"} and include that step in needs. The device will require approval.',
   'A proposed workflow is reviewed by the user before anything is queued.',
   'If the request needs clarification, return {"kind":"clarify","text":"Your question"}.',
   'For a question you can answer from the message and any relevant supplied reference data, return {"kind":"reply","text":"Answer"}.',

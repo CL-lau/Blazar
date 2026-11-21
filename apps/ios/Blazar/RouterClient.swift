@@ -213,6 +213,12 @@ struct RouterClient: Equatable {
 
     struct WorkflowStep: Codable, Identifiable {
         struct Action: Codable {
+            struct WindowSource: Codable {
+                let step: String
+                let title: String
+            }
+            let mode: String?
+            let windowFrom: WindowSource?
             let kind: String
             let alias: String
             let deviceId: String

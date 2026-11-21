@@ -42,9 +42,12 @@ export interface RunOutcome {
   artifact?: { name: string; text: string; mime?: 'image/png' };
 }
 
+export type DesktopWindowReference = { windowId: string; windowIdentity: string };
+
 export type WorkflowAction =
-  | { kind: 'desktop.observe'; alias: string; deviceId: string }
-  | { kind: 'desktop.click'; alias: string; deviceId: string; windowId: string; windowIdentity: string; button: string; expectedText?: string };
+  | { kind: 'desktop.observe'; alias: string; deviceId: string; mode?: 'windows' }
+  | ({ kind: 'desktop.click'; alias: string; deviceId: string; button: string; expectedText?: string } &
+    (DesktopWindowReference | { windowFrom: { step: string; title: string } }));
 
 export const workerCapabilities = ['steer', 'full-input-artifacts'] as const;
 export type WorkerCapability = typeof workerCapabilities[number];

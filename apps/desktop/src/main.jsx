@@ -526,8 +526,8 @@ function App() {
                   <ol>{plan.steps.map(step => <li key={step.key}>
                     <strong>{step.key}</strong> · {step.goal}
                     {step.action && <p>{step.action.kind === 'desktop.click'
-                      ? `Click ${step.action.button} in ${step.action.alias}, window ${step.action.windowId}`
-                      : `Observe ${step.action.alias}`} on device {step.action.deviceId}</p>}
+                      ? `Click ${step.action.button} in ${step.action.alias}, window ${step.action.windowFrom?.title ?? step.action.windowId}`
+                      : `${step.action.mode === 'windows' ? 'List windows for' : 'Observe'} ${step.action.alias}`} on device {step.action.deviceId}</p>}
                     {step.runLimitSeconds && <p>Time limit: {step.runLimitSeconds} seconds</p>}
                     {step.workerCapability && <p>Requires {step.workerCapability === 'steer' ? 'live instructions' : 'full input artifacts'}</p>}
                     {step.workerProtocols?.length > 0 && <p>Worker protocols: {step.workerProtocols.join(', ')}</p>}

@@ -1021,3 +1021,36 @@ test('workflow run deadlines use the stricter step or workspace budget', t => {
   const review = claim(20_000);
   assert.equal(db.renew(review.id, review.device, 60_000, 90_000), 110_000);
 });
+
+test('desktop workflows resolve a click only against one accessible observed window', t => {
+  const db = new TaskStore(':memory:');
+  t.after(() => db.close());
+  const device = db.registerDevice('owner', 'Desktop', 'project');
+  const now = Date.now();
+  const workflow = db.createWorkflow('owner', 'observe-and-click', 'project', [
+    { key: 'windows', goal: 'List Notes windows', needs: [],
+      action: { kind: 'desktop.observe', alias: 'notes', deviceId: device.id, mode: 'windows' } },
+    { key: 'click', goal: 'Click Add in Draft', needs: ['windows'],
+      action: { kind: 'desktop.click', alias: 'notes', deviceId: device.id, button: 'Add',
+        windowFrom: { step: 'windows', title: 'Draft' } } },
+    { key: 'ambiguous', goal: 'Click Add in Untitled', needs: ['windows'],
+      action: { kind: 'desktop.click', alias: 'notes', deviceId: device.id, button: 'Add',
+        windowFrom: { step: 'windows', title: 'Untitled' } } },
+  ]);
+  const claim = () => db.claim('owner', 'project', device.id, now, 45_000, '/observe ');
+  const observation = claim()!;
+  assert.equal(observation.task.goal, '/observe notes --windows-json');
+  assert.ok(db.finish(observation.run.id, device.id, now, { status: 'succeeded', result: JSON.stringify([
+    { id: 'w-2', title: 'Draft', accessible: true, identity: 'a'.repeat(64) },
+    { id: 'w-3', title: 'Untitled', accessible: true, identity: 'b'.repeat(64) },
+    { id: 'w-4', title: 'Untitled', accessible: true, identity: 'c'.repeat(64) },
+  ]) }));
+  const click = claim()!;
+  assert.equal(click.task.id, workflow.steps[1].taskId);
+  assert.equal(click.task.goal, '/click notes --window w-2 --instance ' + 'a'.repeat(64) + ' Add');
+  assert.equal(click.predecessors[0].taskId, observation.task.id);
+  assert.equal(db.finish(click.run.id, device.id, now, { status: 'succeeded', result: 'Click has no approval' }), false);
+  assert.ok(db.finish(click.run.id, device.id, now, { status: 'failed', result: 'Fixture finished' }));
+  assert.equal(claim(), undefined);
+  assert.equal(db.get('owner', String(workflow.steps[2].taskId))?.status, 'waiting_user');
+});

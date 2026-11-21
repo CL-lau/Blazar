@@ -5,11 +5,11 @@ import { TaskReadRepository } from './persistence/task-read-repository.ts';
 import { initializeTaskSchema } from './persistence/task-schema.ts';
 import { IdempotencyConflict, StaleRoutingEvidence } from './domain/idempotency.ts';
 import { MobileRepository } from './persistence/mobile-repository.ts';
-import { orderWorkflow, workflowActionGoal, workflowSteps } from './domain/workflow.ts';
+import { orderWorkflow, resolveWorkflowWindow, workflowActionGoal, workflowSteps } from './domain/workflow.ts';
 import type { Decision, RouteRequest } from './harness.ts';
 import { createHash, randomBytes, randomUUID } from 'node:crypto';
 import { DatabaseSync } from 'node:sqlite';
-import type { PredecessorInput, Run, RunOutcome, Task, TaskAttachment, TaskMemoryInput, WorkerConfiguration, WorkflowStep } from '../../packages/protocol/task.ts';
+import type { PredecessorInput, Run, RunOutcome, Task, TaskAttachment, TaskMemoryInput, WorkerConfiguration, WorkflowAction, WorkflowStep } from '../../packages/protocol/task.ts';
 import { displayTaskStatus, windowImageLifetimeMs } from '../../packages/protocol/task.ts';
 
 const runLimitMs = 10 * 60_000;
@@ -1086,6 +1086,22 @@ export class TaskStore {
         return { ...(selection.assignment as ReturnType<TaskStore['assignment']>), replayed: true };
       }
       const { task, fingerprint, workerLimitSeconds } = selection;
+      const action = task.goal.startsWith('/click ') ? this.workflowClickAction(task.id) : undefined;
+      let resolvedGoal: string | undefined;
+      if (action?.kind === 'desktop.click' && 'windowFrom' in action) {
+        const input = this.db.prepare(`SELECT p.result FROM workflow_dependency d JOIN task p ON p.id=d.predecessor
+          JOIN workflow_step source ON source.task_id=p.id WHERE d.task_id=? AND source.step_key=? AND p.status='succeeded'`)
+          .get(task.id, action.windowFrom.step);
+        const target = typeof input?.result === 'string' && resolveWorkflowWindow(input.result, action.windowFrom.title);
+        if (!target) {
+          this.db.prepare("UPDATE task SET status='waiting_user',result=? WHERE id=?")
+            .run('The observation did not identify one accessible window with the requested title.', task.id);
+          this.event(task.id, 'workflow.window_unresolved', { status: 'waiting_user' });
+          if (requestId) this.dispatch.saveReceipt(device, requestId, fingerprint, null, now);
+          return undefined;
+        }
+        resolvedGoal = workflowActionGoal(action, target);
+      }
       const workerTask = !/^\/(observe|click|preview) /.test(task.goal);
       const workspaceLimitMs = workerTask && workerLimitSeconds !== undefined ? workerLimitSeconds * 1_000 : runLimitMs;
       const stepLimit = this.db.prepare('SELECT seconds FROM task_run_budget WHERE task_id=?').get(task.id);
@@ -1116,9 +1132,16 @@ export class TaskStore {
       });
       this.dispatch.markDispatched(owner, workspace, goalPrefix, excludingPrefix, task.origin_channel, this.eventCursor());
       const assignment = this.assignment(owner, run, predecessors);
+      if (resolvedGoal) assignment.task = { ...assignment.task, goal: resolvedGoal };
       if (requestId) this.dispatch.saveReceipt(device, requestId, fingerprint, JSON.stringify(assignment), now);
       return { ...assignment, replayed: false };
     });
+  }
+
+  private workflowClickAction(taskId: string) {
+    const row = this.db.prepare(`SELECT json_extract(data,'$.action') AS action FROM event
+      WHERE taskId=? AND type='task.created' ORDER BY seq LIMIT 1`).get(taskId);
+    return typeof row?.action === 'string' ? JSON.parse(row.action) as WorkflowAction : undefined;
   }
 
   private predecessorInputs(taskId: string): PredecessorInput[] {
