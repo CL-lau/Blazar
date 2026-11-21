@@ -204,6 +204,10 @@ export class TaskStore {
         run_id TEXT PRIMARY KEY REFERENCES run(id) ON DELETE CASCADE,
         last_output INTEGER NOT NULL, stalled INTEGER NOT NULL DEFAULT 0
       );
+      CREATE TABLE IF NOT EXISTS expired_approval_stop (
+        run_id TEXT PRIMARY KEY, device_id TEXT NOT NULL, expires INTEGER NOT NULL
+      );
+      CREATE INDEX IF NOT EXISTS expired_approval_stop_device ON expired_approval_stop(device_id);
       CREATE TABLE IF NOT EXISTS run_deadline (
         run_id TEXT PRIMARY KEY REFERENCES run(id) ON DELETE CASCADE, deadline INTEGER NOT NULL
       );
@@ -1533,7 +1537,9 @@ export class TaskStore {
         }
       }
       if (this.db.prepare('SELECT 1 FROM device_pause WHERE device_id=?').get(device)) return undefined;
-      if (this.db.prepare('SELECT 1 FROM run WHERE device=? AND expires>? LIMIT 1').get(device, now)) return undefined;
+      if (this.db.prepare(`SELECT 1 FROM run WHERE device=? AND expires>?
+        UNION ALL SELECT 1 FROM expired_approval_stop WHERE device_id=? AND expires>? LIMIT 1`)
+        .get(device, now, device, now)) return undefined;
       let workerHasCapacity = true;
       if (policy?.max_concurrent != null && goalPrefix !== '/preview ' && goalPrefix !== '/observe ') {
         const active = this.db.prepare(`SELECT COUNT(*) AS count FROM run r JOIN task t ON t.id=r.taskId
@@ -1783,7 +1789,8 @@ export class TaskStore {
           EXISTS(SELECT 1 FROM run_evidence_stop s WHERE s.run_id=r.id) OR (
           t.status='running' AND r.version<>t.version
           AND NOT EXISTS(SELECT 1 FROM run_steering s WHERE s.run_id=r.id)
-          AND NOT EXISTS(SELECT 1 FROM invalid_workflow_run i WHERE i.id=r.id)))`).all(device);
+          AND NOT EXISTS(SELECT 1 FROM invalid_workflow_run i WHERE i.id=r.id)))
+      UNION ALL SELECT run_id AS id FROM expired_approval_stop WHERE device_id=? AND expires>?`).all(device, device, Date.now());
   }
 
   acknowledgeStop(runId: string, device: string, now: number) {
@@ -1793,7 +1800,8 @@ export class TaskStore {
           EXISTS(SELECT 1 FROM run_evidence_stop s WHERE s.run_id=r.id) OR (
           t.status='running' AND r.version<>t.version
           AND NOT EXISTS(SELECT 1 FROM invalid_workflow_run i WHERE i.id=r.id)))`).get(runId, device, now);
-      if (!run) return false;
+      if (!run) return this.db.prepare('DELETE FROM expired_approval_stop WHERE run_id=? AND device_id=?')
+        .run(runId, device).changes === 1;
       const taskId = String(run.taskId);
       if (run.status === 'pausing' || run.status === 'cancelling') {
         this.finishStoppedRun(runId, taskId, run.status === 'pausing');
@@ -1933,9 +1941,10 @@ export class TaskStore {
 
   expire(now: number, notifyStop?: (device: string, runId: string) => void) {
     const stopped = this.transaction(() => {
+      this.db.prepare('DELETE FROM expired_approval_stop WHERE expires<=?').run(now);
       this.db.prepare('DELETE FROM device_claim WHERE expires<=?').run(now);
       this.db.prepare('DELETE FROM artifact WHERE id IN (SELECT artifact_id FROM artifact_image WHERE expires<=?)').run(now);
-      const approvals = this.db.prepare(`SELECT a.id,a.runId,a.taskId,a.expires,r.device FROM approval a
+      const approvals = this.db.prepare(`SELECT a.id,a.runId,a.taskId,a.expires,r.device,r.expires AS leaseExpires FROM approval a
         JOIN run r ON r.id=a.runId JOIN task t ON t.id=a.taskId
         WHERE a.decision IS NULL AND a.expires<=? AND a.expires<r.expires
         AND t.status='waiting_user' AND a.version=r.version AND r.version=t.version
@@ -1943,6 +1952,10 @@ export class TaskStore {
         AND NOT EXISTS(SELECT 1 FROM run_evidence_stop s WHERE s.run_id=r.id)`).all(now);
       for (const approval of approvals) {
         const taskId = String(approval.taskId);
+        if (Number(approval.leaseExpires) > now) {
+          this.db.prepare('INSERT INTO expired_approval_stop VALUES(?,?,?)')
+            .run(approval.runId!, approval.device!, approval.leaseExpires!);
+        }
         this.db.prepare('DELETE FROM run WHERE id=?').run(approval.runId!);
         this.db.prepare("UPDATE task SET status='failed',result=? WHERE id=?")
           .run('Required approval expired before a decision was made.', taskId);

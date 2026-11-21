@@ -128,7 +128,7 @@ test('lease renewal recovers after a TCP partition drops the device WebSocket', 
   assert.equal(store.get('owner', task.id)?.result, 'Recovered');
 });
 
-test('approval expiry sends a stop on the live device socket after fencing the run', { timeout: 5000 }, async t => {
+test('approval expiry sends a stop on the live device socket and replays it after reconnect', { timeout: 5000 }, async t => {
   const store = new TaskStore(':memory:');
   const server = routerServer(store, { owner: 'owner', token: 'admin' });
   server.listen(0, '127.0.0.1');
@@ -145,7 +145,7 @@ test('approval expiry sends a stop on the live device socket after fencing the r
   });
   const signal = AbortSignal.timeout(3000);
   assert.equal((await socket.request('claim', { capability: 'document.preview' }, signal)).status, 200);
-  const now = Date.now();
+  const now = Date.now() - 300_001;
   const task = store.create('owner', 'test', 'approval-stop', 'work', 'Prepare notes');
   const { run } = store.claim('owner', 'work', device.id, now, 400_000)!;
   const approval = store.requestApproval(run.id, device.id, 'Review draft', now)!;
@@ -156,4 +156,17 @@ test('approval expiry sends a stop on the live device socket after fencing the r
   await stopped.promise;
   assert.equal(store.get('owner', task.id)?.status, 'failed');
   assert.equal(store.renew(run.id, device.id, Number(approval.expires), 45_000), undefined);
+  unwatch();
+  socket.close();
+  const reconnect = new DeviceSocket(new URL('http://127.0.0.1:' + address.port), device.token);
+  t.after(() => reconnect.close());
+  const queued = store.create('owner', 'test', 'queued-behind-stop', 'work', '/preview notes.md');
+  const claim = () => reconnect.request('claim', { capability: 'document.preview' }, signal);
+  assert.equal((await (await claim()).json()).assignment, null);
+  let replayed = false;
+  const clear = reconnect.onStop(run.id, () => { replayed = true; });
+  assert.equal(replayed, true);
+  clear();
+  assert.equal((await reconnect.request('runs/' + run.id + '/stopped', {}, signal)).status, 200);
+  assert.equal((await (await claim()).json()).assignment.task.id, queued.id);
 });
