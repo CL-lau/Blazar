@@ -5,7 +5,7 @@ import { createServer } from 'node:http';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
-import { probeAcp } from '../../packages/workers/acp.ts';
+import { probeAcp, runAcp } from '../../packages/workers/acp.ts';
 import { resolveWorker } from '../../packages/workers/registry.ts';
 import { DeviceClient } from '../device/client.ts';
 import { DeviceLedger } from '../device/ledger.ts';
@@ -14,7 +14,7 @@ import { TaskStore } from './store.ts';
 
 const executable = process.env.BLAZAR_TEST_DEEPSEEK_EXECUTABLE;
 
-test('DeepSeek Harness completes an ACP task with a local mock provider', {
+test('DeepSeek Harness completes, restores, and cancels ACP work with a local mock provider', {
   skip: !executable && 'Set BLAZAR_TEST_DEEPSEEK_EXECUTABLE to an installed dsh executable',
 }, async t => {
   const root = await mkdtemp(join(tmpdir(), 'blazar-deepseek-test-'));
@@ -33,6 +33,8 @@ test('DeepSeek Harness completes an ACP task with a local mock provider', {
     else process.env.DEEPSEEK_API_KEY = previousKey;
   });
   const requests: string[] = [];
+  const streaming = Promise.withResolvers<void>();
+  const streamClosed = Promise.withResolvers<void>();
   const server = createServer(async (request, response) => {
     if (request.url !== '/v1/messages') {
       response.writeHead(404).end();
@@ -51,6 +53,11 @@ test('DeepSeek Harness completes an ACP task with a local mock provider', {
     } });
     emit('content_block_start', { index: 0, content_block: { type: 'text', text: '' } });
     emit('content_block_delta', { index: 0, delta: { type: 'text_delta', text: 'DEEPSEEK_SMOKE_OK' } });
+    if (body.includes('Cancel this DeepSeek fixture run')) {
+      response.once('close', () => streamClosed.resolve());
+      streaming.resolve();
+      return;
+    }
     emit('content_block_stop', { index: 0 });
     emit('message_delta', { delta: { stop_reason: 'end_turn', stop_sequence: null }, usage: { output_tokens: 1 } });
     emit('message_stop', {});
@@ -125,4 +132,17 @@ test('DeepSeek Harness completes an ACP task with a local mock provider', {
   assert.match(requests[1], /DEEPSEEK_SMOKE_OK/);
   assert.equal(requests[1].match(/Use the test response/g)?.length, 1);
   assert.match(requests[1], /Continue after the device restarts/);
+
+  const stop = new AbortController();
+  const interrupted = assert.rejects(runAcp(worker, workspace, {
+    goal: 'Cancel this DeepSeek fixture run', instructions: [], predecessors: [],
+  }, AbortSignal.any([signal, stop.signal])), { name: 'AbortError' });
+  const deadline = new Promise<never>((_, reject) => {
+    signal.throwIfAborted();
+    signal.addEventListener('abort', () => reject(signal.reason), { once: true });
+  });
+  await Promise.race([streaming.promise, deadline]);
+  stop.abort();
+  await interrupted;
+  await Promise.race([streamClosed.promise, deadline]);
 });
