@@ -1212,7 +1212,11 @@ export function routerServer(store: TaskStore, config: { owner: string; token: s
                 }
               }
               if (!admin && store.mobileOwner(mobileToken) !== owner) throw new RequestError(401, 'Authentication required');
-              return store.routingDecision(owner, key, input, decision, caller)!;
+              if (decision.kind === 'create_task' && decision.goal && decision.goal !== input.text &&
+                  /^\/(observe|click) /.test(decision.goal)) {
+                throw new RequestError(400, 'Application observation requires an explicit command');
+              }
+              return store.persistRoutingDecision(owner, caller, key, input, decision);
             };
             const routed = route();
             pendingRoutes.set(pendingKey, { fingerprint, decision: routed });

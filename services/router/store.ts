@@ -581,6 +581,17 @@ export class TaskStore {
     return JSON.parse(String(row.decision)) as Decision;
   }
 
+  persistRoutingDecision(owner: string, caller: string, key: string, request: RouteRequest, decision: Decision) {
+    return this.transaction(() => {
+      const saved = this.routingDecision(owner, key, request, decision, caller)!;
+      if (saved.kind === 'create_task') {
+        this.createTask(owner, caller === 'admin' ? 'conversation' : 'conversation:' + caller,
+          key, request.workspace, saved.goal ?? request.text);
+      }
+      return saved;
+    });
+  }
+
   channelCursor(channel: string): string {
     const row = this.db.prepare('SELECT value FROM channel_cursor WHERE channel=?').get(channel);
     return row ? String(row.value) : '';
@@ -903,48 +914,52 @@ export class TaskStore {
 
   create(owner: string, source: string, key: string, workspace: string, goal: string, desktopDevice?: string,
          memoryInputs?: TaskMemoryInput[], appEvidence?: AppEvidence, attachments?: TaskAttachment[], copiedFromTask?: string): Task {
-    return this.transaction(() => {
-      const parameters: unknown[] = appEvidence
-        ? [workspace, goal, { query: appEvidence.query, sources: appEvidence.sources, usePersonalMemory: Boolean(memoryInputs) }]
-        : memoryInputs
-        ? [workspace, goal, desktopDevice ?? null, { usePersonalMemory: true }]
-        : desktopDevice ? [workspace, goal, desktopDevice] : [workspace, goal];
-      const attachmentRefs = attachments?.map(({ name, text }) => ({
-        name, sha256: createHash('sha256').update(text).digest('hex'), size: Buffer.byteLength(text),
-      }));
-      if (attachmentRefs?.length) parameters.push({ attachments: attachmentRefs });
-      if (copiedFromTask) parameters.push({ copiedFromTask });
-      const fingerprint = JSON.stringify(parameters);
-      const receipt = this.db.prepare('SELECT fingerprint, taskId FROM receipt WHERE owner=? AND source=? AND key=?')
-        .get(owner, source, key);
-      if (receipt) {
-        if (receipt.fingerprint !== fingerprint) throw new IdempotencyConflict();
-        return this.get(owner, String(receipt.taskId))!;
-      }
-      const id = randomUUID();
-      this.db.prepare('INSERT INTO task(id,owner,workspace,goal) VALUES(?,?,?,?)').run(id, owner, workspace, goal);
-      this.db.prepare('INSERT INTO receipt VALUES(?,?,?,?,?)').run(owner, source, key, fingerprint, id);
-      if (desktopDevice) this.db.prepare('INSERT INTO task_desktop_device VALUES(?,?)').run(id, desktopDevice);
-      for (const [position, input] of (memoryInputs ?? []).entries()) {
-        this.db.prepare('INSERT INTO task_memory_input VALUES(?,?,?,?,?)')
-          .run(id, position, input.id, input.version, '');
-      }
-      if (appEvidence) {
-        if (!appEvidence.refs.length) throw new Error('No authorized application evidence was found');
-        this.db.prepare('INSERT INTO task_app_evidence VALUES(?,?)').run(id, JSON.stringify(appEvidence.refs));
-      }
-      for (const [position, attachment] of (attachments ?? []).entries()) {
-        this.db.prepare('INSERT INTO task_attachment VALUES(?,?,?,?)')
-          .run(id, position, attachment.name, attachment.text);
-      }
-      this.event(id, 'task.created', { goal, workspace, ...(desktopDevice && { desktopDevice }),
-        ...(memoryInputs?.length && { memoryInputs: memoryInputs.map(({ id, version }) => ({ id, version })) }),
-        ...(appEvidence && { appEvidence: appEvidence.refs }),
-        ...(attachmentRefs?.length && { attachments: attachmentRefs }),
-        ...(copiedFromTask && { copiedFromTask }),
-      });
-      return this.get(owner, id)!;
+    return this.transaction(() => this.createTask(owner, source, key, workspace, goal, desktopDevice,
+      memoryInputs, appEvidence, attachments, copiedFromTask));
+  }
+
+  private createTask(owner: string, source: string, key: string, workspace: string, goal: string, desktopDevice?: string,
+         memoryInputs?: TaskMemoryInput[], appEvidence?: AppEvidence, attachments?: TaskAttachment[], copiedFromTask?: string): Task {
+    const parameters: unknown[] = appEvidence
+      ? [workspace, goal, { query: appEvidence.query, sources: appEvidence.sources, usePersonalMemory: Boolean(memoryInputs) }]
+      : memoryInputs
+      ? [workspace, goal, desktopDevice ?? null, { usePersonalMemory: true }]
+      : desktopDevice ? [workspace, goal, desktopDevice] : [workspace, goal];
+    const attachmentRefs = attachments?.map(({ name, text }) => ({
+      name, sha256: createHash('sha256').update(text).digest('hex'), size: Buffer.byteLength(text),
+    }));
+    if (attachmentRefs?.length) parameters.push({ attachments: attachmentRefs });
+    if (copiedFromTask) parameters.push({ copiedFromTask });
+    const fingerprint = JSON.stringify(parameters);
+    const receipt = this.db.prepare('SELECT fingerprint, taskId FROM receipt WHERE owner=? AND source=? AND key=?')
+      .get(owner, source, key);
+    if (receipt) {
+      if (receipt.fingerprint !== fingerprint) throw new IdempotencyConflict();
+      return this.get(owner, String(receipt.taskId))!;
+    }
+    const id = randomUUID();
+    this.db.prepare('INSERT INTO task(id,owner,workspace,goal) VALUES(?,?,?,?)').run(id, owner, workspace, goal);
+    this.db.prepare('INSERT INTO receipt VALUES(?,?,?,?,?)').run(owner, source, key, fingerprint, id);
+    if (desktopDevice) this.db.prepare('INSERT INTO task_desktop_device VALUES(?,?)').run(id, desktopDevice);
+    for (const [position, input] of (memoryInputs ?? []).entries()) {
+      this.db.prepare('INSERT INTO task_memory_input VALUES(?,?,?,?,?)')
+        .run(id, position, input.id, input.version, '');
+    }
+    if (appEvidence) {
+      if (!appEvidence.refs.length) throw new Error('No authorized application evidence was found');
+      this.db.prepare('INSERT INTO task_app_evidence VALUES(?,?)').run(id, JSON.stringify(appEvidence.refs));
+    }
+    for (const [position, attachment] of (attachments ?? []).entries()) {
+      this.db.prepare('INSERT INTO task_attachment VALUES(?,?,?,?)')
+        .run(id, position, attachment.name, attachment.text);
+    }
+    this.event(id, 'task.created', { goal, workspace, ...(desktopDevice && { desktopDevice }),
+      ...(memoryInputs?.length && { memoryInputs: memoryInputs.map(({ id, version }) => ({ id, version })) }),
+      ...(appEvidence && { appEvidence: appEvidence.refs }),
+      ...(attachmentRefs?.length && { attachments: attachmentRefs }),
+      ...(copiedFromTask && { copiedFromTask }),
     });
+    return this.get(owner, id)!;
   }
 
   appEvidence(taskId: string) {

@@ -751,3 +751,29 @@ test('retry waits for an approval-timed-out run to stop even without a workspace
   assert.equal(retry?.task.id, task.id);
   assert.equal(retry?.run.version, task.version + 1);
 });
+
+test('routing decisions and task creation commit together', t => {
+  const dir = mkdtempSync(join(tmpdir(), 'blazar-route-commit-'));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  const path = join(dir, 'router.sqlite');
+  const input = { workspace: 'project', text: 'Review the report' };
+  const db = new TaskStore(path);
+  try {
+    db.create('owner', 'conversation', 'conflicting-key', 'project', 'Original goal');
+    assert.throws(() => db.persistRoutingDecision('owner', 'admin', 'conflicting-key', input, { kind: 'create_task' }),
+      /Idempotency key already used/);
+    assert.equal(db.routingDecision('owner', 'conflicting-key', input), undefined);
+    db.persistRoutingDecision('owner', 'admin', 'fresh-key', input, { kind: 'create_task' });
+  } finally {
+    db.close();
+  }
+  const reopened = new TaskStore(path);
+  try {
+    assert.deepEqual(reopened.routingDecision('owner', 'fresh-key', input), { kind: 'create_task' });
+    const task = reopened.snapshot('owner').tasks.find(task => task.goal === input.text);
+    assert.ok(task);
+    assert.equal(reopened.create('owner', 'conversation', 'fresh-key', input.workspace, input.text).id, task.id);
+  } finally {
+    reopened.close();
+  }
+});
