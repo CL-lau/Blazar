@@ -291,3 +291,17 @@ For DingTalk bot direct messages, set `BLAZAR_DINGTALK_MEDIA_HOSTS` to the exact
 For WeCom smart-bot file messages, set `BLAZAR_WECOM_MEDIA_HOSTS` to the exact HTTPS media hostnames under `qq.com` used by the bot. In the linked chat, send `/blazar follow TASK_ID /attach`, then send one UTF-8 file within five minutes from the same account. Blazar decrypts the downloaded file using the [official WeCom SDK](https://github.com/WecomTeam/aibot-node-sdk).
 
 Weixin bot direct messages support the same two-step attachment flow. Send `/blazar follow TASK_ID /attach` in the linked chat, then send one UTF-8 file within five minutes. Blazar downloads the bounded encrypted file through the [Tencent iLink CDN protocol](https://github.com/Tencent/openclaw-weixin/blob/main/docs/protocol.md).
+
+## Verify on physical devices
+
+Simulator and local gateway tests cover the client protocol, approval scoping, and push queue.
+Use the following checks to verify OS permissions, APNs delivery, and deployment networking.
+
+| Check | What to verify |
+| --- | --- |
+| macOS computer control | Start the configured device runner in an unlocked user session with Accessibility and Screen Recording granted. Run `npm run device:probe -- observe` using its configuration. On a disposable document, verify window observation, screenshot capture, approved text editing and readback, and a click with a visible result. Move the mouse or type during action revalidation and confirm that the interrupted run needs a new approval. |
+| iPhone and APNs | Install a signed Blazar build on an iPhone. Pair over the deployed HTTPS Router endpoint and enable task notifications. Put Blazar in the background, trigger a task approval, and verify that a notification arrives without document text or credentials. Open the app, reload the task and approve it. Revoke the pairing on desktop and confirm that the phone can no longer read the snapshot or event stream. |
+| Separate Router and browser device | Run the browser service and the private HTTPS endpoint on a different host from the Router. Configure a disposable form and a durable receipt database. Approve a write from the desktop, verify a single external change, restart the browser service, and reconcile the original invocation against its receipt. Check that the endpoint rejects an invalid device credential. |
+
+Record the OS and driver versions, Router commit, and outcome for each check. Keep tokens, signing
+keys, screenshots of private apps, and request bodies out of shared verification logs.
