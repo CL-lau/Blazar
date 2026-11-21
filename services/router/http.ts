@@ -1134,10 +1134,25 @@ export function routerServer(store: TaskStore, config: { owner: string; token: s
               decision = await config.harness({
                 ...input, recent: store.recentConversation(owner, input.workspace),
                 findTasks: query => {
-                  const tasks = store.findRouterTasks(owner, input.workspace, query);
+                  const tasks = store.findRouterTasks(owner, input.workspace, query).filter(task => canReadTask(task.id));
                   for (const task of tasks) foundVersions.set(task.id, task.version);
                   return tasks;
                 },
+                ...(admin && { workspaceCapabilities: () => ({
+                  devices: store.devices(owner).filter(device => device.workspace === input.workspace && !device.revoked)
+                    .slice(0, 16).map(device => ({
+                      name: String(device.name), capability: String(device.capability ?? 'unreported'),
+                      online: Boolean(device.online),
+                      available: Boolean(device.online && !device.paused && !device.workerPolicyBlocked && !device.interruptedRunId),
+                    })),
+                  apps: (config.memory?.connections(owner) ?? [])
+                    .filter(connection => connection.active && (!connection.workspace || connection.workspace === input.workspace))
+                    .slice(0, 16).map(connection => ({
+                      app: connection.app,
+                      documentRead: Boolean(config.documents?.some(connector =>
+                        connector.app === connection.app && connector.account === connection.account)),
+                    })),
+                }) }),
                 ...(evidence.length ? { personalMemory: evidence.map(item => item.body) } : {}),
               }, AbortSignal.timeout(15_000), usage => metrics.recordModelUsage(usage));
             } catch {

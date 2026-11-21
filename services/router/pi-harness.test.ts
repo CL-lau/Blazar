@@ -21,10 +21,10 @@ function providerStream(text: string) {
   });
 }
 
-function lookupStream() {
+function lookupStream(name = 'find_tasks', args: Record<string, string> = { query: 'decision' }) {
   const call = {
     type: 'function_call', id: 'fc_fixture', call_id: 'call_fixture',
-    name: 'find_tasks', arguments: JSON.stringify({ query: 'decision' }), status: 'completed',
+    name, arguments: JSON.stringify(args), status: 'completed',
   };
   const events = [
     { type: 'response.created', response: { id: 'resp_lookup' } },
@@ -52,10 +52,17 @@ test('Pi Core looks up task status without receiving results from other owners o
   store.create('another', 'test', 'one', 'project', 'Private owner decision');
   let requests = 0;
   let neverAnswer = false;
+  let askCapabilities = false;
   t.mock.method(globalThis, 'fetch', async (input: RequestInfo | URL, init?: RequestInit) => {
     const body = await new Request(input, init).text();
     assert.match(body, /find_tasks/);
-    if (++requests === 1 || neverAnswer) return lookupStream();
+    if (++requests === 1 || neverAnswer) {
+      return askCapabilities ? lookupStream('workspace_capabilities', {}) : lookupStream();
+    }
+    if (askCapabilities) {
+      assert.match(body, /Fixture desktop/);
+      return providerStream(JSON.stringify({ kind: 'reply', text: 'The desktop is online.' }));
+    }
     assert.match(body, new RegExp(allowed.id));
     assert.doesNotMatch(body, /Private workspace|Private owner/);
     return providerStream(JSON.stringify({ kind: 'reply', text: 'The task is queued.' }));
@@ -70,6 +77,17 @@ test('Pi Core looks up task status without receiving results from other owners o
   assert.deepEqual(usage, [12, 16]);
   assert.deepEqual(answer, { kind: 'reply', text: 'The task is queued.' });
   assert.equal(requests, 2);
+  requests = 0;
+  askCapabilities = true;
+  assert.deepEqual(await route({
+    ...input,
+    workspaceCapabilities: () => ({
+      devices: [{ name: 'Fixture desktop', capability: 'computer.observe', online: true, available: true }],
+      apps: [],
+    }),
+  }, AbortSignal.timeout(3_000)), { kind: 'reply', text: 'The desktop is online.' });
+  assert.equal(requests, 2);
+  askCapabilities = false;
   requests = 0;
   neverAnswer = true;
   await assert.rejects(route(input, AbortSignal.timeout(3_000)), /budget|did not complete/);
