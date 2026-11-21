@@ -7,6 +7,7 @@ import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { lockDatabaseFile } from '../storage/exclusive.ts';
 import { agentDesktop } from './agent-desktop.ts';
+import { cuaDesktop } from './cua.ts';
 import type { ComputerDriver, DesktopElement } from './driver.ts';
 
 export type ObservationConfig = {
@@ -40,6 +41,10 @@ async function assertDesktopUnlocked(config: ObservationConfig, signal: AbortSig
 export function observationConfig(env: NodeJS.ProcessEnv, desktopLockPath?: string): ObservationConfig {
   const executable = env.BLAZAR_COMPUTER_DRIVER;
   if (!executable || !isAbsolute(executable)) throw new Error('Set an absolute computer driver executable path');
+  const driverKind = env.BLAZAR_COMPUTER_DRIVER_KIND ?? 'agent-desktop';
+  if (driverKind !== 'agent-desktop' && (driverKind !== 'cua' || process.platform !== 'darwin')) {
+    throw new Error('Choose agent-desktop or a macOS CUA driver');
+  }
   const raw = JSON.parse(env.BLAZAR_COMPUTER_APPS ?? '{}');
   if (!raw || typeof raw !== 'object' || Array.isArray(raw)) throw new Error('Invalid computer app configuration');
   const apps = new Map<string, string>();
@@ -66,7 +71,11 @@ export function observationConfig(env: NodeJS.ProcessEnv, desktopLockPath?: stri
   if (!Array.isArray(visual) || visual.length > apps.size || visual.some(alias => !apps.has(alias))) {
     throw new Error('Configure visual capture with approved application aliases.');
   }
-  return { executable, driver: agentDesktop(executable), apps, buttons, visualApps: new Set(visual), desktopLockPath,
+  if (driverKind === 'cua' && [...buttons.values()].some(labels => labels.size)) {
+    throw new Error('The CUA observation driver does not support configured clicks.');
+  }
+  return { executable, driver: driverKind === 'cua' ? cuaDesktop(executable) : agentDesktop(executable),
+    apps, buttons, visualApps: new Set(visual), desktopLockPath,
     sessionLocked: process.platform === 'darwin' ? macSessionLocked : undefined };
 }
 

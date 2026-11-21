@@ -190,6 +190,9 @@ In Apps and memory, use **Disable memory** to keep an item out of normal search 
 
 An execution device can run in `observe` mode using a locally installed [agent-desktop](https://github.com/vercel-labs/agent-desktop). Set `BLAZAR_COMPUTER_DRIVER` to its absolute executable path and `BLAZAR_COMPUTER_APPS` to an alias map such as `{"calculator":"Calculator"}`. On macOS you can use `{"finder":"bundle:com.apple.finder"}` to resolve the running app by bundle ID, even when its display name is localized. From the desktop or iOS client, submit `/observe calculator` in the registered workspace. The result is an access-controlled text artifact derived from the application's accessibility tree. Run `npm run device:probe -- observe` with the same configuration to inspect Accessibility, Screen Recording, and Automation permission states without prompting for access.
 
+On macOS, set `BLAZAR_COMPUTER_DRIVER_KIND=cua` and point `BLAZAR_COMPUTER_DRIVER` at a locally installed [CUA Driver](https://github.com/trycua/cua/tree/main/libs/cua-driver) for window inventory, semantic observation, screenshots, and hybrid observation. Select an exact window when the application has several visible windows. Configure click buttons on an agent-desktop device.
+
+
 To enable window images, configure `BLAZAR_COMPUTER_VISUAL_APPS='["calculator"]'` on the execution device and grant Screen Recording permission. In desktop or iOS **Desktop control**, list the application’s windows and select the window to capture. The selected window must have a process identity. Blazar captures only that window and makes the PNG available for five minutes.
 
 Set the application name to its localized macOS display name, such as `计算器` on a Chinese system. Use `/observe calculator --windows` to list visible windows for the configured app. Then use `/observe calculator --window w-123` with a current accessible window ID to inspect that window.
