@@ -201,7 +201,10 @@ To run the form on a separate computer, start `npm run device:browser` there. Se
 the device service account. Optional
 `BLAZAR_BROWSER_STORAGE_STATE` points to the account state file on that computer.
 The service binds to loopback on port 4201 by default. For a separate Router host, expose only
-`/mcp` through an authenticated private network and an HTTPS reverse proxy. Configure that endpoint
+`/mcp` through an authenticated private network and an HTTPS reverse proxy. With Caddy, set
+`BLAZAR_BROWSER_HOST` to the device's private DNS name and run
+`caddy run --config deploy/Caddyfile.browser --adapter caddyfile`. If the network uses a
+private CA, configure its trust chain on the Router host. Configure that endpoint
 as an MCP backend or fallback in Router, with a `BLAZAR_MCP_TOKEN_*` credential variable containing
 the device service token. Set Router's `statusTool` to the configured device tool name followed by
 `.status` so it sends the invocation ID required by the device. Keep the credential exclusive to the

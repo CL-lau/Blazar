@@ -1,0 +1,12 @@
+{$BLAZAR_BROWSER_HOST} {
+	@mcp {
+		method POST
+		path /mcp
+	}
+	handle @mcp {
+		reverse_proxy 127.0.0.1:{$BLAZAR_BROWSER_PORT:4201}
+	}
+	handle {
+		respond 404
+	}
+}

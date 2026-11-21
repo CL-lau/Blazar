@@ -310,12 +310,12 @@ test('local browser fallback and a browser device submit only authorized form da
   const { randomUUID } = await import('node:crypto');
   const directory = await mkdtemp(join(tmpdir(), 'blazar-browser-receipts-'));
   const token = 'fixture-device-token-with-more-than-32-characters';
-  const startDevice = async () => {
+  const startDevice = async (port = 0) => {
     const server = browserDeviceServer({ token, tool: 'update', receiptPath: join(directory, 'receipts.sqlite'), form: {
       id: 'device-browser', capability: definition.capability, url: base + '/edit', submitUrl: base + '/save',
       button: 'Save', inputLabel: 'Title', inputKey: 'title',
     } });
-    server.listen(0, '127.0.0.1');
+    server.listen(port, '127.0.0.1');
     await once(server, 'listening');
     return server;
   };
@@ -325,22 +325,68 @@ test('local browser fallback and a browser device submit only authorized form da
     await closeDevice();
     await rm(directory, { recursive: true, force: true });
   });
-  const binding = () => {
-    const address = device.address();
+  const deviceAddress = device.address();
+  assert(deviceAddress && typeof deviceAddress !== 'string');
+  let endpoint = 'http://127.0.0.1:' + deviceAddress.port + '/mcp';
+  const caddy = process.env.BLAZAR_TEST_CADDY_EXECUTABLE;
+  if (caddy) {
+    const { spawn } = await import('node:child_process');
+    const { readFile, writeFile } = await import('node:fs/promises');
+    const { setTimeout: delay } = await import('node:timers/promises');
+    const { getCACertificates, setDefaultCACertificates } = await import('node:tls');
+    const available = createServer();
+    available.listen(0, '127.0.0.1');
+    await once(available, 'listening');
+    const address = available.address();
     assert(address && typeof address !== 'string');
-    return { id: 'device', connectionId: action.connectionId, capability: definition.capability,
-      endpoint: 'http://127.0.0.1:' + address.port + '/mcp' };
-  };
+    await new Promise<void>(resolve => available.close(() => resolve()));
+    const base = 'https://127.0.0.1:' + address.port;
+    const caddyfile = join(directory, 'Caddyfile');
+    const production = await readFile(new URL('../../deploy/Caddyfile.browser', import.meta.url), 'utf8');
+    await writeFile(caddyfile, '{\n admin off\n auto_https disable_redirects\n skip_install_trust\n}\n' +
+      production.replace('{$BLAZAR_BROWSER_HOST} {', '{$BLAZAR_BROWSER_HOST} {\n tls internal'));
+    const gateway = spawn(caddy, ['run', '--config', caddyfile, '--adapter', 'caddyfile'], {
+      env: { ...process.env, XDG_DATA_HOME: directory, XDG_CONFIG_HOME: directory,
+        BLAZAR_BROWSER_HOST: base, BLAZAR_BROWSER_PORT: String(deviceAddress.port) },
+      stdio: ['ignore', 'ignore', 'pipe'],
+    });
+    const stopped = once(gateway, 'close');
+    let diagnostics = '';
+    gateway.stderr.on('data', chunk => { diagnostics = (diagnostics + chunk.toString()).slice(-4000); });
+    const previousCas = getCACertificates();
+    t.after(async () => {
+      setDefaultCACertificates(previousCas);
+      gateway.kill();
+      await stopped;
+    });
+    const deadline = AbortSignal.timeout(5_000);
+    const caFile = join(directory, 'caddy', 'pki', 'authorities', 'local', 'root.crt');
+    while (true) {
+      if (gateway.exitCode !== null || deadline.aborted) throw new Error('Browser TLS proxy did not start: ' + diagnostics);
+      try {
+        setDefaultCACertificates([...previousCas, await readFile(caFile, 'utf8')]);
+        const probe = await fetch(base + '/health', { signal: deadline });
+        await probe.body?.cancel();
+        assert.equal(probe.status, 404);
+        break;
+      } catch {
+        await delay(50);
+      }
+    }
+    endpoint = base + '/mcp';
+    assert.equal((await fetch(endpoint, { signal: deadline })).status, 404);
+  }
+  const binding = { id: 'device', connectionId: action.connectionId, capability: definition.capability, endpoint };
   const invocationId = randomUUID();
   const deviceAction = { ...action, invocationId, capability: definition.capability, input: { title: 'Approved on device' } };
   const invokeDevice = (credential: string, request = deviceAction) => invokeApplicationAction(request, [mcpActionBackend({
-    ...binding(), effect: 'write', tool: 'update', token: credential, includeInvocationId: true,
+    ...binding, effect: 'write', tool: 'update', token: credential, includeInvocationId: true,
   })], async () => true, AbortSignal.timeout(10_000));
   assert.deepEqual(await invokeDevice('wrong'), { status: 'denied' });
   assert.equal((await invokeDevice(token)).status, 'succeeded');
   await closeDevice();
-  device = await startDevice();
-  const lookup = mcpActionBackend({ ...binding(), effect: 'read', tool: 'update.status', token });
+  device = await startDevice(deviceAddress.port);
+  const lookup = mcpActionBackend({ ...binding, effect: 'read', tool: 'update.status', token });
   const result = await lookup.invoke({ ...deviceAction, effect: 'read', input: { blazarInvocationId: invocationId } },
     AbortSignal.timeout(5_000), async () => true);
   assert.deepEqual(result, { status: 'succeeded', output: { content: [], structuredContent: {
