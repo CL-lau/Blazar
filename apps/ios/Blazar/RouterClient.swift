@@ -81,6 +81,35 @@ struct TimelinePage: Decodable {
     let before: Int?
 }
 
+struct TaskTextAttachment {
+    let name: String
+    let text: String
+
+    static func read(_ urls: [URL]) throws -> [Self] {
+        let sizeError = RouterError(error: "Choose up to four text files, at most 8 KiB each and 16 KiB total.")
+        guard urls.count <= 4 else { throw sizeError }
+        var total = 0
+        return try urls.map { url in
+            let granted = url.startAccessingSecurityScopedResource()
+            defer { if granted { url.stopAccessingSecurityScopedResource() } }
+            let handle = try FileHandle(forReadingFrom: url)
+            defer { try? handle.close() }
+            var data = Data()
+            while let chunk = try handle.read(upToCount: 8_193 - data.count), !chunk.isEmpty {
+                data.append(chunk)
+                guard data.count <= 8_192 else { throw sizeError }
+            }
+            total += data.count
+            guard total <= 16_384 else { throw sizeError }
+            guard let text = String(data: data, encoding: .utf8),
+                  !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+                throw RouterError(error: "Each attachment must contain non-empty UTF-8 text.")
+            }
+            return Self(name: url.lastPathComponent, text: text)
+        }
+    }
+}
+
 struct RouterClient: Equatable {
     let base: URL
     let token: String
@@ -161,8 +190,10 @@ struct RouterClient: Equatable {
     }
 
     @discardableResult
-    func submit(workspace: String, goal: String, key: UUID, desktopDevice: String? = nil) async throws -> RouterSnapshot.Task {
-        var body = ["workspace": workspace, "text": goal]
+    func submit(workspace: String, goal: String, key: UUID, desktopDevice: String? = nil,
+                attachments: [TaskTextAttachment] = []) async throws -> RouterSnapshot.Task {
+        var body: [String: Any] = ["workspace": workspace, "text": goal]
+        if !attachments.isEmpty { body["attachments"] = attachments.map { ["name": $0.name, "text": $0.text] } }
         if let desktopDevice { body["desktopDevice"] = desktopDevice }
         let response = try await request("v1/events", body: body, key: key)
         return try JSONDecoder().decode(RouterSnapshot.Task.self, from: response)

@@ -8,6 +8,20 @@ import { Devices } from './Devices.jsx';
 import { callRouter } from './router.js';
 import './style.css';
 
+async function readTaskFiles(files) {
+  if (files.length > 4 || files.some(file => file.size > 8192) ||
+      files.reduce((total, file) => total + file.size, 0) > 16384) {
+    throw new Error('Choose up to four text files, at most 8 KiB each and 16 KiB total.');
+  }
+  return Promise.all(files.map(async file => {
+    let text;
+    try { text = new TextDecoder('utf-8', { fatal: true }).decode(await file.arrayBuffer()); }
+    catch { throw new Error('Each attachment must contain UTF-8 text.'); }
+    if (!text.trim()) throw new Error('Attachments cannot be empty.');
+    return { name: file.name, text };
+  }));
+}
+
 function App() {
   const [token, setToken] = useState('');
   const [connected, setConnected] = useState('');
@@ -17,6 +31,7 @@ function App() {
   const [selected, setSelected] = useState('');
   const [workspace, setWorkspace] = useState('default');
   const [goal, setGoal] = useState('');
+  const [attachments, setAttachments] = useState([]);
   const [usePersonalMemory, setUsePersonalMemory] = useState(false);
   const [answer, setAnswer] = useState('');
   const [savedResult, setSavedResult] = useState(null);
@@ -349,7 +364,9 @@ function App() {
                     query: memoryQuery, sources: chosenSources.map(account => account.id),
                   } : undefined;
                   const result = await api(ask ? '/conversation' : '/events', {
-                    method: 'POST', key, body: { workspace, text: goal, usePersonalMemory, appMemory },
+                    method: 'POST', key, body: { workspace, text: goal, usePersonalMemory, appMemory,
+                      ...(!ask && attachments.length > 0 && { attachments }),
+                    },
                   });
                   if (ask && result.kind !== 'create_task') {
                     setAnswer(result.text);
@@ -362,6 +379,7 @@ function App() {
                   setAnswer('');
                   setPlan(null);
                   setGoal('');
+                  setAttachments([]);
                   setKey(crypto.randomUUID());
                   setSelected(created.id);
                   await reload();
@@ -379,12 +397,29 @@ function App() {
                   setMemoryAnswer(null);
                   setKey(crypto.randomUUID());
                 }} required /></label>
+                <label>Attach text files<input type="file" accept=".txt,.md,.csv,.json,.log,text/*" multiple disabled={busy}
+                  onChange={event => {
+                    const files = Array.from(event.currentTarget.files ?? []);
+                    event.currentTarget.value = '';
+                    if (!files.length) return;
+                    submit(async () => {
+                      setAttachments(await readTaskFiles(files));
+                      setKey(crypto.randomUUID());
+                    });
+                  }} /></label>
+                {attachments.length > 0 && <ul aria-label="Selected attachments">{attachments.map((attachment, index) =>
+                  <li key={index}>{attachment.name}{' '}
+                    <button type="button" disabled={busy} aria-label={'Remove ' + attachment.name} onClick={() => {
+                      setAttachments(items => items.filter((_, position) => position !== index));
+                      setKey(crypto.randomUUID());
+                    }}>Remove</button>
+                  </li>)}</ul>}
                 <button className="primary" disabled={busy || !workspace.trim() || !goal.trim()}>Create task</button>
                 <label className="checkbox-label"><input type="checkbox" checked={usePersonalMemory} onChange={event => {
                   setUsePersonalMemory(event.target.checked);
                   setKey(crypto.randomUUID());
                 }} /> Include personal memory</label>
-                <button type="submit" value="ask" disabled={busy || !workspace.trim() || !goal.trim()}>Ask Blazar</button>
+                <button type="submit" value="ask" disabled={busy || attachments.length > 0 || !workspace.trim() || !goal.trim()}>Ask Blazar</button>
                 {availableSources.length > 0 && <details>
                   <summary>Ask with app memory</summary>
                   <label>Search terms<input value={memoryQuery} maxLength={256} onChange={event => {
@@ -400,7 +435,7 @@ function App() {
                       setKey(crypto.randomUUID());
                     }} /> {account.app} · {account.account}
                   </label>)}
-                  <button type="submit" value="app-memory" disabled={busy || !goal.trim() || goal.trim().length > 4000 ||
+                  <button type="submit" value="app-memory" disabled={busy || attachments.length > 0 || !goal.trim() || goal.trim().length > 4000 ||
                     !memoryQuery.trim() || !chosenSources.length || chosenSources.length > 25}>Ask with selected apps</button>
                   <button type="submit" value="app-task" disabled={busy || !goal.trim() ||
                     !memoryQuery.trim() || !chosenSources.length || chosenSources.length > 25}>Create task with selected apps</button>

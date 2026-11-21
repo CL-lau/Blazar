@@ -1,4 +1,5 @@
 import SwiftUI
+import UniformTypeIdentifiers
 #if os(iOS)
 import AVFoundation
 import UIKit
@@ -45,6 +46,8 @@ private struct TaskScreen: View {
     @State private var error: String?
     @State private var workspace = ""
     @State private var goal = ""
+    @State private var attachments: [TaskTextAttachment] = []
+    @State private var choosingAttachments = false
     @State private var requestKey = UUID()
     @State private var sending = false
     @State private var answer: String?
@@ -123,13 +126,30 @@ private struct TaskScreen: View {
                             .onChange(of: workspace) { _, _ in requestKey = UUID() }
                         TextField("What should Blazar do?", text: $goal, axis: .vertical)
                             .onChange(of: goal) { _, _ in requestKey = UUID() }
+                        Button("Attach text files") { choosingAttachments = true }
+                            .disabled(sending)
+                        ForEach(attachments.indices, id: \.self) { index in
+                            HStack {
+                                Text(attachments[index].name)
+                                Spacer()
+                                Button("Remove") {
+                                    attachments.remove(at: index)
+                                    requestKey = UUID()
+                                }
+                                .accessibilityLabel("Remove \(attachments[index].name)")
+                                .buttonStyle(.borderless)
+                                .disabled(sending)
+                            }
+                        }
                         Button("Create task") {
                             Task {
                                 sending = true
                                 defer { sending = false }
                                 do {
-                                    try await client.submit(workspace: workspace, goal: goal, key: requestKey)
+                                    try await client.submit(workspace: workspace, goal: goal, key: requestKey, attachments: attachments)
                                     goal = ""
+                                    attachments = []
+                                    requestKey = UUID()
                                     await reload()
                                 } catch { self.error = error.localizedDescription }
                             }
@@ -163,7 +183,7 @@ private struct TaskScreen: View {
                                 } catch { self.error = error.localizedDescription }
                             }
                         }
-                        .disabled(sending || workspace.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                        .disabled(sending || !attachments.isEmpty || workspace.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
                                   || goal.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
                         if let answer { Text(answer).textSelection(.enabled) }
 
@@ -286,6 +306,18 @@ private struct TaskScreen: View {
                 }
             }
             #endif
+            .fileImporter(isPresented: $choosingAttachments, allowedContentTypes: [.plainText, .commaSeparatedText, .json],
+                          allowsMultipleSelection: true) { result in
+                do {
+                    let urls = try result.get()
+                    if !urls.isEmpty {
+                        attachments = try TaskTextAttachment.read(urls)
+                        requestKey = UUID()
+                    }
+                } catch {
+                    self.error = error.localizedDescription
+                }
+            }
             .navigationTitle("Blazar")
             .refreshable { await reload() }
             .task {
@@ -303,6 +335,8 @@ private struct TaskScreen: View {
                 token = ""
                 snapshot = nil
                 offlineSummary = nil
+                attachments = []
+                requestKey = UUID()
                 OfflineTaskSummary.clear()
                 answer = nil
                 plan = nil
