@@ -1,4 +1,5 @@
 import React, { useEffect, useState } from 'react';
+import { ApplicationWrite } from './ApplicationWrite.jsx';
 import { callRouter } from './router.js';
 
 export function Knowledge({ token }) {
@@ -210,6 +211,8 @@ export function Knowledge({ token }) {
               {!connection.workspace && <label>Workspace<input name="workspace" required maxLength={128} /></label>}
               <button>Check connection</button>
             </form>}
+            {connection.writeCapabilities?.length > 0 &&
+              <ApplicationWrite key={token} connection={connection} request={request} />}
             {connection.active ? <button onClick={() => perform(async () => {
               await request('/app-connections/' + connection.id, { method: 'DELETE' });
               setResults(null);

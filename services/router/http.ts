@@ -489,7 +489,7 @@ export function routerServer(store: TaskStore, config: { owner: string; token: s
         return;
       }
       if (config.memory && await handleMemory(request, response, url, owner, config.memory, admission,
-        config.documents, config.answerMemory, config.draftMemory)) {
+        config.documents, config.answerMemory, config.draftMemory, admin ? config.applicationWrites : undefined)) {
         if (request.method !== 'GET') flushStopNotifications();
         return;
       }

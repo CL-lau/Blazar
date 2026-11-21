@@ -57,10 +57,12 @@ fn allowed(method: &Method, path: &str) -> bool {
             "POST",
             ["", "events" | "conversation" | "workflows" | "pairings" | "app-connections" | "memory"],
         ) => true,
-        ("POST", ["", "app-connections", id, "import-document" | "test-document" | "revoke-resource" | "refresh-documents" | "document-sync"])
+        ("POST", ["", "app-connections", id, "import-document" | "test-document" | "revoke-resource" | "refresh-documents" | "document-sync" | "write-proposals"])
         | ("GET", ["", "app-connections", id, "usage"]) => {
             identifier(id)
         }
+        ("GET", ["", "app-write-proposals", id])
+        | ("POST", ["", "app-write-proposals", id, "confirm" | "reconcile"]) => identifier(id),
         ("POST", ["", "app-connections", id, "capabilities",
             "connection.health" | "document.test" | "document.read" | "document.import" | "document.refresh" | "document.search" | "document.discover"]) => identifier(id),
         ("PATCH" | "DELETE", ["", "app-connections" | "memory", id]) => {
@@ -190,6 +192,10 @@ mod tests {
             (Method::GET, "/memory/00000000-0000-0000-0000-000000000000/history"),
             (Method::GET, "/tasks/00000000-0000-0000-0000-000000000000/attachments/0"),
             (Method::GET, "/artifacts/00000000-0000-0000-0000-000000000000/image"),
+            (Method::POST, "/app-connections/00000000-0000-0000-0000-000000000000/write-proposals"),
+            (Method::GET, "/app-write-proposals/00000000-0000-0000-0000-000000000000"),
+            (Method::POST, "/app-write-proposals/00000000-0000-0000-0000-000000000000/confirm"),
+            (Method::POST, "/app-write-proposals/00000000-0000-0000-0000-000000000000/reconcile"),
             (Method::GET, "/app-connections/00000000-0000-0000-0000-000000000000/usage"),
             (Method::PATCH, "/app-connections/00000000-0000-0000-0000-000000000000"),
             (Method::POST, "/app-connections/00000000-0000-0000-0000-000000000000/test-document"),

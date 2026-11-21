@@ -1,3 +1,4 @@
+import type { ConfiguredApplicationWrite } from '../../../packages/apps/config.ts';
 import type { IncomingMessage, ServerResponse } from 'node:http';
 import { documentAppCatalog, documentCapabilityState, isDocumentCapability, type DocumentConnector } from '../../../packages/apps/documents.ts';
 import { invokeDocumentCapability } from '../application/document-sync.ts';
@@ -18,7 +19,7 @@ const legacyDocumentCapabilities = new Map([
 
 export async function handleMemory(
   request: IncomingMessage, response: ServerResponse, url: URL, owner: string, store: MemoryStore, admission: ModelAdmission,
-  documents?: readonly DocumentConnector[], answerMemory?: MemoryAnswer, draftMemory?: MemoryDraft,
+  documents?: readonly DocumentConnector[], answerMemory?: MemoryAnswer, draftMemory?: MemoryDraft, applicationWrites: readonly ConfiguredApplicationWrite[] = [],
 ): Promise<boolean> {
   const { pathname, searchParams } = url;
   const method = request.method;
@@ -45,6 +46,9 @@ export async function handleMemory(
             canImportDocument: Boolean(connection.active && reader),
             documentAliases: connection.active ? reader?.documentAliases : undefined,
             capabilities: documentCapabilityState(connection, reader),
+            writeCapabilities: connection.active ? applicationWrites
+              .filter(item => item.app === connection.app && item.account === connection.account)
+              .map(item => item.capability) : [],
           };
         }),
       });
