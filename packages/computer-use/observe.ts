@@ -7,7 +7,7 @@ import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { lockDatabaseFile } from '../storage/exclusive.ts';
 import { agentDesktop } from './agent-desktop.ts';
-import type { ComputerDriver } from './driver.ts';
+import type { ComputerDriver, DesktopElement } from './driver.ts';
 
 export type ObservationConfig = {
   executable: string;
@@ -67,20 +67,17 @@ export function observationConfig(env: NodeJS.ProcessEnv, desktopLockPath?: stri
     sessionLocked: process.platform === 'darwin' ? macSessionLocked : undefined };
 }
 
-function describeTree(input: unknown) {
+function describeTree(input: DesktopElement) {
   const rows: string[] = [];
-  function visit(node: unknown, depth: number) {
-    if (!node || typeof node !== 'object' || rows.length >= 80 || depth >= 10) return;
-    const item = node as { role?: unknown; name?: unknown; children?: unknown };
+  function visit(item: DesktopElement, depth: number) {
+    if (rows.length >= 80 || depth >= 10) return;
     const role = typeof item.role === 'string' ? item.role.replace(/[^a-zA-Z0-9_-]/g, '').slice(0, 40) : '';
     if (/secure|password/i.test(role)) return;
     if (role) {
       const name = typeof item.name === 'string' ? item.name.replace(/[\x00-\x1f\x7f]/g, ' ').slice(0, 120) : '';
       rows.push('  '.repeat(depth) + role + (name ? ': ' + name : ''));
     }
-    if (Array.isArray(item.children)) {
-      for (const child of item.children.slice(0, 80)) visit(child, depth + 1);
-    }
+    for (const child of item.children.slice(0, 80)) visit(child, depth + 1);
   }
   visit(input, 0);
   return rows.join('\n').slice(0, 4_000).toWellFormed();
@@ -205,26 +202,18 @@ async function observeWindow(config: ObservationConfig, root: string, goal: stri
   return description;
 }
 
-function buttonIn(tree: unknown, label: string) {
+function buttonIn(tree: DesktopElement, label: string) {
   const matches: { ref: string; path: string }[] = [];
-  function visit(value: unknown, path: string, depth: number) {
-    if (!value || typeof value !== 'object' || depth > 16) return;
-    const node = value as { name?: unknown; role?: unknown; ref_id?: unknown; children?: unknown; available_actions?: unknown };
-    if (node.name === label && ['button', 'AXButton'].includes(String(node.role)) &&
-        Array.isArray(node.available_actions) && node.available_actions.some(action => ['Click', 'AXPress'].includes(action)) &&
-        typeof node.ref_id === 'string' && /^@[a-zA-Z0-9_-]+:e[0-9]+$/.test(node.ref_id)) {
-      matches.push({ ref: node.ref_id, path });
+  function visit(node: DesktopElement, path: string, depth: number) {
+    if (depth > 16) return;
+    if (node.name === label && (node.role === 'button' || node.role === 'AXButton') && node.pressReference) {
+      matches.push({ ref: node.pressReference, path });
     }
-    if (Array.isArray(node.children)) node.children.forEach((child, index) => visit(child, path + '.' + index, depth + 1));
+    node.children.forEach((child, index) => visit(child, path + '.' + index, depth + 1));
   }
   visit(tree, '0', 0);
   if (matches.length !== 1) throw new Error('The configured button must be uniquely visible.');
   return matches[0];
-}
-
-function reviewFingerprint(tree: unknown) {
-  const snapshot = JSON.stringify(tree, (key, value) => key === 'ref_id' ? undefined : value);
-  return createHash('sha256').update(snapshot).digest('hex');
 }
 
 export class DesktopResultUnverified extends Error {
@@ -240,12 +229,11 @@ export async function clickApp(config: ObservationConfig, root: string, goal: st
   const windowId = match[2];
   const identity = match[3];
   const label = match[4];
-  const { initialWindow, initial, button, summary, fingerprint } = await withDesktopLock(config, signal, async () => {
+  const { initialWindow, initial, button, summary } = await withDesktopLock(config, signal, async () => {
     const initialWindow = windowId ? await accessibleWindow(config, root, app, windowId, signal, identity) : undefined;
     if (initialWindow && !initialWindow.instance) throw new Error('The driver cannot identify the selected window process.');
     const initial = await config.driver.snapshot(root, app, signal, windowId);
-    return { initialWindow, initial, button: buttonIn(initial.tree, label), summary: describeTree(initial.tree),
-      fingerprint: reviewFingerprint(initial.tree) };
+    return { initialWindow, initial, button: buttonIn(initial.tree, label), summary: describeTree(initial.tree) };
   });
   if (expectedText && summary.includes(expectedText)) {
     throw new Error('The expected text is already visible. Review the window before clicking.');
@@ -262,7 +250,7 @@ export async function clickApp(config: ObservationConfig, root: string, goal: st
     }
     const current = await config.driver.snapshot(root, app, signal, windowId);
     const latest = buttonIn(current.tree, label);
-    if (reviewFingerprint(current.tree) !== fingerprint || latest.path !== button.path ||
+    if (current.fingerprint !== initial.fingerprint || latest.path !== button.path ||
         initial.windowId !== current.windowId || initial.pid !== current.pid) {
       throw new Error('The application changed after review. Request a new action.');
     }

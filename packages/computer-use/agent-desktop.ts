@@ -1,5 +1,17 @@
+import { createHash } from 'node:crypto';
 import { spawnWorker } from '../workers/process.ts';
-import type { ComputerDriver } from './driver.ts';
+import type { ComputerDriver, DesktopElement } from './driver.ts';
+
+function element(value: unknown, depth = 0): DesktopElement {
+  if (!value || typeof value !== 'object' || depth > 16) return { children: [] };
+  const node = value as { role?: unknown; name?: unknown; available_actions?: unknown; ref_id?: unknown; children?: unknown };
+  const role = typeof node.role === 'string' ? node.role : undefined;
+  const name = typeof node.name === 'string' ? node.name : undefined;
+  const pressReference = Array.isArray(node.available_actions) && node.available_actions.some(action => action === 'Click' || action === 'AXPress') &&
+    typeof node.ref_id === 'string' && /^@[a-zA-Z0-9_-]+:e[0-9]+$/.test(node.ref_id) ? node.ref_id : undefined;
+  return { role, name, pressReference,
+    children: Array.isArray(node.children) ? node.children.map(child => element(child, depth + 1)) : [] };
+}
 
 export function agentDesktop(executable: string): ComputerDriver {
   return {
@@ -29,7 +41,9 @@ export function agentDesktop(executable: string): ComputerDriver {
       const options = windowId ? ['--window-id', windowId] : [];
       const data = await runDriver(executable, root, ['snapshot', '--app', app, '-i', ...options], signal);
       if (!data?.tree) throw new Error('No application snapshot was available.');
-      return { tree: data.tree, windowId: data.window_id, pid: data.pid };
+      const stable = JSON.stringify(data.tree, (key, value) => key === 'ref_id' ? undefined : value);
+      return { tree: element(data.tree), fingerprint: createHash('sha256').update(stable).digest('hex'),
+        windowId: data.window_id, pid: data.pid };
     },
     async screenshot(root, app, windowId, path, signal) {
       await runDriver(executable, root, ['screenshot', '--app', app, '--window-id', windowId, path], signal);
