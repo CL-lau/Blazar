@@ -1285,30 +1285,32 @@ export class TaskStore {
   stopTarget(owner: string, taskId: string) {
     return this.db.prepare(`SELECT r.id AS runId,r.device FROM run r JOIN task t ON t.id=r.taskId
       WHERE t.owner=? AND t.id=? AND (t.status IN ('pausing','cancelling') OR
-          EXISTS(SELECT 1 FROM run_evidence_stop s WHERE s.run_id=r.id) OR (
+          EXISTS(SELECT 1 FROM run_evidence_stop s WHERE s.run_id=r.id) OR
+          EXISTS(SELECT 1 FROM invalid_workflow_run i WHERE i.id=r.id) OR (
           t.status='running' AND r.version<>t.version
-          AND NOT EXISTS(SELECT 1 FROM run_steering s WHERE s.run_id=r.id)
-          AND NOT EXISTS(SELECT 1 FROM invalid_workflow_run i WHERE i.id=r.id)))`).get(owner, taskId) as
+          AND NOT EXISTS(SELECT 1 FROM run_steering s WHERE s.run_id=r.id)))`).get(owner, taskId) as
       { runId: string; device: string } | undefined;
   }
 
   deviceStopTargets(device: string) {
     return this.db.prepare(`SELECT r.id FROM run r JOIN task t ON t.id=r.taskId
       WHERE r.device=? AND (t.status IN ('pausing','cancelling') OR
-          EXISTS(SELECT 1 FROM run_evidence_stop s WHERE s.run_id=r.id) OR (
+          EXISTS(SELECT 1 FROM run_evidence_stop s WHERE s.run_id=r.id) OR
+          EXISTS(SELECT 1 FROM invalid_workflow_run i WHERE i.id=r.id) OR (
           t.status='running' AND r.version<>t.version
-          AND NOT EXISTS(SELECT 1 FROM run_steering s WHERE s.run_id=r.id)
-          AND NOT EXISTS(SELECT 1 FROM invalid_workflow_run i WHERE i.id=r.id)))
+          AND NOT EXISTS(SELECT 1 FROM run_steering s WHERE s.run_id=r.id)))
       UNION ALL SELECT run_id AS id FROM expired_approval_stop WHERE device_id=? AND expires>?`).all(device, device, Date.now());
   }
 
   acknowledgeStop(runId: string, device: string, now: number) {
     return this.transaction(() => {
-      const run = this.db.prepare(`SELECT r.taskId,t.status FROM run r JOIN task t ON t.id=r.taskId
+      const run = this.db.prepare(`SELECT r.taskId,t.status,
+        EXISTS(SELECT 1 FROM invalid_workflow_run i WHERE i.id=r.id) AS staleInputs
+        FROM run r JOIN task t ON t.id=r.taskId
         WHERE r.id=? AND r.device=? AND r.expires>? AND (t.status IN ('pausing','cancelling') OR
-          EXISTS(SELECT 1 FROM run_evidence_stop s WHERE s.run_id=r.id) OR (
-          t.status='running' AND r.version<>t.version
-          AND NOT EXISTS(SELECT 1 FROM invalid_workflow_run i WHERE i.id=r.id)))`).get(runId, device, now);
+          EXISTS(SELECT 1 FROM run_evidence_stop s WHERE s.run_id=r.id) OR
+          EXISTS(SELECT 1 FROM invalid_workflow_run i WHERE i.id=r.id) OR (
+          t.status='running' AND r.version<>t.version))`).get(runId, device, now);
       if (!run) {
         const pending = this.db.prepare('DELETE FROM expired_approval_stop WHERE run_id=? AND device_id=? RETURNING task_id')
           .get(runId, device);
@@ -1320,6 +1322,8 @@ export class TaskStore {
         this.finishStoppedRun(runId, taskId, run.status === 'pausing');
       } else if (this.runEvidenceStopping(runId)) {
         this.finishRejectedEvidence(runId, taskId);
+      } else if (run.staleInputs) {
+        this.finishInvalidInputs(runId, taskId);
       } else {
         this.finishSupersededRun(runId, taskId);
       }
@@ -1339,9 +1343,24 @@ export class TaskStore {
     ))`).run(taskId, runId);
   }
 
+  private clickMayHaveExecuted(taskId: string, runId: string) {
+    return Boolean(this.db.prepare(`SELECT 1 FROM task t JOIN approval a ON a.taskId=t.id
+      JOIN approval_use u ON u.id=a.id WHERE t.id=? AND a.runId=? AND substr(t.goal,1,7)='/click '`).get(taskId, runId));
+  }
+
+  private finishInvalidInputs(runId: string, taskId: string) {
+    const click = this.clickMayHaveExecuted(taskId, runId);
+    if (click) this.requireDesktopReconciliation(taskId, runId);
+    this.db.prepare('DELETE FROM run WHERE id=?').run(runId);
+    const message = click
+      ? 'An upstream result changed after click approval. Check whether the click took effect.'
+      : 'An upstream result changed during execution. Review the run before retrying.';
+    this.db.prepare("UPDATE task SET status='waiting_user',result=? WHERE id=?").run(message, taskId);
+    this.event(taskId, 'run.inputs_changed', { runId, status: 'waiting_user' });
+  }
+
   private finishStoppedRun(runId: string, taskId: string, paused: boolean) {
-    const clickMayHaveExecuted = this.db.prepare(`SELECT 1 FROM task t JOIN approval a ON a.taskId=t.id
-      JOIN approval_use u ON u.id=a.id WHERE t.id=? AND a.runId=? AND substr(t.goal,1,7)='/click '`).get(taskId, runId);
+    const clickMayHaveExecuted = this.clickMayHaveExecuted(taskId, runId);
     if (clickMayHaveExecuted && paused) this.requireDesktopReconciliation(taskId, runId);
     this.db.prepare('DELETE FROM run WHERE id=?').run(runId);
     if (clickMayHaveExecuted) {
@@ -1389,14 +1408,12 @@ export class TaskStore {
         this.finishSupersededRun(runId, taskId);
         return false;
       }
-      if (outcome.status === 'waiting_user') this.requireDesktopReconciliation(taskId, runId);
-      this.db.prepare('DELETE FROM run WHERE id=?').run(runId);
       if (row.staleInputs) {
-        this.db.prepare("UPDATE task SET status='waiting_user',result=? WHERE id=?")
-          .run('An upstream result changed during execution. Review the run before retrying.', taskId);
-        this.event(taskId, 'run.inputs_changed', { runId, status: 'waiting_user' });
+        this.finishInvalidInputs(runId, taskId);
         return false;
       }
+      if (outcome.status === 'waiting_user') this.requireDesktopReconciliation(taskId, runId);
+      this.db.prepare('DELETE FROM run WHERE id=?').run(runId);
       const finalStatus = pendingReview ? 'waiting_review' : outcome.status;
       this.db.prepare('UPDATE task SET status=?,result=? WHERE id=?').run(finalStatus, outcome.result, taskId);
       if (outcome.status === 'succeeded' && outcome.artifact) {
@@ -1523,20 +1540,21 @@ export class TaskStore {
           this.updateWorkflowReadiness(taskId);
           continue;
         }
+        if (row.staleInputs && row.status !== 'cancelling') {
+          this.finishInvalidInputs(String(row.id), taskId);
+          continue;
+        }
         const status = row.status === 'cancelling' ? 'cancelled' : 'waiting_user';
         if (status === 'waiting_user' && row.clickMayHaveExecuted) this.requireDesktopReconciliation(taskId, String(row.id));
         this.db.prepare('DELETE FROM run WHERE id=?').run(row.id!);
         this.db.prepare('UPDATE task SET status=? WHERE id=?').run(status, taskId);
-        const inputsChanged = row.staleInputs && status === 'waiting_user';
-        if (inputsChanged) this.db.prepare('UPDATE task SET result=? WHERE id=?')
-          .run('An upstream result changed during execution. Review the run before retrying.', taskId);
         const timedOut = status === 'waiting_user' && Boolean(row.deadlineReached);
-        if (status === 'waiting_user' && row.clickMayHaveExecuted && !inputsChanged) {
+        if (status === 'waiting_user' && row.clickMayHaveExecuted) {
           this.db.prepare('UPDATE task SET result=? WHERE id=?')
             .run('The click may have been applied. Check the application before retrying.', taskId);
-        } else if (timedOut && !inputsChanged) this.db.prepare('UPDATE task SET result=? WHERE id=?')
+        } else if (timedOut) this.db.prepare('UPDATE task SET result=? WHERE id=?')
           .run('The run reached its time limit. Review the device before retrying.', taskId);
-        const event = inputsChanged ? 'run.inputs_changed' : timedOut ? 'run.deadline_exceeded' : 'run.lease_expired';
+        const event = timedOut ? 'run.deadline_exceeded' : 'run.lease_expired';
         this.event(taskId, event, { runId: row.id, status });
       }
       return [

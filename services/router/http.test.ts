@@ -972,6 +972,9 @@ test('Router decisions can consume versioned text results without crossing works
   assert.equal(store.get('owner', queuedWorkflow.steps[0].taskId)?.status, 'waiting_user');
   assert.equal(store.command('owner', queuedWorkflow.steps[0].taskId, 1, { action: 'retry' }), undefined);
   assert.equal(store.renew(active.id, active.device, now + 2, 45_000), undefined);
+  assert.deepEqual(store.deviceStopTargets(active.device).map(target => target.id), [active.id]);
+  assert.equal(store.acknowledgeStop(active.id, active.device, now + 2), true);
+  assert.equal(store.get('owner', active.taskId)?.status, 'waiting_user');
   assert.equal(store.finish(active.id, active.device, now + 2, { status: 'succeeded', result: 'Stale result' }), false);
   assert.deepEqual(store.recentConversation('owner', 'project'), []);
 });

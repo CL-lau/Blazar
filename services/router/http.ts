@@ -674,7 +674,7 @@ export function routerServer(store: TaskStore, config: { owner: string; token: s
         }
         const result = store.command(owner, taskId, version, command, key, mobile?.id);
         if (result) {
-          if (action === 'pause' || action === 'cancel' || action === 'append') notifyStop(owner, taskId);
+          if (action === 'pause' || action === 'cancel' || action === 'append') devices.flushStops();
           reply(response, 200, taskResponse(result));
         } else {
           const task = store.get(owner, taskId);
