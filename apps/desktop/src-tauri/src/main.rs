@@ -64,15 +64,18 @@ fn allowed(method: &Method, path: &str) -> bool {
         ("PATCH" | "DELETE", ["", "app-connections" | "memory", id]) => {
             identifier(id)
         }
-        ("GET", ["", "admin", "mobile-clients" | "devices" | "workers"]) => true,
+        ("GET", ["", "admin", "mobile-clients" | "mobile-pairings" | "devices" | "workers" | "metrics"]) => true,
         ("POST", ["", "admin", "devices" | "task-links"]) => true,
+        ("POST", ["", "admin", "mobile-pairings", id]) => identifier(id),
         ("GET", ["", "admin", "tasks", id, "links"]) => identifier(id),
         ("DELETE", ["", "admin", "tasks", id, "links", link]) => {
             identifier(id) && link.len() == 64 && link.bytes().all(|byte| byte.is_ascii_hexdigit())
         }
         ("PATCH", ["", "admin", "devices", id]) => identifier(id),
+        ("GET", ["", "memory", id, "history"]) => identifier(id),
         ("POST", ["", "memory", "answer"]) => true,
         ("GET", ["", "artifacts", id] | ["", "artifacts", id, "diff" | "image"]) => identifier(id),
+        ("GET", ["", "tasks", id, "attachments", "0" | "1" | "2" | "3"]) => identifier(id),
         ("GET", ["", "tasks", id, "timeline" | "share-result"]) => identifier(id),
         ("POST", ["", "tasks", id, "commands" | "remember-result" | "share-result"]) => identifier(id),
         ("DELETE", ["", "admin", "mobile-clients" | "devices", id]) => identifier(id),
@@ -175,6 +178,11 @@ mod tests {
             "/memory/00000000-0000-0000-0000-000000000000"
         ));
         for (method, path) in [
+            (Method::GET, "/admin/metrics"),
+            (Method::GET, "/admin/mobile-pairings"),
+            (Method::POST, "/admin/mobile-pairings/00000000-0000-0000-0000-000000000000"),
+            (Method::GET, "/memory/00000000-0000-0000-0000-000000000000/history"),
+            (Method::GET, "/tasks/00000000-0000-0000-0000-000000000000/attachments/0"),
             (Method::GET, "/artifacts/00000000-0000-0000-0000-000000000000/image"),
             (Method::GET, "/app-connections/00000000-0000-0000-0000-000000000000/usage"),
             (Method::PATCH, "/app-connections/00000000-0000-0000-0000-000000000000"),
@@ -189,6 +197,9 @@ mod tests {
         assert!(!allowed(&Method::GET, "/stream?once=1&after=10&after=0"));
         assert!(!allowed(&Method::GET, "/state?redirect=1"));
         assert!(!allowed(&Method::POST, "/device/claim"));
+        assert!(!allowed(&Method::POST, "/admin/metrics"));
+        assert!(!allowed(&Method::POST, "/admin/mobile-pairings/invalid"));
+        assert!(!allowed(&Method::GET, "/tasks/00000000-0000-0000-0000-000000000000/attachments/4"));
         assert!(!allowed(&Method::GET, "/tasks/../timeline"));
     }
 

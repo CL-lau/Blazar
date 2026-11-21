@@ -5,6 +5,7 @@ import { Timeline } from './Timeline.jsx';
 import { Knowledge } from './Knowledge.jsx';
 import { ChannelLinks } from './ChannelLinks.jsx';
 import { Devices } from './Devices.jsx';
+import { RouterStatus } from './RouterStatus.jsx';
 import { callRouter } from './router.js';
 import './style.css';
 
@@ -166,6 +167,7 @@ function App() {
             <button onClick={() => setSettings('tasks')}>Tasks</button>
             <button onClick={() => { setMemoryAnswer(null); setPreview(null); setSettings('knowledge'); }}>Apps and memory</button>
             <button onClick={() => setSettings('devices')}>Execution devices</button>
+            <button onClick={() => setSettings('router-status')}>Router status</button>
             <button onClick={() => submit(async () => {
               setClients((await api('/admin/mobile-clients')).clients);
               setSettings('phones');
@@ -191,6 +193,8 @@ function App() {
         <Knowledge token={connected} />
       ) : settings === 'devices' ? (
         <Devices token={connected} />
+      ) : settings === 'router-status' ? (
+        <RouterStatus token={connected} />
       ) : settings === 'phones' ? (
         <section className="detail">
           <h2>Linked phones</h2>

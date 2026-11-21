@@ -33,3 +33,9 @@ select { font: inherit; color: inherit; background: #202128; border: 1px solid #
 .knowledge li button { margin-left: 12px; }
 
 .checkbox-label { display: flex; align-items: center; gap: 8px; }
+
+.router-status section { margin-top: 20px; }
+.status-table { overflow-x: auto; }
+.status-table table { width: 100%; border-collapse: collapse; }
+.status-table th, .status-table td { border-bottom: 1px solid #34343a; padding: 8px; text-align: right; }
+.status-table th:first-child { text-align: left; }
