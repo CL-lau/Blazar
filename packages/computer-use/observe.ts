@@ -30,6 +30,11 @@ export class DesktopSessionLocked extends Error {
   constructor() { super('The desktop session is locked. Unlock the computer before retrying.'); }
 }
 
+async function assertDesktopUnlocked(config: ObservationConfig, signal: AbortSignal) {
+  signal.throwIfAborted();
+  if (await config.sessionLocked?.(signal)) throw new DesktopSessionLocked();
+}
+
 export function observationConfig(env: NodeJS.ProcessEnv, desktopLockPath?: string): ObservationConfig {
   const executable = env.BLAZAR_COMPUTER_DRIVER;
   if (!executable || !isAbsolute(executable)) throw new Error('Set an absolute computer driver executable path');
@@ -125,7 +130,7 @@ async function withDesktopLock<T>(config: ObservationConfig, signal: AbortSignal
     ? lockDatabaseFile(config.desktopLockPath, 'Another Blazar run is using the desktop. Retry this action.')
     : undefined;
   try {
-    if (await config.sessionLocked?.(signal)) throw new DesktopSessionLocked();
+    await assertDesktopUnlocked(config, signal);
     return await operation();
   }
   finally { unlock?.(); }
@@ -319,10 +324,11 @@ export async function clickApp(config: ObservationConfig, root: string, goal: st
         initial.window_id !== current.window_id || initial.pid !== current.pid) {
       throw new Error('The application changed after review. Request a new action.');
     }
-    signal.throwIfAborted();
+    await assertDesktopUnlocked(config, signal);
     if (!await consume()) throw new Error('Desktop approval is no longer valid.');
     signal.throwIfAborted();
     try {
+      await assertDesktopUnlocked(config, signal);
       await runDriver(config, root, ['click', latest.ref], signal);
       const refreshed = await readSnapshot(config, root, app, signal, windowId);
       if (initial.window_id !== refreshed.window_id || initial.pid !== refreshed.pid) throw new DesktopResultUnverified();

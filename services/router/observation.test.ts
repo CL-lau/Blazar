@@ -367,7 +367,9 @@ console.log(JSON.stringify({ok:true,command,data}));
   const base = new URL('http://127.0.0.1:' + address.port);
   const device = store.registerDevice('owner', 'Notes desktop', 'project');
   const phone = store.redeemPairing(store.createPairing('owner', Date.now()).code, 'Phone fixture', Date.now())!;
-  const client = new DeviceClient(base, device.token, directory, ledger, undefined, observation);
+  let locked = false;
+  const client = new DeviceClient(base, device.token, directory, ledger, undefined,
+    { ...observation, sessionLocked: async () => locked });
   t.after(async () => {
     client.close();
     server.closeDeviceSockets();
@@ -376,7 +378,7 @@ console.log(JSON.stringify({ok:true,command,data}));
     store.close();
     rmSync(directory, { recursive: true, force: true });
   });
-  const signal = AbortSignal.timeout(8_000);
+  const signal = AbortSignal.timeout(12_000);
   const post = (path: string, token: string, key: string, body: object) => fetch(new URL(path, base), {
     method: 'POST', signal,
     headers: { Authorization: 'Bearer ' + token, 'Content-Type': 'application/json', 'Idempotency-Key': key },
@@ -403,23 +405,39 @@ console.log(JSON.stringify({ok:true,command,data}));
   assert.equal(workflow.status, 202);
   const { steps } = await workflow.json() as { steps: { taskId: string }[] };
   assert.equal(await client.runOnce(signal), true);
-  const clicking = client.runOnce(signal);
-  void clicking.catch(() => {});
-  let approval;
-  while (!approval) {
-    signal.throwIfAborted();
-    const clickTask = store.get('owner', steps[1].taskId);
-    assert.notEqual(clickTask?.status, 'failed', clickTask?.result ?? 'Click failed');
-    approval = store.snapshot('owner').approvals.find(item => item.taskId === steps[1].taskId);
-    if (!approval) await new Promise(resolve => setTimeout(resolve, 20));
-  }
+  const startClick = async () => {
+    const run = client.runOnce(signal);
+    void run.catch(() => {});
+    while (true) {
+      signal.throwIfAborted();
+      const clickTask = store.get('owner', steps[1].taskId);
+      assert.notEqual(clickTask?.status, 'failed', clickTask?.result ?? 'Click failed');
+      const approval = store.snapshot('owner').approvals.find(item => item.taskId === steps[1].taskId);
+      if (approval) return { run, approval };
+      await new Promise(resolve => setTimeout(resolve, 20));
+    }
+  };
+  const firstClick = await startClick();
   assert.equal(store.get('owner', steps[2].taskId)?.status, 'waiting_dependency');
-  assert.match(String(approval.summary), /Click "Save".*Expected visible text: "Saved"/);
-  const approved = await post('/v1/tasks/' + steps[1].taskId + '/commands', phone.token, 'approve-save', {
-    action: 'approve', expectedVersion: 1, approvalId: approval.id,
+  assert.match(String(firstClick.approval.summary), /Click "Save".*Expected visible text: "Saved"/);
+  const commandPath = '/v1/tasks/' + steps[1].taskId + '/commands';
+  locked = true;
+  const firstApproved = await post(commandPath, phone.token, 'approve-locked', {
+    action: 'approve', expectedVersion: 1, approvalId: firstClick.approval.id,
+  });
+  assert.equal(firstApproved.status, 200);
+  assert.equal(await firstClick.run, true);
+  assert.equal(store.get('owner', steps[1].taskId)?.status, 'waiting_user');
+  assert.equal(store.get('owner', steps[2].taskId)?.status, 'waiting_dependency');
+  locked = false;
+  assert.equal((await post(commandPath, phone.token, 'retry-unlocked', { action: 'retry', expectedVersion: 1 })).status, 200);
+  const secondClick = await startClick();
+  assert.notEqual(secondClick.approval.id, firstClick.approval.id);
+  const approved = await post(commandPath, phone.token, 'approve-save', {
+    action: 'approve', expectedVersion: 2, approvalId: secondClick.approval.id,
   });
   assert.equal(approved.status, 200);
-  assert.equal(await clicking, true);
+  assert.equal(await secondClick.run, true);
   assert.equal(store.get('owner', steps[1].taskId)?.status, 'succeeded');
   assert.equal(await client.runOnce(signal), true);
   assert.equal(store.get('owner', steps[2].taskId)?.status, 'succeeded');
