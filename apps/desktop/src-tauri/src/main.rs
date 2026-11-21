@@ -196,6 +196,9 @@ mod tests {
             (Method::GET, "/app-write-proposals/00000000-0000-0000-0000-000000000000"),
             (Method::POST, "/app-write-proposals/00000000-0000-0000-0000-000000000000/confirm"),
             (Method::POST, "/app-write-proposals/00000000-0000-0000-0000-000000000000/reconcile"),
+            (Method::GET, "/app-connections/00000000-0000-0000-0000-000000000000/write-proposals"),
+            (Method::POST, "/app-write-proposals/00000000-0000-0000-0000-000000000000/check-result"),
+            (Method::POST, "/app-write-proposals/00000000-0000-0000-0000-000000000000/share"),
             (Method::GET, "/app-connections/00000000-0000-0000-0000-000000000000/usage"),
             (Method::PATCH, "/app-connections/00000000-0000-0000-0000-000000000000"),
             (Method::POST, "/app-connections/00000000-0000-0000-0000-000000000000/test-document"),
@@ -218,6 +221,10 @@ mod tests {
         assert!(!allowed(&Method::POST, "/health"));
         assert!(!allowed(&Method::GET, "/health?redirect=1"));
         assert!(!allowed(&Method::POST, "/device/claim"));
+        assert!(!allowed(&Method::GET, "/app-write-proposals"));
+        assert!(!allowed(&Method::GET,
+            "/app-write-proposals/00000000-0000-0000-0000-000000000000/confirm"));
+        assert!(!allowed(&Method::POST, "/app-write-proposals/invalid/confirm"));
         assert!(!allowed(&Method::POST,
             "/app-connections/00000000-0000-0000-0000-000000000000/capabilities/document.publish"));
         assert!(!allowed(&Method::GET,
