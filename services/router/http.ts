@@ -1115,7 +1115,8 @@ export function routerServer(store: TaskStore, config: { owner: string; token: s
           return;
         }
         const metrics = ownerMetrics(owner);
-        let decision = store.routingDecision(owner, key, input);
+        const caller = mobile?.id ?? 'admin';
+        let decision = store.routingDecision(owner, key, input, undefined, caller);
         if (decision) metrics.route('replayed');
         else {
           if (input.text.startsWith('/preview ') || input.text.startsWith('/observe ') || input.text.startsWith('/click ')) {
@@ -1132,7 +1133,7 @@ export function routerServer(store: TaskStore, config: { owner: string; token: s
             metrics.route('model');
             try {
               decision = await config.harness({
-                ...input, recent: store.recentConversation(owner, input.workspace),
+                ...input, recent: store.recentConversation(owner, input.workspace, caller),
                 findTasks: query => {
                   const tasks = store.findRouterTasks(owner, input.workspace, query).filter(task => canReadTask(task.id));
                   for (const task of tasks) foundVersions.set(task.id, task.version);
@@ -1179,14 +1180,14 @@ export function routerServer(store: TaskStore, config: { owner: string; token: s
             }
           }
           if (!admin && store.mobileOwner(mobileToken) !== owner) throw new RequestError(401, 'Authentication required');
-          decision = store.routingDecision(owner, key, input, decision)!;
+          decision = store.routingDecision(owner, key, input, decision, caller)!;
         }
         if (decision.kind === 'create_task') {
           const goal = decision.goal ?? input.text;
           if ((goal.startsWith('/observe ') || goal.startsWith('/click ')) && goal !== input.text) {
             throw new RequestError(400, 'Application observation requires an explicit command');
           }
-          const task = store.create(owner, 'conversation', key, input.workspace, goal);
+          const task = store.create(owner, mobile ? 'conversation:' + mobile.id : 'conversation', key, input.workspace, goal);
           reply(response, 202, { kind: decision.kind, task });
         } else {
           reply(response, 200, decision);

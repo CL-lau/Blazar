@@ -287,10 +287,9 @@ export class TaskStore {
         PRIMARY KEY(owner, source, key)
       );
       CREATE TABLE IF NOT EXISTS routing_decision (
-        owner TEXT NOT NULL, key TEXT NOT NULL, request TEXT NOT NULL, decision TEXT NOT NULL,
-        PRIMARY KEY(owner,key)
+        owner TEXT NOT NULL, caller TEXT NOT NULL, key TEXT NOT NULL, request TEXT NOT NULL, decision TEXT NOT NULL,
+        PRIMARY KEY(owner,caller,key)
       );
-      CREATE INDEX IF NOT EXISTS routing_workspace ON routing_decision(owner, json_extract(request,'$[0]'));
       CREATE TABLE IF NOT EXISTS command_receipt (
         owner TEXT NOT NULL, key TEXT NOT NULL, fingerprint TEXT NOT NULL,
         response TEXT NOT NULL, PRIMARY KEY(owner,key)
@@ -305,6 +304,18 @@ export class TaskStore {
     if (!this.db.prepare("SELECT 1 FROM pragma_table_info('workspace_worker_policy') WHERE name='max_concurrent'").get()) {
       this.db.exec('ALTER TABLE workspace_worker_policy ADD COLUMN max_concurrent INTEGER');
     }
+    if (!this.db.prepare("SELECT 1 FROM pragma_table_info('routing_decision') WHERE name='caller'").get()) {
+      this.transaction(() => this.db.exec(`
+        ALTER TABLE routing_decision RENAME TO routing_decision_legacy;
+        CREATE TABLE routing_decision (
+          owner TEXT NOT NULL, caller TEXT NOT NULL, key TEXT NOT NULL, request TEXT NOT NULL, decision TEXT NOT NULL,
+          PRIMARY KEY(owner,caller,key)
+        );
+        INSERT INTO routing_decision SELECT owner,'admin',key,request,decision FROM routing_decision_legacy;
+        DROP TABLE routing_decision_legacy;
+      `));
+    }
+    this.db.exec("CREATE INDEX IF NOT EXISTS routing_workspace ON routing_decision(owner,caller,json_extract(request,'$[0]'))");
     const workerColumns = new Set(this.db.prepare("SELECT name FROM pragma_table_info('device_worker')").all()
       .map(column => column.name));
     if (!workerColumns.has('revision')) this.db.exec('ALTER TABLE device_worker ADD COLUMN revision TEXT');
@@ -512,14 +523,14 @@ export class TaskStore {
       .map(row => ({ id: String(row.id), goal: String(row.goal).toWellFormed(), status: String(row.status), version: Number(row.version) }));
   }
 
-  recentConversation(owner: string, workspace: string): ConversationTurn[] {
+  recentConversation(owner: string, workspace: string, caller = 'admin'): ConversationTurn[] {
     return this.db.prepare(`SELECT json_extract(request,'$[1]') AS text,decision FROM routing_decision
-      WHERE owner=? AND json_extract(request,'$[0]')=? AND json_array_length(request)=2
+      WHERE owner=? AND caller=? AND json_extract(request,'$[0]')=? AND json_array_length(request)=2
       AND NOT (
         json_extract(request,'$[1]') IN ('/status','/状态')
         OR json_extract(request,'$[1]') GLOB '/status *' OR json_extract(request,'$[1]') GLOB '/状态 *'
       ) ORDER BY rowid DESC LIMIT 6`)
-      .all(owner, workspace).reverse().map(row => {
+      .all(owner, caller, workspace).reverse().map(row => {
         const decision = JSON.parse(String(row.decision)) as Decision;
         if (decision.kind === 'propose_workflow') {
           decision.text = decision.text.slice(0, 2_000);
@@ -533,14 +544,14 @@ export class TaskStore {
       });
   }
 
-  routingDecision(owner: string, key: string, request: RouteRequest, decision?: Decision): Decision | undefined {
+  routingDecision(owner: string, key: string, request: RouteRequest, decision?: Decision, caller = 'admin'): Decision | undefined {
     const fingerprint = JSON.stringify(request.usePersonalMemory
       ? [request.workspace, request.text, true] : [request.workspace, request.text]);
     if (decision) {
-      this.db.prepare('INSERT OR IGNORE INTO routing_decision VALUES(?,?,?,?)')
-        .run(owner, key, fingerprint, JSON.stringify(decision));
+      this.db.prepare('INSERT OR IGNORE INTO routing_decision(owner,caller,key,request,decision) VALUES(?,?,?,?,?)')
+        .run(owner, caller, key, fingerprint, JSON.stringify(decision));
     }
-    const row = this.db.prepare('SELECT request,decision FROM routing_decision WHERE owner=? AND key=?').get(owner, key);
+    const row = this.db.prepare('SELECT request,decision FROM routing_decision WHERE owner=? AND caller=? AND key=?').get(owner, caller, key);
     if (!row) return undefined;
     if (row.request !== fingerprint) throw new IdempotencyConflict();
     return JSON.parse(String(row.decision)) as Decision;

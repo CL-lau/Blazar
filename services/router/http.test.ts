@@ -673,3 +673,51 @@ test('admin audit export pages within an owner-scoped cursor range', async t => 
   assert.deepEqual(second.events.map((event: { taskId: string }) => event.taskId), [taskIds[100]]);
   assert.ok(!JSON.stringify(first).includes(unrelated.id));
 });
+
+test('Router capability tools only expose active connections and devices in the administrator workspace', async t => {
+  const store = new TaskStore(':memory:');
+  const memory = new MemoryStore(':memory:');
+  const desktop = store.registerDevice('owner', 'Workspace desktop', 'project');
+  store.recordDeviceActivity(desktop.id, Date.now(), 'computer.observe');
+  store.registerDevice('owner', 'Separate workspace', 'other');
+  store.registerDevice('other', 'Separate owner', 'project');
+  memory.connect('owner', 'feishu', 'authorized account', 'project');
+  memory.connect('owner', 'github', 'unconfigured account');
+  memory.connect('owner', 'lark', 'other workspace account', 'other');
+  memory.connect('other', 'lark', 'other owner account', 'project');
+  memory.disconnect('owner', memory.connect('owner', 'lark', 'revoked account', 'project'));
+  const phone = store.redeemPairing(store.createPairing('owner', Date.now()).code, 'Phone', Date.now())!;
+  const summaries: unknown[] = [];
+  const historyLengths: number[] = [];
+  const server = routerServer(store, {
+    owner: 'owner', token: 'admin-secret', memory,
+    documents: [feishuDocuments('feishu', 'authorized account', 'fixture')],
+    async harness(input) {
+      summaries.push(input.workspaceCapabilities?.());
+      historyLengths.push(input.recent.length);
+      return { kind: 'reply', text: input.workspaceCapabilities ? 'Administrator summary' : 'Mobile summary' };
+    },
+  });
+  server.listen(0, '127.0.0.1');
+  t.after(async () => {
+    await new Promise<void>(resolve => server.close(() => resolve()));
+    memory.close();
+    store.close();
+  });
+  await once(server, 'listening');
+  const address = server.address();
+  assert.ok(address && typeof address !== 'string');
+  const ask = (token: string, key: string) => fetch('http://127.0.0.1:' + address.port + '/v1/conversation', {
+    method: 'POST',
+    headers: { Authorization: 'Bearer ' + token, 'Content-Type': 'application/json', 'Idempotency-Key': key },
+    body: JSON.stringify({ workspace: 'project', text: 'What is connected?' }),
+  });
+  assert.equal((await (await ask('admin-secret', 'same-key')).json()).text, 'Administrator summary');
+  assert.equal((await (await ask(phone.token, 'same-key')).json()).text, 'Mobile summary');
+  assert.equal((await (await ask(phone.token, 'follow-up')).json()).text, 'Mobile summary');
+  assert.deepEqual(historyLengths, [0, 0, 1]);
+  assert.deepEqual(summaries, [{
+    devices: [{ name: 'Workspace desktop', capability: 'computer.observe', online: true, available: true }],
+    apps: [{ app: 'github', documentRead: false }, { app: 'feishu', documentRead: true }],
+  }, undefined, undefined]);
+});
