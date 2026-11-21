@@ -1,3 +1,4 @@
+import { requestMemoryDraft } from './application/memory-draft.ts';
 import assert from 'node:assert/strict';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -227,4 +228,19 @@ test('confirming a derived memory rechecks the evidence version and inherits sou
   assert.ok(store.revokeResource('owner', connection, source.resource));
   assert.deepEqual(store.recall('owner', 'project', 'three review bullets', [connection]), []);
   assert.equal(store.rememberFromEvidence('owner', 'project', original, 2, body), undefined);
+});
+
+test('memory drafting discards output if the connection is revoked during generation', async t => {
+  const store = new MemoryStore(':memory:');
+  t.after(() => store.close());
+  const connection = store.connect('owner', 'github', 'repository', 'project');
+  const id = store.remember('owner', 'project', 'Review decisions', {
+    connection, resource: 'docs/review.md', revision: 'first',
+  })!;
+  await assert.rejects(requestMemoryDraft(store, async evidence => {
+    assert.equal(evidence, 'Review decisions');
+    store.disconnect('owner', connection);
+    return 'A proposed memory.';
+  }, 'owner', 'project', { id, version: 1 }), /Source memory changed while drafting/);
+  assert.deepEqual(store.recall('owner', 'project', 'proposed memory', [connection]), []);
 });

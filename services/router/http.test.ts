@@ -37,6 +37,10 @@ test('Router authenticates, deduplicates commands and replays task changes over 
       assert.equal(new Headers(init?.headers).get('authorization'), 'Bearer other-fixture');
       return new Response(githubStatus === 200 ? githubBody : null, { status: githubStatus });
     })],
+    async draftMemory(evidence) {
+      assert.equal(evidence, 'Design review findings');
+      return 'Keep one review summary.';
+    },
     async answerMemory(question, evidence) {
       memoryAnswers++;
       assert.equal(evidence[0].resource, 'doc123');
@@ -176,6 +180,13 @@ test('Router authenticates, deduplicates commands and replays task changes over 
   assert.match(document.revision, /^sha256:[a-f0-9]{64}$/);
   const repeatImport = await post(importPath, 'import-repeat', { workspace: 'demo', document: 'doc123' });
   assert.equal((await repeatImport.json()).id, document.id);
+  const draftSource = memory.recall('test', 'demo', 'findings', [connection])[0];
+  const draftRequest = { workspace: 'demo', id: draftSource.id, version: draftSource.version };
+  const draft = await post('/v1/memory/draft', 'draft', draftRequest);
+  assert.equal(draft.status, 200);
+  assert.deepEqual(await draft.json(), { body: 'Keep one review summary.' });
+  assert.deepEqual(memory.recall('test', 'demo', 'one review summary', [connection]), []);
+  assert.equal((await post('/v1/memory/draft', 'stale-draft', { ...draftRequest, version: 2 })).status, 409);
   const importedRecall = '/v1/memory?workspace=demo&q=findings&source=' + connection;
   assert.equal((await (await fetch(url + importedRecall, { headers })).json()).items[0].id, document.id);
   const githubRegistration = await post('/v1/app-connections', 'github', { app: 'github', account: 'engineering' });

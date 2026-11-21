@@ -74,7 +74,7 @@ fn allowed(method: &Method, path: &str) -> bool {
         }
         ("PATCH", ["", "admin", "devices", id]) => identifier(id),
         ("GET", ["", "memory", id, "history"]) => identifier(id),
-        ("POST", ["", "memory", "answer"]) => true,
+        ("POST", ["", "memory", "answer" | "draft"]) => true,
         ("GET", ["", "artifacts", id] | ["", "artifacts", id, "diff" | "image"]) => identifier(id),
         ("GET", ["", "tasks", id, "attachments", "0" | "1" | "2" | "3"]) => identifier(id),
         ("GET", ["", "tasks", id, "timeline" | "share-result"]) => identifier(id),

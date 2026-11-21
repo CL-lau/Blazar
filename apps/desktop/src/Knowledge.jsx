@@ -331,7 +331,7 @@ export function Knowledge({ token }) {
             <small>{source ? `${accountName(source)} · ${item.resource} · ${item.revision}` :
               item.taskId ? `Task ${item.taskId} · version ${item.taskVersion}` : 'Personal note'}</small>
             {item.expires && <small> · Expires {new Date(item.expires).toLocaleString()}</small>}
-            {source && (deriving === item.id ? <form onSubmit={event => {
+            {source && (deriving?.id === item.id ? <form onSubmit={event => {
               event.preventDefault();
               const body = new FormData(event.currentTarget).get('body');
               void perform(async () => {
@@ -342,10 +342,22 @@ export function Knowledge({ token }) {
                 setNotice('Source-backed memory saved.');
               });
             }}>
-              <label>Memory to save<textarea name="body" required maxLength={16000} /></label>
+              <label>Memory to save<textarea name="body" defaultValue={deriving.body} required maxLength={16000} /></label>
               <button>Confirm and save</button>
               <button type="button" onClick={() => setDeriving(null)}>Cancel</button>
-            </form> : <button type="button" onClick={() => setDeriving(item.id)}>Draft memory from this source</button>)}
+            </form> : <>
+              <button type="button" onClick={() => setDeriving({ id: item.id, body: '' })}>Draft memory from this source</button>
+              <button type="button" onClick={() => void perform(async () => {
+                const result = await request('/memory/draft', { method: 'POST', body: {
+                  workspace: item.workspace, id: item.id, version: item.version,
+                } });
+                if (result.body === null) {
+                  setNotice('Blazar found no reusable fact in this excerpt.');
+                  return;
+                }
+                setDeriving({ id: item.id, body: result.body });
+              })}>Ask Blazar to draft from this excerpt</button>
+            </>)}
             {editing === item.id ? <form onSubmit={event => {
               event.preventDefault();
               const body = new FormData(event.currentTarget).get('body');

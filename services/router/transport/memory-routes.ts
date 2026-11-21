@@ -1,13 +1,14 @@
 import type { IncomingMessage, ServerResponse } from 'node:http';
 import { documentAppCatalog, documentCapabilityState, type DocumentConnector } from '../../../packages/apps/documents.ts';
 import { accessDocument, refreshDocumentPage } from '../application/document-sync.ts';
-import type { MemoryAnswer } from '../harness.ts';
+import { requestMemoryDraft } from '../application/memory-draft.ts';
+import type { MemoryAnswer, MemoryDraft } from '../harness.ts';
 import type { MemoryStore, ResourceRef } from '../memory.ts';
 import { RequestError, requiredText } from '../protocol/request.ts';
 import { jsonObject, reply } from './json.ts';
 
 export async function handleMemory(
-  request: IncomingMessage, response: ServerResponse, url: URL, owner: string, store: MemoryStore, documents?: readonly DocumentConnector[], answerMemory?: MemoryAnswer,
+  request: IncomingMessage, response: ServerResponse, url: URL, owner: string, store: MemoryStore, documents?: readonly DocumentConnector[], answerMemory?: MemoryAnswer, draftMemory?: MemoryDraft,
 ): Promise<boolean> {
   const { pathname, searchParams } = url;
   const method = request.method;
@@ -109,6 +110,18 @@ export async function handleMemory(
     return true;
   }
 
+  if (pathname === '/v1/memory/draft' && method === 'POST') {
+    if (!draftMemory) throw new RequestError(503, 'Blazar has no Router model configured');
+    const data = await jsonObject(request);
+    const workspace = requiredText(data.workspace, 'workspace', 128);
+    const id = requiredText(data.id, 'source memory ID', 36);
+    const version = data.version;
+    if (!/^[a-f0-9-]{36}$/.test(id) || typeof version !== 'number' || !Number.isSafeInteger(version) || version < 1) {
+      throw new RequestError(400, 'Invalid memory evidence');
+    }
+    reply(response, 200, await requestMemoryDraft(store, draftMemory, owner, workspace, { id, version }));
+    return true;
+  }
   if (pathname === '/v1/memory/answer' && method === 'POST') {
     const data = await jsonObject(request);
     const workspace = requiredText(data.workspace, 'workspace', 128);

@@ -7,7 +7,7 @@ import { weComConfig } from '../../packages/channels/wecom.ts';
 import { createQQAttachmentReader, createQQSender, qqChannel } from '../../packages/channels/qq.ts';
 import { dingTalkConfig, startDingTalk } from './dingtalk.ts';
 import { createFeishuSender, feishuChannel } from '../../packages/channels/feishu.ts';
-import { piHarness, piMemoryAnswer } from './harness.ts';
+import { piHarness, piMemoryAnswer, piMemoryDraft } from './harness.ts';
 import { routerServer } from './http.ts';
 import { runDueDocumentSync } from './application/document-sync.ts';
 import { MemoryStore } from './memory.ts';
@@ -28,6 +28,7 @@ const model = process.env.BLAZAR_MODEL;
 if (Boolean(provider) !== Boolean(model)) throw new Error('Set BLAZAR_MODEL_PROVIDER and BLAZAR_MODEL together');
 const harness = provider && model ? piHarness(provider, model) : undefined;
 const answerMemory = provider && model ? piMemoryAnswer(provider, model) : undefined;
+const draftMemory = provider && model ? piMemoryDraft(provider, model) : undefined;
 function collaborationConfig(prefix: 'BLAZAR_FEISHU' | 'BLAZAR_LARK') {
   const token = process.env[prefix + '_VERIFY_TOKEN'];
   if (!token) return undefined;
@@ -73,7 +74,7 @@ const dingTalk = dingTalkConfig(process.env);
 const wecom = weComConfig(process.env);
 const weixin = weixinConfig(process.env);
 const server = routerServer(store, {
-  owner: 'local', token, memory, harness, answerMemory, documents, pushEnabled: Boolean(push),
+  owner: 'local', token, memory, harness, answerMemory, draftMemory, documents, pushEnabled: Boolean(push),
   feishu, lark, qq, readQQAttachment,
   readFeishuAttachment: feishuSender?.readAttachment, readLarkAttachment: larkSender?.readAttachment,
   streamChannels: {

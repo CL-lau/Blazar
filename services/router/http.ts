@@ -14,7 +14,7 @@ import { createDeviceSocketTransport, maxDeviceClaimBytes, maxDeviceFinishBytes 
 import { createQQHandler, qqChannel, type QQConfig } from '../../packages/channels/qq.ts';
 import { feishuChannel, parseFeishu, type FeishuConfig } from '../../packages/channels/feishu.ts';
 import { InvalidWorkflow, workflowSteps } from './domain/workflow.ts';
-import type { MemoryAnswer, RouteRequest, RouterHarness } from './harness.ts';
+import type { MemoryAnswer, MemoryDraft, RouteRequest, RouterHarness } from './harness.ts';
 import { timingSafeEqual } from 'node:crypto';
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http';
 import { setTimeout as delay } from 'node:timers/promises';
@@ -87,7 +87,7 @@ function selectAppEvidence(memory: MemoryStore | undefined, owner: string, works
 
 type StreamChannelSettings = Partial<Record<'weixin' | 'wecom' | 'dingtalk', { workspace: string; health?: () => StreamHealth | undefined }>>;
 
-export function routerServer(store: TaskStore, config: { owner: string; token: string; memory?: MemoryStore; harness?: RouterHarness; feishu?: FeishuConfig; lark?: FeishuConfig; readLarkAttachment?: (messageId: string, key: string) => Promise<string | undefined>; readFeishuAttachment?: (messageId: string, key: string) => Promise<string | undefined>; qq?: QQConfig; readQQAttachment?: (url: string, name?: string) => Promise<TaskAttachment | undefined>; documents?: readonly DocumentConnector[]; answerMemory?: MemoryAnswer; pushEnabled?: boolean; streamChannels?: StreamChannelSettings }) {
+export function routerServer(store: TaskStore, config: { owner: string; token: string; memory?: MemoryStore; harness?: RouterHarness; feishu?: FeishuConfig; lark?: FeishuConfig; readLarkAttachment?: (messageId: string, key: string) => Promise<string | undefined>; readFeishuAttachment?: (messageId: string, key: string) => Promise<string | undefined>; qq?: QQConfig; readQQAttachment?: (url: string, name?: string) => Promise<TaskAttachment | undefined>; documents?: readonly DocumentConnector[]; answerMemory?: MemoryAnswer; draftMemory?: MemoryDraft; pushEnabled?: boolean; streamChannels?: StreamChannelSettings }) {
   const metricsByOwner = new Map<string, RouterMetrics>();
   function ownerMetrics(owner: string) {
     let metrics = metricsByOwner.get(owner);
@@ -681,7 +681,7 @@ export function routerServer(store: TaskStore, config: { owner: string; token: s
         }
         return;
       }
-      if (config.memory && await handleMemory(request, response, url, owner, config.memory, config.documents, config.answerMemory)) {
+      if (config.memory && await handleMemory(request, response, url, owner, config.memory, config.documents, config.answerMemory, config.draftMemory)) {
         if (request.method !== 'GET') flushStopNotifications();
         return;
       }
