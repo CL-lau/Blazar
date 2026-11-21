@@ -45,6 +45,10 @@ export function observationConfig(env: NodeJS.ProcessEnv, desktopLockPath?: stri
   if (driverKind !== 'agent-desktop' && (driverKind !== 'cua' || process.platform !== 'darwin')) {
     throw new Error('Choose agent-desktop or a macOS CUA driver');
   }
+  const cuaSocket = env.BLAZAR_CUA_SOCKET;
+  if (cuaSocket !== undefined && (driverKind !== 'cua' || !isAbsolute(cuaSocket))) {
+    throw new Error('Set an absolute CUA socket path on a CUA device');
+  }
   const raw = JSON.parse(env.BLAZAR_COMPUTER_APPS ?? '{}');
   if (!raw || typeof raw !== 'object' || Array.isArray(raw)) throw new Error('Invalid computer app configuration');
   const apps = new Map<string, string>();
@@ -71,7 +75,7 @@ export function observationConfig(env: NodeJS.ProcessEnv, desktopLockPath?: stri
   if (!Array.isArray(visual) || visual.length > apps.size || visual.some(alias => !apps.has(alias))) {
     throw new Error('Configure visual capture with approved application aliases.');
   }
-  return { executable, driver: driverKind === 'cua' ? cuaDesktop(executable) : agentDesktop(executable),
+  return { executable, driver: driverKind === 'cua' ? cuaDesktop(executable, cuaSocket) : agentDesktop(executable),
     apps, buttons, visualApps: new Set(visual), desktopLockPath,
     sessionLocked: process.platform === 'darwin' ? macSessionLocked : undefined };
 }

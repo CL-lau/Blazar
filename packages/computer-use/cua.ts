@@ -6,9 +6,10 @@ import { runDriverCommand } from './driver-process.ts';
 
 const exec = promisify(execFile);
 
-export function cuaDesktop(executable: string): ComputerDriver {
+export function cuaDesktop(executable: string, socket?: string): ComputerDriver {
   async function call(root: string, tool: string, args: object, signal: AbortSignal) {
-    const output = (await runDriverCommand(executable, root, ['call', tool, JSON.stringify(args)], signal)).trimStart();
+    const argv = ['call', tool, JSON.stringify(args), ...(socket ? ['--socket', socket] : [])];
+    const output = (await runDriverCommand(executable, root, argv, signal)).trimStart();
     const end = output.indexOf('\n}');
     return JSON.parse(end < 0 ? output.split('\n', 1)[0] : output.slice(0, end + 2));
   }

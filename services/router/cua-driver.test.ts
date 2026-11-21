@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
@@ -7,15 +7,15 @@ import { cuaDesktop } from '../../packages/computer-use/cua.ts';
 import { clickApp, observeApp, observeWindowWithImage } from '../../packages/computer-use/observe.ts';
 
 test('CUA scopes hybrid observations and approved clicks to the configured window', { skip: process.platform !== 'darwin' }, async t => {
-  const root = mkdtempSync(join(tmpdir(), 'blazar-cua-'));
+  const root = realpathSync(mkdtempSync(join(tmpdir(), 'blazar-cua-')));
   t.after(() => rmSync(root, { recursive: true, force: true }));
   const executable = join(root, 'driver.cjs');
   writeFileSync(executable, `#!${process.execPath}
 const fs = require('node:fs');
-const [command, tool, input] = process.argv.slice(2);
+const [command, tool, input, socketOption, socket] = process.argv.slice(2);
 const args = JSON.parse(input);
 const pid = ${process.pid};
-if (command !== 'call') process.exit(2);
+if (command !== 'call' || socketOption !== '--socket' || socket !== require('node:path').join(process.cwd(), 'cua.sock')) process.exit(2);
 let response;
 if (tool === 'list_apps') response = { apps: [
   { name: 'Notes', bundle_id: 'com.example.notes', pid, running: true },
@@ -52,7 +52,7 @@ if (!response) process.exit(2);
 console.log(JSON.stringify(response, null, 2));
 console.log('Human-readable output');
 `, { mode: 0o700 });
-  const config = { executable, driver: cuaDesktop(executable), apps: new Map([['notes', 'bundle:com.example.notes']]),
+  const config = { executable, driver: cuaDesktop(executable, join(root, 'cua.sock')), apps: new Map([['notes', 'bundle:com.example.notes']]),
     visualApps: new Set(['notes']), buttons: new Map([['notes', new Set(['Save'])]]) };
   const signal = AbortSignal.timeout(8_000);
   const windows = JSON.parse(await observeApp(config, root, '/observe notes --windows-json', signal));
