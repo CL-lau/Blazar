@@ -123,6 +123,9 @@ export class TaskStore {
         task_id TEXT NOT NULL REFERENCES task(id), position INTEGER NOT NULL, memory_id TEXT NOT NULL,
         version INTEGER NOT NULL, body TEXT NOT NULL, PRIMARY KEY(task_id,position)
       );
+      CREATE TABLE IF NOT EXISTS task_app_evidence (
+        task_id TEXT PRIMARY KEY REFERENCES task(id), refs TEXT NOT NULL
+      );
       CREATE TABLE IF NOT EXISTS task_desktop_device (
         task_id TEXT PRIMARY KEY REFERENCES task(id), device_id TEXT NOT NULL REFERENCES device(id)
       );
@@ -638,9 +641,12 @@ export class TaskStore {
     if (previousStatus === 'succeeded') this.invalidateCompletedDescendants(taskId);
   }
 
-  create(owner: string, source: string, key: string, workspace: string, goal: string, desktopDevice?: string, memoryInputs?: TaskMemoryInput[]): Task {
+  create(owner: string, source: string, key: string, workspace: string, goal: string, desktopDevice?: string,
+         memoryInputs?: TaskMemoryInput[], appEvidence?: { query: string; sources: string[]; refs: { id: string; version: number }[] }): Task {
     return this.transaction(() => {
-      const fingerprint = JSON.stringify(memoryInputs
+      const fingerprint = JSON.stringify(appEvidence
+        ? [workspace, goal, { query: appEvidence.query, sources: appEvidence.sources, usePersonalMemory: Boolean(memoryInputs) }]
+        : memoryInputs
         ? [workspace, goal, desktopDevice ?? null, { usePersonalMemory: true }]
         : desktopDevice ? [workspace, goal, desktopDevice] : [workspace, goal]);
       const receipt = this.db.prepare('SELECT fingerprint, taskId FROM receipt WHERE owner=? AND source=? AND key=?')
@@ -657,10 +663,41 @@ export class TaskStore {
         this.db.prepare('INSERT INTO task_memory_input VALUES(?,?,?,?,?)')
           .run(id, position, input.id, input.version, input.body);
       }
+      if (appEvidence) {
+        if (!appEvidence.refs.length) throw new Error('No authorized application evidence was found');
+        this.db.prepare('INSERT INTO task_app_evidence VALUES(?,?)').run(id, JSON.stringify(appEvidence.refs));
+      }
       this.event(id, 'task.created', { goal, workspace, ...(desktopDevice && { desktopDevice }),
         ...(memoryInputs?.length && { memoryInputs: memoryInputs.map(({ id, version }) => ({ id, version })) }),
+        ...(appEvidence && { appEvidence: appEvidence.refs }),
       });
       return this.get(owner, id)!;
+    });
+  }
+
+  appEvidence(taskId: string) {
+    const row = this.db.prepare('SELECT refs FROM task_app_evidence WHERE task_id=?').get(taskId);
+    return row ? JSON.parse(String(row.refs)) as { id: string; version: number }[] : undefined;
+  }
+
+  appEvidenceTasks(owner: string) {
+    return this.db.prepare(`SELECT e.task_id FROM task_app_evidence e JOIN task t ON t.id=e.task_id
+      WHERE t.owner=?`).all(owner).map(row => String(row.task_id));
+  }
+
+  runTaskId(runId: string, device: string) {
+    return this.db.prepare('SELECT taskId FROM run WHERE id=? AND device=?').get(runId, device)?.taskId as string | undefined;
+  }
+
+  rejectRunEvidence(runId: string, device: string) {
+    this.transaction(() => {
+      const taskId = this.runTaskId(runId, device);
+      if (!taskId) return;
+      const updated = this.db.prepare(`UPDATE task SET status='waiting_user',result=NULL
+        WHERE id=? AND status NOT IN ('pausing','cancelling')`).run(taskId);
+      if (!updated.changes) return;
+      this.db.prepare('DELETE FROM run WHERE id=?').run(runId);
+      this.event(taskId, 'run.memory_access_changed', { runId, status: 'waiting_user' });
     });
   }
 

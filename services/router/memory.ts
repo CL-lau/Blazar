@@ -377,6 +377,24 @@ export class MemoryStore {
       .map(row => ({ id: String(row.id), body: String(row.body).toWellFormed(), version: Number(row.version) }));
   }
 
+  resolveAppEvidence(owner: string, workspace: string, references: { id: string; version: number }[]) {
+    const rows = this.db.prepare(`SELECT m.id,substr(m.body,1,1200) AS body,COALESCE(s.version,1) AS version
+      FROM memory m JOIN app_connection a ON a.id=m.connection AND a.owner=m.owner
+      LEFT JOIN memory_state s ON s.id=m.id
+      JOIN json_each(?) ref ON json_extract(ref.value,'$.id')=m.id
+        AND json_extract(ref.value,'$.version')=COALESCE(s.version,1)
+      WHERE m.owner=? AND m.workspace=? AND a.active=1 AND (a.workspace IS NULL OR a.workspace=m.workspace)
+        AND COALESCE(s.disabled,0)=0 AND (m.expires IS NULL OR m.expires>?)
+        AND NOT EXISTS(SELECT 1 FROM revoked_resource r WHERE r.connection=m.connection AND r.resource=m.resource)
+        AND NOT EXISTS(SELECT 1 FROM document_access x WHERE x.connection=m.connection AND x.resource=m.resource AND x.allowed=0)
+        AND (NOT EXISTS(SELECT 1 FROM document_import i WHERE i.id=m.id) OR EXISTS(
+          SELECT 1 FROM document_head h WHERE h.owner=m.owner AND h.workspace=m.workspace
+            AND h.connection=m.connection AND h.resource=m.resource AND h.memory_id=m.id))
+      ORDER BY CAST(ref.key AS INTEGER)`).all(JSON.stringify(references), owner, workspace, Date.now());
+    if (rows.length !== references.length) return undefined;
+    return rows.map(row => ({ id: String(row.id), body: String(row.body).toWellFormed(), version: Number(row.version) }));
+  }
+
   revise(owner: string, id: string, expectedVersion: number, change: { body?: string; pinned?: boolean; disabled?: boolean }) {
     this.db.exec('BEGIN IMMEDIATE');
     try {

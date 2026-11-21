@@ -30,6 +30,12 @@ test('a registered JSONL extension executes a real subprocess through Router and
       console.log(JSON.stringify({version:1,type:'completed',result:request.input.instructions.join(' ')}));
       return;
     }
+    if (request.input.goal === 'Use the review template') {
+      const evidence = request.input.backgroundMemory;
+      if (evidence?.length !== 1 || evidence[0].body !== 'Private review template') process.exit(5);
+      console.log(JSON.stringify({version:1,type:'completed',result:evidence[0].body}));
+      return;
+    }
     if (request.input.goal === 'Wait for pause' || request.input.goal === 'Wait for follow-up') {
       console.log(JSON.stringify({version:1,type:'progress',message:'Ready to pause'}));
       setInterval(() => {}, 1000);
@@ -146,6 +152,51 @@ test('a registered JSONL extension executes a real subprocess through Router and
   assert.equal(store.get('owner', revisable.id)?.status, 'queued');
   assert.equal(await client.runOnce(revisionSignal), true);
   assert.equal(store.get('owner', revisable.id)?.result, 'Use the updated instructions');
+
+  const connection = memory.connect('owner', 'github', 'Handbook', 'project');
+  const source = { connection, resource: 'guide.md', revision: '1' };
+  memory.importDocument('owner', 'project', 'Private review template', source);
+  const base = 'http://127.0.0.1:' + address.port;
+  const createWithEvidence = (key: string) => fetch(base + '/v1/events', {
+    method: 'POST', headers: {
+      Authorization: 'Bearer local', 'Content-Type': 'application/json', 'Idempotency-Key': key,
+    }, body: JSON.stringify({ workspace: 'project', text: 'Use the review template',
+      appMemory: { query: 'review', sources: [connection] } }),
+  });
+  const creationWithEvidence = await createWithEvidence('app-evidence');
+  assert.equal(creationWithEvidence.status, 202);
+  const protectedTask = await creationWithEvidence.json();
+  assert.equal(await client.runOnce(AbortSignal.timeout(5_000)), true);
+  const file = store.snapshot('owner').artifacts.find(item => item.taskId === protectedTask.id)!;
+  const download = (token: string) => fetch(base + '/v1/artifacts/' + file.id, {
+    headers: { Authorization: 'Bearer ' + token },
+  });
+  assert.equal(await (await download('local')).text(), 'Private review template');
+  const pairing = store.createPairing('owner', Date.now());
+  const phone = store.redeemPairing(pairing.code, 'Phone', Date.now())!;
+  assert.equal((await download(phone.token)).status, 404);
+  const activeResponse = await createWithEvidence('active-app-evidence');
+  const activeTask = await activeResponse.json();
+  const devicePost = (path: string, body: object) => fetch(base + '/v1/device/' + path, {
+    method: 'POST', headers: { Authorization: 'Bearer ' + device.token, 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  });
+  const claimed = await (await devicePost('claim', { capability: 'agent.acp' })).json();
+  assert.equal(claimed.assignment.task.id, activeTask.id);
+  assert.equal(claimed.assignment.memoryInputs[0].body, 'Private review template');
+  const pendingResponse = await createWithEvidence('queued-app-evidence');
+  assert.equal(pendingResponse.status, 202);
+  const pending = await pendingResponse.json();
+  assert.equal(memory.disconnect('owner', connection), true);
+  assert.equal((await devicePost('runs/' + claimed.assignment.run.id + '/finish', {
+    status: 'succeeded', result: 'Private review template',
+  })).status, 409);
+  assert.equal(store.get('owner', activeTask.id)?.status, 'waiting_user');
+  assert.equal(await client.runOnce(AbortSignal.timeout(5_000)), false);
+  assert.equal(store.get('owner', pending.id)?.status, 'waiting_user');
+  assert.equal((await download('local')).status, 404);
+  const hidden = await (await fetch(base + '/v1/state', { headers: { Authorization: 'Bearer local' } })).json();
+  assert.equal(hidden.tasks.find((item: { id: string }) => item.id === protectedTask.id)?.result, null);
 });
 
 test('JSONL rejects duplicate terminal events and stops a cancelled subprocess', async () => {

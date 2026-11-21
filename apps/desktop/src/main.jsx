@@ -119,7 +119,7 @@ function App() {
         {connected && (
           <nav aria-label="Workspace views">
             <button onClick={() => setSettings('tasks')}>Tasks</button>
-            <button onClick={() => { setMemoryAnswer(null); setSettings('knowledge'); }}>Apps and memory</button>
+            <button onClick={() => { setMemoryAnswer(null); setPreview(null); setSettings('knowledge'); }}>Apps and memory</button>
             <button onClick={() => setSettings('devices')}>Execution devices</button>
             <button onClick={() => submit(async () => {
               setClients((await api('/admin/mobile-clients')).clients);
@@ -191,7 +191,7 @@ function App() {
                 </section>}
                 {progress && <p role="status">{progress.message}</p>}
                 {task.result && <pre>{task.result}</pre>}
-                {task.status === 'succeeded' && task.result && !/^\/(observe|click) /.test(task.goal) && (
+                {task.status === 'succeeded' && task.result && !task.usesAppMemory && !/^\/(observe|click) /.test(task.goal) && (
                   <button disabled={busy || (savedResult?.id === task.id && savedResult?.version === task.version)}
                     onClick={() => submit(async () => {
                       await api('/tasks/' + task.id + '/remember-result', { method: 'POST', body: { expectedVersion: task.version } });
@@ -213,18 +213,19 @@ function App() {
                     <button onClick={() => submit(async () => {
                       if (item.mime === 'image/png') {
                         const { png } = await api('/artifacts/' + item.id + '/image');
-                        setPreview({ taskId: item.taskId, name: item.name, png, expires: item.expires });
+                        setPreview({ taskId: item.taskId, artifactIds: [item.id], name: item.name, png, expires: item.expires });
                       } else {
-                        setPreview({ taskId: item.taskId, name: item.name, text: await api('/artifacts/' + item.id) });
+                        setPreview({ taskId: item.taskId, artifactIds: [item.id], name: item.name, text: await api('/artifacts/' + item.id) });
                       }
                     })}>{item.name}{index === 0 && artifacts.length > 1 ? ' (latest)' : ''}</button>
                     {index > 0 && !item.mime && !artifacts[0].mime && <button onClick={() => submit(async () => {
                       const diff = await api('/artifacts/' + artifacts[0].id + '/diff?base=' + item.id);
-                      setPreview({ taskId: item.taskId, name: 'Changes from ' + item.name, text: diff.text });
+                      setPreview({ taskId: item.taskId, artifactIds: [item.id, artifacts[0].id], name: 'Changes from ' + item.name, text: diff.text });
                     })}>Compare with latest</button>}
                   </div>
                 ))}
-                {preview?.taskId === task.id && <section><h3>{preview.name}</h3>
+                {preview?.taskId === task.id && preview.artifactIds.every(id => artifacts.some(item => item.id === id)) &&
+                  <section><h3>{preview.name}</h3>
                   {preview.png ? <img className="window-image" src={'data:image/png;base64,' + preview.png} alt="Captured window" /> :
                     <pre>{preview.text}</pre>}
                 </section>}
@@ -273,8 +274,11 @@ function App() {
                     } }));
                     return;
                   }
+                  const appMemory = action === 'app-task' ? {
+                    query: memoryQuery, sources: chosenSources.map(account => account.id),
+                  } : undefined;
                   const result = await api(ask ? '/conversation' : '/events', {
-                    method: 'POST', key, body: { workspace, text: goal, usePersonalMemory },
+                    method: 'POST', key, body: { workspace, text: goal, usePersonalMemory, appMemory },
                   });
                   if (ask && result.kind !== 'create_task') {
                     setAnswer(result.text);
@@ -315,16 +319,20 @@ function App() {
                   <label>Search terms<input value={memoryQuery} maxLength={256} onChange={event => {
                     setMemoryQuery(event.target.value);
                     setMemoryAnswer(null);
+                    setKey(crypto.randomUUID());
                   }} /></label>
                   {availableSources.map(account => <label className="checkbox-label" key={account.id}>
                     <input type="checkbox" checked={memorySources.includes(account.id)} onChange={event => {
                       setMemorySources(event.target.checked ? [...memorySources, account.id] :
                         memorySources.filter(id => id !== account.id));
                       setMemoryAnswer(null);
+                      setKey(crypto.randomUUID());
                     }} /> {account.app} · {account.account}
                   </label>)}
                   <button type="submit" value="app-memory" disabled={busy || !goal.trim() || goal.trim().length > 4000 ||
                     !memoryQuery.trim() || !chosenSources.length || chosenSources.length > 25}>Ask with selected apps</button>
+                  <button type="submit" value="app-task" disabled={busy || !goal.trim() ||
+                    !memoryQuery.trim() || !chosenSources.length || chosenSources.length > 25}>Create task with selected apps</button>
                 </details>}
                 {memoryAnswer && <section aria-label="Answer from app memory">
                   <p role="status">{memoryAnswer.answer ?? 'No matching memories.'}</p>

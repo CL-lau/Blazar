@@ -67,7 +67,8 @@ function reply(response: ServerResponse, status: number, data: unknown) {
   response.end(JSON.stringify(data));
 }
 
-async function stream(store: TaskStore, owner: string, cursor: number, response: ServerResponse, authorized: () => boolean, once: boolean) {
+async function stream(store: TaskStore, owner: string, cursor: number, response: ServerResponse, authorized: () => boolean,
+                      once: boolean, canReadTask: (taskId: string) => boolean) {
   response.writeHead(200, { 'Content-Type': 'text/event-stream', 'Cache-Control': 'no-store' });
   response.flushHeaders();
   const controller = new AbortController();
@@ -77,7 +78,7 @@ async function stream(store: TaskStore, owner: string, cursor: number, response:
     while (!controller.signal.aborted && Date.now() < deadline && authorized()) {
       const events = store.events(owner, cursor);
       for (const event of events) {
-        const frame = JSON.stringify({ ...event, data: JSON.parse(event.data) });
+        const frame = JSON.stringify({ ...event, data: canReadTask(event.taskId) ? JSON.parse(event.data) : {} });
         if (!response.write(`id: ${event.seq}\nevent: task\ndata: ${frame}\n\n`)) return;
         if (once) return;
         cursor = event.seq;
@@ -352,7 +353,7 @@ async function handleMemory(
   return false;
 }
 
-function deviceOperation(store: TaskStore, bearer: string, pathname: string, data: Record<string, unknown>) {
+function deviceOperation(store: TaskStore, bearer: string, pathname: string, data: Record<string, unknown>, memory?: MemoryStore) {
   const device = store.deviceForToken(bearer);
   if (!device) throw new RequestError(401, 'Device authentication required');
   const now = Date.now();
@@ -437,11 +438,30 @@ function deviceOperation(store: TaskStore, bearer: string, pathname: string, dat
     const assignment = store.claim(device.owner, device.workspace, device.id, now, leaseMs,
       data.capability === 'document.preview' ? '/preview ' : data.capability === 'computer.observe' ? '/observe ' : '',
       data.capability === 'agent.acp' ? '/preview ' : '', key, worker, desktopApps);
+    if (assignment) {
+      const refs = store.appEvidence(assignment.task.id);
+      if (refs) {
+        const evidence = data.capability === 'agent.acp' ? memory?.resolveAppEvidence(device.owner, device.workspace, refs) : undefined;
+        if (!evidence) {
+          store.rejectRunEvidence(assignment.run.id, device.id);
+          return { status: 200, body: { assignment: null } };
+        }
+        assignment.memoryInputs = [...(assignment.memoryInputs || []), ...evidence];
+      }
+    }
     store.clearInterruption(device.id);
     return { status: 200, body: { assignment: assignment ?? null, ...(assignment && { leaseRemainingMs: Math.max(0, assignment.run.expires - Date.now()) }) } };
   }
   const run = /^\/v1\/device\/runs\/([a-f0-9-]{36})\/(renew|finish|stopped|request-approval|approval|consume-approval|progress|input-artifact|steer)$/.exec(pathname);
   if (!run) throw new RequestError(404, 'Route not found');
+  if (['renew', 'finish', 'progress', 'request-approval', 'approval', 'consume-approval', 'steer'].includes(run[2])) {
+    const taskId = store.runTaskId(run[1], device.id);
+    const refs = taskId ? store.appEvidence(taskId) : undefined;
+    if (refs && !memory?.resolveAppEvidence(device.owner, device.workspace, refs)) {
+      store.rejectRunEvidence(run[1], device.id);
+      return { status: 409, body: { accepted: false } };
+    }
+  }
   if (run[2] === 'input-artifact') {
     const artifactId = requiredText(data.artifactId, 'artifact ID', 36);
     if (!/^[a-f0-9-]{36}$/.test(artifactId)) throw new RequestError(400, 'Invalid artifact ID');
@@ -588,7 +608,7 @@ export function routerServer(store: TaskStore, config: { owner: string; token: s
         if (request.method !== 'POST') throw new RequestError(405, 'Expected POST');
         if (!auth.startsWith('Bearer ')) throw new RequestError(401, 'Device authentication required');
         const result = deviceOperation(store, auth.slice(7), url.pathname, await jsonObject(request, url.pathname.endsWith('/finish') ? maxDeviceFinishBytes :
-          url.pathname === '/v1/device/claim' ? maxDeviceClaimBytes : undefined));
+          url.pathname === '/v1/device/claim' ? maxDeviceClaimBytes : undefined), config.memory);
         reply(response, result.status, result.body);
         return;
       }
@@ -607,6 +627,13 @@ export function routerServer(store: TaskStore, config: { owner: string; token: s
       const mobileToken = auth.startsWith('Bearer ') ? auth.slice(7) : '';
       const owner = admin ? config.owner : store.mobileOwner(mobileToken);
       if (!owner) throw new RequestError(401, 'Authentication required');
+      const canReadTask = (taskId: string) => {
+        const refs = store.appEvidence(taskId);
+        if (!refs) return true;
+        if (!admin) return false;
+        const task = store.get(owner, taskId);
+        return Boolean(task && config.memory?.resolveAppEvidence(owner, task.workspace, refs));
+      };
       if (!admin && (url.pathname.startsWith('/v1/admin/') || url.pathname === '/v1/pairings' ||
           url.pathname.startsWith('/v1/app-connections') || url.pathname.startsWith('/v1/memory'))) {
         throw new RequestError(403, 'Administrator required');
@@ -698,7 +725,7 @@ export function routerServer(store: TaskStore, config: { owner: string; token: s
         const data = await jsonObject(request);
         const task = store.get(owner, saveTaskMemory[1]);
         if (!task) throw new RequestError(404, 'Task not found');
-        if (data.expectedVersion !== task.version || task.status !== 'succeeded' ||
+        if (data.expectedVersion !== task.version || task.status !== 'succeeded' || store.appEvidence(task.id) ||
             !task.result?.trim() || task.result.length > 16_000 || /^\/(observe|click) /.test(task.goal)) {
           throw new RequestError(409, 'This task version does not have a result eligible for memory');
         }
@@ -707,6 +734,7 @@ export function routerServer(store: TaskStore, config: { owner: string; token: s
       }
       const timeline = /^\/v1\/tasks\/([a-f0-9-]{36})\/timeline$/.exec(url.pathname);
       if (request.method === 'GET' && timeline) {
+        if (!canReadTask(timeline[1])) throw new RequestError(404, 'Task timeline not found');
         const raw = url.searchParams.get('before');
         const before = raw === null ? undefined : Number(raw);
         if (before !== undefined && (!/^\d+$/.test(raw!) || !Number.isSafeInteger(before) || before < 1)) {
@@ -723,7 +751,7 @@ export function routerServer(store: TaskStore, config: { owner: string; token: s
         if (!base || !/^[a-f0-9-]{36}$/.test(base)) throw new RequestError(400, 'Invalid base artifact ID');
         const previous = store.artifact(owner, base);
         const current = store.artifact(owner, diff[1]);
-        if (!previous || !current || previous.mime || current.mime || previous.taskId !== current.taskId) {
+        if (!previous || !current || previous.mime || current.mime || previous.taskId !== current.taskId || !canReadTask(current.taskId)) {
           throw new RequestError(404, 'Comparable artifacts not found');
         }
         const decode = (bytes: Uint8Array) => Buffer.from(bytes).toString('utf8');
@@ -733,7 +761,7 @@ export function routerServer(store: TaskStore, config: { owner: string; token: s
       const artifactPath = /^\/v1\/artifacts\/([a-f0-9-]{36})(\/image)?$/.exec(url.pathname);
       if (request.method === 'GET' && artifactPath) {
         const file = store.artifact(owner, artifactPath[1]);
-        if (!file) throw new RequestError(404, 'Artifact not found');
+        if (!file || !canReadTask(file.taskId)) throw new RequestError(404, 'Artifact not found');
         if (artifactPath[2]) {
           if (file.mime !== 'image/png') throw new RequestError(404, 'Window image not found');
           reply(response, 200, { png: Buffer.from(file.content).toString('base64') });
@@ -752,7 +780,17 @@ export function routerServer(store: TaskStore, config: { owner: string; token: s
         return;
       }
       if (request.method === 'GET' && url.pathname === '/v1/state') {
-        reply(response, 200, { ...store.snapshot(owner), desktopTargets: store.desktopTargets(owner) });
+        const snapshot = store.snapshot(owner);
+        const protectedTasks = new Set(store.appEvidenceTasks(owner));
+        const restricted = new Set([...protectedTasks].filter(taskId => !canReadTask(taskId)));
+        reply(response, 200, { ...snapshot,
+          tasks: snapshot.tasks.map(task => protectedTasks.has(task.id)
+            ? { ...task, usesAppMemory: true, ...(restricted.has(task.id) && { result: null }) } : task),
+          artifacts: snapshot.artifacts.filter(item => !restricted.has(String(item.taskId))),
+          progress: snapshot.progress.filter(item => !restricted.has(String(item.taskId))),
+          approvals: snapshot.approvals.filter(item => !restricted.has(String(item.taskId))),
+          desktopTargets: store.desktopTargets(owner),
+        });
         return;
       }
       if (request.method === 'GET' && url.pathname === '/v1/stream') {
@@ -763,7 +801,7 @@ export function routerServer(store: TaskStore, config: { owner: string; token: s
         }
         if (cursor > store.eventCursor()) throw new RequestError(409, 'Event cursor requires a new snapshot');
         await stream(store, owner, cursor, response, () => admin || store.mobileOwner(mobileToken) === owner,
-          url.searchParams.get('once') === '1');
+          url.searchParams.get('once') === '1', canReadTask);
         return;
       }
       if (request.method === 'POST' && url.pathname === '/v1/workflows') {
@@ -884,9 +922,30 @@ export function routerServer(store: TaskStore, config: { owner: string; token: s
           }
           if (data.usePersonalMemory && !config.memory) throw new RequestError(503, 'Memory is unavailable');
           const memoryInputs = data.usePersonalMemory ? config.memory!.personalContext(owner, workspace, goal) : undefined;
-          const task = store.create(owner, 'desktop-api', key, workspace, goal, desktopDevice, memoryInputs);
+          let appEvidence;
+          if (data.appMemory !== undefined) {
+            if (!admin || desktopDevice || /^\/(observe|click|preview) /.test(goal)) {
+              throw new RequestError(403, 'Application memory is only available for administrator Worker tasks');
+            }
+            if (!config.memory) throw new RequestError(503, 'Memory is unavailable');
+            if (!data.appMemory || typeof data.appMemory !== 'object' || Array.isArray(data.appMemory)) {
+              throw new RequestError(400, 'Invalid application memory option');
+            }
+            const { query: rawQuery, sources: rawSources } = data.appMemory as Record<string, unknown>;
+            const query = requiredText(rawQuery, 'search terms', 256);
+            if (!Array.isArray(rawSources) || !rawSources.length || rawSources.length > 25 ||
+                rawSources.some(item => typeof item !== 'string' || !/^[a-f0-9-]{36}$/.test(item))) {
+              throw new RequestError(400, 'Invalid source filter');
+            }
+            const sources = [...new Set(rawSources as string[])].sort();
+            const refs = config.memory.recall(owner, workspace, query, sources, false, false).slice(0, 4)
+              .map(item => ({ id: String(item.id), version: Number(item.version) }));
+            if (!refs.length) throw new RequestError(409, 'No authorized application evidence was found');
+            appEvidence = { query, sources, refs };
+          }
+          const task = store.create(owner, 'desktop-api', key, workspace, goal, desktopDevice, memoryInputs, appEvidence);
           metrics.observe('event', performance.now() - started);
-          reply(response, 202, task);
+          reply(response, 202, canReadTask(task.id) ? task : { ...task, result: null });
           return;
         }
         const taskId = taskCommand[1];
@@ -905,8 +964,12 @@ export function routerServer(store: TaskStore, config: { owner: string; token: s
         const result = store.command(owner, taskId, version, command, key);
         if (result) {
           if (action === 'pause' || action === 'cancel' || action === 'append') notifyStop(owner, taskId);
-          reply(response, 200, result);
-        } else reply(response, 409, { error: 'Task state changed or command unavailable', task: store.get(owner, taskId) });
+          reply(response, 200, canReadTask(taskId) ? result : { ...result, result: null });
+        } else {
+          const task = store.get(owner, taskId);
+          reply(response, 409, { error: 'Task state changed or command unavailable',
+            task: task && !canReadTask(taskId) ? { ...task, result: null } : task });
+        }
         return;
       }
       if (config.memory && await handleMemory(request, response, url, owner, config.memory, config.documents, config.answerMemory)) return;
@@ -969,7 +1032,7 @@ export function routerServer(store: TaskStore, config: { owner: string; token: s
             connection.close(1008, 'Slow device connection');
             return;
           }
-          const result = deviceOperation(store, token, '/v1/device/' + frame.path, frame.body);
+          const result = deviceOperation(store, token, '/v1/device/' + frame.path, frame.body, config.memory);
           connection.send(JSON.stringify({ id, ...result }));
         } catch (error) {
           if (id === undefined) {
