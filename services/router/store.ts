@@ -3,7 +3,7 @@ import { orderWorkflow } from './workflow.ts';
 import type { ConversationTurn, Decision, RouteRequest } from './harness.ts';
 import { createHash, randomBytes, randomUUID } from 'node:crypto';
 import { DatabaseSync } from 'node:sqlite';
-import type { DesktopAppControls, PredecessorInput, Run, RunOutcome, Task, TaskEvent, WorkerConfiguration, WorkflowStep } from '../../packages/protocol/task.ts';
+import type { DesktopAppControls, PredecessorInput, Run, RunOutcome, Task, TaskEvent, TaskMemoryInput, WorkerConfiguration, WorkflowStep } from '../../packages/protocol/task.ts';
 import { windowImageLifetimeMs } from '../../packages/protocol/task.ts';
 
 const runLimitMs = 10 * 60_000;
@@ -114,6 +114,10 @@ export class TaskStore {
       );
       CREATE TABLE IF NOT EXISTS device_worker (
         device_id TEXT PRIMARY KEY REFERENCES device(id), label TEXT NOT NULL, protocol TEXT NOT NULL
+      );
+      CREATE TABLE IF NOT EXISTS task_memory_input (
+        task_id TEXT NOT NULL REFERENCES task(id), position INTEGER NOT NULL, memory_id TEXT NOT NULL,
+        version INTEGER NOT NULL, body TEXT NOT NULL, PRIMARY KEY(task_id,position)
       );
       CREATE TABLE IF NOT EXISTS task_desktop_device (
         task_id TEXT PRIMARY KEY REFERENCES task(id), device_id TEXT NOT NULL REFERENCES device(id)
@@ -567,9 +571,11 @@ export class TaskStore {
     if (previousStatus === 'succeeded') this.invalidateCompletedDescendants(taskId);
   }
 
-  create(owner: string, source: string, key: string, workspace: string, goal: string, desktopDevice?: string): Task {
+  create(owner: string, source: string, key: string, workspace: string, goal: string, desktopDevice?: string, memoryInputs?: TaskMemoryInput[]): Task {
     return this.transaction(() => {
-      const fingerprint = JSON.stringify(desktopDevice ? [workspace, goal, desktopDevice] : [workspace, goal]);
+      const fingerprint = JSON.stringify(memoryInputs
+        ? [workspace, goal, desktopDevice ?? null, { usePersonalMemory: true }]
+        : desktopDevice ? [workspace, goal, desktopDevice] : [workspace, goal]);
       const receipt = this.db.prepare('SELECT fingerprint, taskId FROM receipt WHERE owner=? AND source=? AND key=?')
         .get(owner, source, key);
       if (receipt) {
@@ -580,7 +586,13 @@ export class TaskStore {
       this.db.prepare('INSERT INTO task(id,owner,workspace,goal) VALUES(?,?,?,?)').run(id, owner, workspace, goal);
       this.db.prepare('INSERT INTO receipt VALUES(?,?,?,?,?)').run(owner, source, key, fingerprint, id);
       if (desktopDevice) this.db.prepare('INSERT INTO task_desktop_device VALUES(?,?)').run(id, desktopDevice);
-      this.event(id, 'task.created', { goal, workspace, ...(desktopDevice && { desktopDevice }) });
+      for (const [position, input] of (memoryInputs ?? []).entries()) {
+        this.db.prepare('INSERT INTO task_memory_input VALUES(?,?,?,?,?)')
+          .run(id, position, input.id, input.version, input.body);
+      }
+      this.event(id, 'task.created', { goal, workspace, ...(desktopDevice && { desktopDevice }),
+        ...(memoryInputs?.length && { memoryInputs: memoryInputs.map(({ id, version }) => ({ id, version })) }),
+      });
       return this.get(owner, id)!;
     });
   }
@@ -1032,7 +1044,11 @@ export class TaskStore {
       .map(row => JSON.parse(String(row.data)).text as string);
     const acceptanceCriteria = this.db.prepare('SELECT criterion FROM task_criterion WHERE task_id=? ORDER BY position')
       .all(run.taskId).map(row => String(row.criterion));
-    return { run, task: this.get(owner, run.taskId)!, instructions, predecessors, acceptanceCriteria };
+    const memoryInputs = this.db.prepare('SELECT memory_id AS id,version,body FROM task_memory_input WHERE task_id=? ORDER BY position')
+      .all(run.taskId) as unknown as TaskMemoryInput[];
+    return { run, task: this.get(owner, run.taskId)!, instructions, predecessors, acceptanceCriteria,
+      ...(memoryInputs.length && { memoryInputs }),
+    };
   }
 
   runInputArtifact(runId: string, device: string, artifactId: string, now: number) {

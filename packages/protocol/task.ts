@@ -42,6 +42,12 @@ export interface WorkflowStep {
 }
 
 
+export interface TaskMemoryInput {
+  id: string;
+  version: number;
+  body: string;
+}
+
 export interface DesktopAppControls {
   alias: string;
   buttons: string[];

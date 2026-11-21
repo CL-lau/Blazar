@@ -271,7 +271,9 @@ function App() {
                     } }));
                     return;
                   }
-                  const result = await api(ask ? '/conversation' : '/events', { method: 'POST', key, body: { workspace, text: goal, ...(ask && { usePersonalMemory }) } });
+                  const result = await api(ask ? '/conversation' : '/events', {
+                    method: 'POST', key, body: { workspace, text: goal, usePersonalMemory },
+                  });
                   if (ask && result.kind !== 'create_task') {
                     setAnswer(result.text);
                     setPlan(result.kind === 'propose_workflow'
@@ -303,7 +305,7 @@ function App() {
                 <label className="checkbox-label"><input type="checkbox" checked={usePersonalMemory} onChange={event => {
                   setUsePersonalMemory(event.target.checked);
                   setKey(crypto.randomUUID());
-                }} /> Use personal memory when asking Blazar</label>
+                }} /> Include personal memory</label>
                 <button type="submit" value="ask" disabled={busy || !workspace.trim() || !goal.trim()}>Ask Blazar</button>
                 {availableSources.length > 0 && <details>
                   <summary>Ask with app memory</summary>

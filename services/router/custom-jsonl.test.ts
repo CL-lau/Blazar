@@ -10,6 +10,7 @@ import { resolveWorker } from '../../packages/workers/registry.ts';
 import { DeviceClient } from '../device/client.ts';
 import { DeviceLedger } from '../device/ledger.ts';
 import { routerServer } from './http.ts';
+import { MemoryStore } from './memory.ts';
 import { TaskStore } from './store.ts';
 
 test('a registered JSONL extension executes a real subprocess through Router and DeviceClient', async t => {
@@ -35,6 +36,8 @@ test('a registered JSONL extension executes a real subprocess through Router and
       return;
     }
     if (request.input.goal !== 'Summarize notes') process.exit(2);
+    if (request.input.backgroundMemory?.length !== 1 ||
+        request.input.backgroundMemory[0].body !== 'Prefer notes in bullet points') process.exit(4);
     console.log(JSON.stringify({version:1,type:'progress',message:'Read the input'}));
     console.log(JSON.stringify({version:1,type:'completed',result:'Fixture summary'}));
   `);
@@ -46,8 +49,9 @@ test('a registered JSONL extension executes a real subprocess through Router and
   const worker = await resolveWorker('custom', manifest);
   assert.equal(worker?.protocol, 'jsonl');
   const store = new TaskStore(':memory:');
+  const memory = new MemoryStore(':memory:');
   const ledger = new DeviceLedger(':memory:');
-  const server = routerServer(store, { owner: 'owner', token: 'local' });
+  const server = routerServer(store, { owner: 'owner', token: 'local', memory });
   const device = store.registerDevice('owner', 'Extension fixture', 'project');
   server.listen(0, '127.0.0.1');
   await once(server, 'listening');
@@ -59,14 +63,27 @@ test('a registered JSONL extension executes a real subprocess through Router and
     server.closeDeviceSockets();
     await new Promise<void>(resolve => server.close(() => resolve()));
     ledger.close();
+    memory.close();
     store.close();
     await rm(root, { recursive: true, force: true });
   });
 
-  const task = store.create('owner', 'fixture', 'task', 'project', 'Summarize notes');
+  const note = memory.remember('owner', 'project', 'Prefer notes in bullet points');
+  memory.remember('owner', 'private', 'These notes are outside the workspace');
+  const created = await fetch('http://127.0.0.1:' + address.port + '/v1/events', {
+    method: 'POST', headers: {
+      Authorization: 'Bearer local', 'Content-Type': 'application/json', 'Idempotency-Key': 'memory-task',
+    },
+    body: JSON.stringify({ workspace: 'project', text: 'Summarize notes', usePersonalMemory: true }),
+  });
+  assert.equal(created.status, 202);
+  const task = await created.json();
   assert.equal(await client.runOnce(AbortSignal.timeout(5000)), true);
   assert.equal(store.get('owner', task.id)?.result, 'Fixture summary');
   assert.equal(store.snapshot('owner').artifacts.length, 1);
+  const creation = store.timeline('owner', task.id)!.events.find(event => event.type === 'task.created')!;
+  assert.deepEqual(creation.data.memoryInputs, [{ id: note, version: 1 }]);
+  assert.doesNotMatch(JSON.stringify(creation.data), /Prefer notes in bullet points/);
   const presence = store.devices('owner')[0];
   assert.equal(presence.workerLabel, 'Fixture JSONL');
   assert.equal(presence.workerProtocol, 'jsonl');

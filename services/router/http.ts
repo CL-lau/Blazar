@@ -793,7 +793,15 @@ export function routerServer(store: TaskStore, config: { owner: string; token: s
                 !/^\/(observe|click) /.test(goal)) throw new RequestError(400, 'Invalid desktop target');
             if (!store.ownsDesktopTarget(owner, workspace, desktopDevice)) throw new RequestError(404, 'Desktop target unavailable');
           }
-          const task = store.create(owner, 'desktop-api', key, workspace, goal, desktopDevice);
+          if (data.usePersonalMemory !== undefined && typeof data.usePersonalMemory !== 'boolean') {
+            throw new RequestError(400, 'Invalid task memory option');
+          }
+          if (data.usePersonalMemory && (!admin || /^\/(observe|click|preview) /.test(goal))) {
+            throw new RequestError(403, 'Personal memory is only available for administrator Worker tasks');
+          }
+          if (data.usePersonalMemory && !config.memory) throw new RequestError(503, 'Memory is unavailable');
+          const memoryInputs = data.usePersonalMemory ? config.memory!.personalContext(owner, workspace, goal) : undefined;
+          const task = store.create(owner, 'desktop-api', key, workspace, goal, desktopDevice, memoryInputs);
           metrics.observe('event', performance.now() - started);
           reply(response, 202, task);
           return;

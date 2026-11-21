@@ -12,13 +12,13 @@ import { AcpSessionRestoreError, runAcp } from '../../packages/workers/acp.ts';
 import { createHash, createHmac, randomUUID } from 'node:crypto';
 import { DeviceLedger, type SessionCheckpoint } from './ledger.ts';
 import { setTimeout as delay } from 'node:timers/promises';
-import type { PredecessorInput, Run, RunOutcome, Task, WorkerConfiguration } from '../../packages/protocol/task.ts';
+import type { PredecessorInput, Run, RunOutcome, Task, TaskMemoryInput, WorkerConfiguration } from '../../packages/protocol/task.ts';
 import { performance } from 'node:perf_hooks';
 import { maintainLease } from './lease.ts';
 import { platform } from 'node:os';
 import { preview } from './preview.ts';
 
-type Assignment = { run: Run; task: Task; instructions: string[]; predecessors: PredecessorInput[]; acceptanceCriteria?: string[] };
+type Assignment = { run: Run; task: Task; instructions: string[]; predecessors: PredecessorInput[]; acceptanceCriteria?: string[]; memoryInputs?: TaskMemoryInput[] };
 
 export class DeviceClient {
   private socket: DeviceSocket;
@@ -152,7 +152,7 @@ export class DeviceClient {
                              report: (message: string, signal: AbortSignal) => Promise<void>) {
     const key = createHash('sha256').update(JSON.stringify([
       this.scope, this.workspaceIdentity, this.workerConfiguration?.revision, taskId, job.goal,
-      job.acceptanceCriteria, job.predecessors.map(({ taskId, version }) => [taskId, version]),
+      job.acceptanceCriteria, job.memoryInputs?.map(({ id, version }) => [id, version]), job.predecessors.map(({ taskId, version }) => [taskId, version]),
     ])).digest('hex');
     const instructionCount = job.instructions.length;
     const previous = this.ledger.takeSession(key, instructionCount);
@@ -293,7 +293,8 @@ export class DeviceClient {
             await this.completeInputArtifacts(assignment.predecessors, prefix, active);
           }
           const job = { goal: assignment.task.goal, instructions: assignment.instructions,
-            predecessors: assignment.predecessors, acceptanceCriteria: assignment.acceptanceCriteria };
+            predecessors: assignment.predecessors, acceptanceCriteria: assignment.acceptanceCriteria,
+            memoryInputs: assignment.memoryInputs };
           let sequence = 1;
           const report = async (message: string, signal: AbortSignal) => {
             const reply = await this.post(prefix + 'progress', { seq: ++sequence, message }, signal);
