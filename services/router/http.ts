@@ -331,12 +331,21 @@ function deviceOperation(store: TaskStore, bearer: string, pathname: string, dat
         worker.revision = reported.revision;
       }
     }
+    let desktopApps: string[] | undefined;
+    if (data.desktopApps !== undefined) {
+      if (data.capability !== 'computer.observe' || !Array.isArray(data.desktopApps) || data.desktopApps.length > 25 ||
+          data.desktopApps.some(alias => typeof alias !== 'string' || !/^[a-z0-9_-]{1,32}$/.test(alias))) {
+        throw new RequestError(400, 'Invalid desktop application aliases');
+      }
+      desktopApps = [...new Set(data.desktopApps as string[])].sort();
+    }
+    store.recordDesktopApps(device.id, desktopApps);
     store.recordDeviceWorker(device.id, worker);
     store.recordDeviceActivity(device.id, now, data.capability, platform);
     store.expire(now);
     const assignment = store.claim(device.owner, device.workspace, device.id, now, leaseMs,
       data.capability === 'document.preview' ? '/preview ' : data.capability === 'computer.observe' ? '/observe ' : '',
-      data.capability === 'agent.acp' ? '/preview ' : '', key, worker);
+      data.capability === 'agent.acp' ? '/preview ' : '', key, worker, desktopApps);
     store.clearInterruption(device.id);
     return { status: 200, body: { assignment: assignment ?? null, ...(assignment && { leaseRemainingMs: Math.max(0, assignment.run.expires - Date.now()) }) } };
   }
@@ -633,7 +642,7 @@ export function routerServer(store: TaskStore, config: { owner: string; token: s
         return;
       }
       if (request.method === 'GET' && url.pathname === '/v1/state') {
-        reply(response, 200, store.snapshot(owner));
+        reply(response, 200, { ...store.snapshot(owner), desktopTargets: store.desktopTargets(owner) });
         return;
       }
       if (request.method === 'GET' && url.pathname === '/v1/stream') {

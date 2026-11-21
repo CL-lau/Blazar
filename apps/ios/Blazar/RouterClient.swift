@@ -1,6 +1,10 @@
 import Foundation
 
 struct RouterSnapshot: Decodable {
+    struct DesktopTarget: Decodable {
+        let workspace: String
+        let alias: String
+    }
     struct Task: Decodable, Identifiable {
         let id: String
         let goal: String
@@ -40,6 +44,7 @@ struct RouterSnapshot: Decodable {
     let tasks: [Task]
     let approvals: [Approval]
     let artifacts: [Artifact]
+    let desktopTargets: [DesktopTarget]?
 }
 
 struct TimelinePage: Decodable {

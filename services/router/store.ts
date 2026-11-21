@@ -114,6 +114,9 @@ export class TaskStore {
       CREATE TABLE IF NOT EXISTS device_worker (
         device_id TEXT PRIMARY KEY REFERENCES device(id), label TEXT NOT NULL, protocol TEXT NOT NULL
       );
+      CREATE TABLE IF NOT EXISTS device_desktop_apps (
+        device_id TEXT PRIMARY KEY REFERENCES device(id), aliases TEXT NOT NULL
+      );
       CREATE TABLE IF NOT EXISTS device_interruption (
         device_id TEXT PRIMARY KEY REFERENCES device(id), run_id TEXT NOT NULL
       );
@@ -802,6 +805,25 @@ export class TaskStore {
     };
   }
 
+  recordDesktopApps(device: string, aliases?: string[]) {
+    if (!aliases) {
+      this.db.prepare('DELETE FROM device_desktop_apps WHERE device_id=?').run(device);
+      return;
+    }
+    this.db.prepare(`INSERT INTO device_desktop_apps VALUES(?,?) ON CONFLICT(device_id)
+      DO UPDATE SET aliases=excluded.aliases WHERE aliases<>excluded.aliases`).run(device, JSON.stringify(aliases));
+  }
+
+  desktopTargets(owner: string, now = Date.now()) {
+    return this.db.prepare(`SELECT DISTINCT d.workspace,j.value AS alias FROM device d
+      JOIN device_presence p ON p.device_id=d.id JOIN device_desktop_apps a ON a.device_id=d.id
+      JOIN json_each(a.aliases) j WHERE d.owner=? AND d.revoked=0 AND p.last_seen>=?
+      AND p.capability='computer.observe'
+      AND NOT EXISTS(SELECT 1 FROM device_interruption i WHERE i.device_id=d.id)
+      AND NOT EXISTS(SELECT 1 FROM device_pause x WHERE x.device_id=d.id)
+      ORDER BY d.workspace,j.value LIMIT 250`).all(owner, now - 45_000);
+  }
+
   recordDeviceActivity(id: string, now: number, capability?: string, platform?: string) {
     this.db.prepare(`INSERT INTO device_presence VALUES(?,?,?,?)
       ON CONFLICT(device_id) DO UPDATE SET last_seen=excluded.last_seen,
@@ -876,10 +898,10 @@ export class TaskStore {
     });
   }
 
-  claim(owner: string, workspace: string, device: string, now: number, leaseMs: number, goalPrefix = '', excludingPrefix = '', requestId?: string, worker?: WorkerConfiguration) {
+  claim(owner: string, workspace: string, device: string, now: number, leaseMs: number, goalPrefix = '', excludingPrefix = '', requestId?: string, worker?: WorkerConfiguration, desktopApps?: string[]) {
     return this.transaction(() => {
       const identity = [owner, workspace, goalPrefix, excludingPrefix];
-      const fingerprint = JSON.stringify(worker ? [...identity, worker] : identity);
+      const fingerprint = JSON.stringify(desktopApps ? [...identity, desktopApps] : worker ? [...identity, worker] : identity);
       if (requestId) {
         const receipt = this.db.prepare('SELECT fingerprint,response,expires FROM device_claim WHERE device=? AND key=?')
           .get(device, requestId);
@@ -900,10 +922,14 @@ export class TaskStore {
       const task = this.db.prepare(`SELECT * FROM task WHERE owner=? AND workspace=?
         AND status IN ('queued','waiting_device') AND (substr(goal,1,length(?))=? OR (?='/observe ' AND substr(goal,1,7)='/click '))
         AND (?='' OR (substr(goal,1,length(?))!=? AND substr(goal,1,9)!='/observe ' AND substr(goal,1,7)!='/click '))
+        AND (? IS NULL OR EXISTS(SELECT 1 FROM json_each(?) j WHERE
+          substr(goal || ' ',1,length('/observe ' || j.value || ' '))='/observe ' || j.value || ' '
+          OR substr(goal || ' ',1,length('/click ' || j.value || ' '))='/click ' || j.value || ' '))
         AND NOT EXISTS (
           SELECT 1 FROM workflow_dependency d JOIN task p ON p.id=d.predecessor
           WHERE d.task_id=task.id AND p.status!='succeeded'
-        ) ORDER BY rowid LIMIT 1`).get(owner, workspace, goalPrefix, goalPrefix, goalPrefix, excludingPrefix, excludingPrefix, excludingPrefix) as unknown as Task | undefined;
+        ) ORDER BY rowid LIMIT 1`).get(owner, workspace, goalPrefix, goalPrefix, goalPrefix, excludingPrefix, excludingPrefix, excludingPrefix,
+          desktopApps ? JSON.stringify(desktopApps) : null, desktopApps ? JSON.stringify(desktopApps) : null) as unknown as Task | undefined;
       if (!task) {
         if (requestId) this.db.prepare('INSERT INTO device_claim VALUES(?,?,?,?,?)')
           .run(device, requestId, fingerprint, null, now + 10 * 60_000);
@@ -1179,6 +1205,7 @@ export class TaskStore {
       const tasks = this.db.prepare(`WITH availability AS MATERIALIZED (
         SELECT t.id,CASE WHEN EXISTS (
           SELECT 1 FROM device d JOIN device_presence p ON p.device_id=d.id
+          LEFT JOIN device_desktop_apps a ON a.device_id=d.id
           WHERE d.owner=t.owner AND d.workspace=t.workspace AND d.revoked=0 AND p.last_seen>=?
           AND NOT EXISTS(SELECT 1 FROM device_pause pause WHERE pause.device_id=d.id)
           AND NOT EXISTS(SELECT 1 FROM device_interruption i WHERE i.device_id=d.id)
@@ -1186,6 +1213,9 @@ export class TaskStore {
             WHEN substr(t.goal,1,9)='/preview ' THEN 'document.preview'
             WHEN substr(t.goal,1,9)='/observe ' OR substr(t.goal,1,7)='/click ' THEN 'computer.observe'
             ELSE 'agent.acp' END)
+          AND (a.aliases IS NULL OR EXISTS(SELECT 1 FROM json_each(a.aliases) j WHERE
+            substr(t.goal || ' ',1,length('/observe ' || j.value || ' '))='/observe ' || j.value || ' '
+            OR substr(t.goal || ' ',1,length('/click ' || j.value || ' '))='/click ' || j.value || ' '))
         ) THEN 'queued' ELSE 'waiting_device' END AS next_status
         FROM task t WHERE t.status IN ('queued','waiting_device')
       )

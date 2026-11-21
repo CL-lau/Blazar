@@ -49,16 +49,20 @@ console.log(JSON.stringify({ok:true,command:'snapshot',data:{tree:{role:'window'
   const task = store.create('owner', 'desktop', 'observation', 'work', '/observe calculator');
   const denied = store.create('owner', 'desktop', 'unconfigured', 'work', '/observe other');
   const preview = store.create('owner', 'desktop', 'preview', 'work', '/preview notes.md');
-  assert.equal(await client.runOnce(AbortSignal.timeout(3_000)), true);
-  assert.equal(await client.runOnce(AbortSignal.timeout(3_000)), true);
-  assert.equal(await client.runOnce(AbortSignal.timeout(3_000)), false);
+  assert.equal(await client.runOnce(AbortSignal.timeout(8_000)), true);
+  assert.equal(await client.runOnce(AbortSignal.timeout(8_000)), false);
+  const state = await fetch(new URL('/v1/state', 'http://127.0.0.1:' + address.port), {
+    headers: { Authorization: 'Bearer admin' },
+  });
+  assert.deepEqual((await state.json()).desktopTargets, [{ workspace: 'work', alias: 'calculator' }]);
   const { artifacts } = store.snapshot('owner');
   assert.equal(artifacts.length, 1);
   assert.equal(artifacts[0].taskId, task.id);
   const file = store.artifact('owner', String(artifacts[0].id))!;
   assert.equal(Buffer.from(file.content).toString(), 'window: Calculator\n  button: Add');
-  assert.equal(store.get('owner', denied.id)?.status, 'failed');
-  assert.equal(store.get('owner', preview.id)?.status, 'queued');
+  store.updateDeviceReadiness(Date.now());
+  assert.equal(store.get('owner', denied.id)?.status, 'waiting_device');
+  assert.equal(store.get('owner', preview.id)?.status, 'waiting_device');
 });
 
 test('configured clicks use a newly observed reference after review and consume approval just before acting', async t => {

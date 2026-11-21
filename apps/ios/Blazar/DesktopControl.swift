@@ -24,6 +24,7 @@ enum DesktopOperation: String, CaseIterable, Identifiable {
 
 struct DesktopControl: View {
     let client: RouterClient
+    let targets: [RouterSnapshot.DesktopTarget]
     @Binding var workspace: String
     @Binding var sending: Bool
     let reload: () async -> Void
@@ -39,14 +40,25 @@ struct DesktopControl: View {
         operation.command(alias: alias, window: window, button: button)
     }
 
+    private var aliases: [String] {
+        targets.filter { $0.workspace == workspace.trimmingCharacters(in: .whitespacesAndNewlines) }.map(\.alias)
+    }
+
     var body: some View {
         Section("Desktop control") {
             TextField("Workspace", text: $workspace)
             Picker("Operation", selection: $operation) {
                 ForEach(DesktopOperation.allCases) { Text($0.rawValue).tag($0) }
             }
-            TextField("Configured app alias", text: $alias)
-                .autocorrectionDisabled()
+            if aliases.isEmpty {
+                TextField("Configured app alias", text: $alias)
+                    .autocorrectionDisabled()
+            } else {
+                Picker("Application", selection: $alias) {
+                    Text("Choose an application").tag("")
+                    ForEach(aliases, id: \.self) { Text($0).tag($0) }
+                }
+            }
             if operation != .windows {
                 TextField("Window ID (optional)", text: $window)
                     .autocorrectionDisabled()
@@ -72,10 +84,14 @@ struct DesktopControl: View {
                     }
                 }
             }
-            .disabled(command == nil || workspace.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+            .disabled(command == nil || (!aliases.isEmpty && !aliases.contains(alias)) ||
+                      workspace.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
         }
         .disabled(sending)
         .onChange(of: command) { _, _ in requestKey = UUID() }
         .onChange(of: workspace) { _, _ in requestKey = UUID() }
+        .onChange(of: aliases) { _, next in
+            if !next.isEmpty && !next.contains(alias) { alias = "" }
+        }
     }
 }

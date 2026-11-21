@@ -215,6 +215,7 @@ export class DeviceClient {
     const claim = await this.post('claim', {
       capability: this.observation ? 'computer.observe' : this.worker ? 'agent.acp' : 'document.preview', requestId: this.claimId, platform: platform(),
       worker: this.workerConfiguration,
+      desktopApps: this.observation ? [...this.observation.apps.keys()] : undefined,
     }, signal);
     if (!claim.ok) throw new Error(`Task claim failed (${claim.status})`);
     const { assignment, leaseRemainingMs } = await claim.json() as { assignment: Assignment | null; leaseRemainingMs?: number };
