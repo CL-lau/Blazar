@@ -45,7 +45,10 @@ export function observationConfig(env: NodeJS.ProcessEnv, desktopLockPath?: stri
   const apps = new Map<string, string>();
   for (const [alias, app] of Object.entries(raw)) {
     if (!/^[a-z0-9_-]{1,32}$/.test(alias) || typeof app !== 'string' ||
-        !/^[\p{L}\p{N}][\p{L}\p{N} ._-]{0,127}$/u.test(app)) throw new Error('Invalid computer app entry');
+        (!/^[\p{L}\p{N}][\p{L}\p{N} ._-]{0,127}$/u.test(app) &&
+          !/^bundle:[a-zA-Z0-9-]+(?:\.[a-zA-Z0-9-]+)+$/.test(app)) || app.length > 128) {
+      throw new Error('Invalid computer app entry');
+    }
     apps.set(alias, app);
   }
   if (!apps.size || apps.size > 25) throw new Error('Configure 1 to 25 approved applications');

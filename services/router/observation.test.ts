@@ -7,14 +7,26 @@ import { join } from 'node:path';
 import test from 'node:test';
 import { DeviceClient } from '../device/client.ts';
 import { DeviceLedger } from '../device/ledger.ts';
-import { observationConfig, observeApp } from '../../packages/computer-use/observe.ts';
+import { observationConfig as nativeObservationConfig, observeApp } from '../../packages/computer-use/observe.ts';
 import { routerServer } from './http.ts';
 import { TaskStore } from './store.ts';
+
+function observationConfig(...args: Parameters<typeof nativeObservationConfig>) {
+  return { ...nativeObservationConfig(...args), sessionLocked: async () => false };
+}
 
 test('a device observes only configured applications and stores a bounded window summary', async t => {
   const directory = realpathSync(mkdtempSync(join(tmpdir(), 'blazar-observe-')));
   const executable = join(directory, 'driver.cjs');
   writeFileSync(executable, `#!${process.execPath}
+if (process.argv[2] === 'list-apps') {
+  if (process.argv[4] !== 'com.example.calculator') process.exit(2);
+  console.log(JSON.stringify({ok:true,command:'list-apps',data:{apps:[
+    {bundle_id:'com.example.calculator',name:'Calculator',pid:42,process_instance:'one'},
+    {bundle_id:'com.other.calculator',name:'Calculator',pid:43,process_instance:'other'},
+  ]}}));
+  process.exit(0);
+}
 if (process.argv[2] === 'permissions') {
   console.log(JSON.stringify({ok:true,command:'permissions',data:{
     accessibility:{state:'granted'},screen_recording:{state:require('node:fs').existsSync('recording-denied')?'denied':'granted'},automation:{state:'unknown'}
@@ -35,13 +47,17 @@ if (process.argv[2] === 'list-windows') {
       accessible:!require('node:fs').existsSync('ax-unavailable'),
       process_instance:require('node:fs').existsSync('replaced-window')?'replacement':'one'},
     {id:'w-11',app_name:'Other',title:'Other workspace',visible:true,accessible:true},
+    ...(require('node:fs').existsSync('same-name') ? [
+      {id:'w-12',app_name:'Calculator',title:'Other Calculator',visible:true,accessible:true,process_instance:'other'},
+    ] : []),
   ]}));
   process.exit(0);
 }
 if (![['snapshot','--app','Calculator','-i'], ['snapshot','--app','Calculator','-i','--window-id','w-10']]
     .some(args => JSON.stringify(process.argv.slice(2)) === JSON.stringify(args))) process.exit(2);
 if (require('node:fs').existsSync('replace-on-snapshot')) require('node:fs').writeFileSync('replaced-window', '');
-console.log(JSON.stringify({ok:true,command:'snapshot',data:{tree:{role:'window',name:'Calculator',children:[
+console.log(JSON.stringify({ok:true,command:'snapshot',data:{
+  pid:require('node:fs').existsSync('wrong-snapshot-process')?43:42,tree:{role:'window',name:'Calculator',children:[
   {role:'button',name:'Add',value:'private value',ref_id:'@temporary'},
   {role:'secureTextField',name:'Secret title'},
 ]}}}));
@@ -125,6 +141,16 @@ console.log(JSON.stringify({ok:true,command:'snapshot',data:{tree:{role:'window'
   assert.equal(inventory[0].title, 'Scientific · Calculator');
   assert.equal(inventory[0].accessible, true);
   assert.match(inventory[0].identity, /^[a-f0-9]{64}$/);
+  const bundle = observationConfig({
+    BLAZAR_COMPUTER_DRIVER: executable, BLAZAR_COMPUTER_APPS: '{"calculator":"bundle:com.example.calculator"}',
+  });
+  writeFileSync(join(directory, 'same-name'), '');
+  const bundleWindows = JSON.parse(await observeApp(bundle, directory, '/observe calculator --windows-json', AbortSignal.timeout(5_000)));
+  assert.deepEqual(bundleWindows.map((window: { id: string }) => window.id), ['w-10']);
+  writeFileSync(join(directory, 'wrong-snapshot-process'), '');
+  await assert.rejects(observeApp(bundle, directory, '/observe calculator', AbortSignal.timeout(5_000)), /configured application process/);
+  rmSync(join(directory, 'same-name'));
+  rmSync(join(directory, 'wrong-snapshot-process'));
   const visual = store.create('owner', 'desktop', 'visual', 'work',
     '/observe calculator --window w-10 --instance ' + inventory[0].identity + ' --visual', computer);
   assert.equal(await client.runOnce(AbortSignal.timeout(8_000)), true);

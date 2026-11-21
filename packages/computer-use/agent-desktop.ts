@@ -13,6 +13,21 @@ function element(value: unknown, depth = 0): DesktopElement {
     children: Array.isArray(node.children) ? node.children.map(child => element(child, depth + 1)) : [] };
 }
 
+async function resolveApp(executable: string, root: string, app: string, signal: AbortSignal) {
+  if (!app.startsWith('bundle:')) return { name: app };
+  const bundle = app.slice('bundle:'.length);
+  const result = await runDriver(executable, root, ['list-apps', '--app', bundle], signal);
+  const apps: unknown = result?.apps;
+  const matches = Array.isArray(apps) ? apps.filter(candidate => candidate?.bundle_id === bundle) : [];
+  const match = matches.length === 1 ? matches[0] : undefined;
+  if (typeof match?.name !== 'string' || !match.name || match.name.startsWith('-') ||
+      !Number.isSafeInteger(match.pid) || match.pid <= 0 ||
+      typeof match.process_instance !== 'string' || !match.process_instance) {
+    throw new Error('The configured application identifier did not resolve to a unique running process.');
+  }
+  return { name: String(match.name), pid: Number(match.pid), instance: String(match.process_instance) };
+}
+
 export function agentDesktop(executable: string): ComputerDriver {
   return {
     async permissions(root, signal) {
@@ -24,11 +39,13 @@ export function agentDesktop(executable: string): ComputerDriver {
       }));
     },
     async windows(root, app, signal) {
-      const data: unknown = await runDriver(executable, root, ['list-windows', '--app', app], signal);
+      const target = await resolveApp(executable, root, app, signal);
+      const data: unknown = await runDriver(executable, root, ['list-windows', '--app', target.name], signal);
       if (!Array.isArray(data)) throw new Error('Invalid application window inventory.');
       return data.filter(window => window && typeof window.id === 'string' &&
         /^w-[0-9]{1,20}$/.test(window.id) && typeof window.app_name === 'string' &&
-        window.app_name.toLowerCase() === app.toLowerCase() && window.visible === true)
+        window.app_name.toLowerCase() === target.name.toLowerCase() && window.visible === true &&
+        (target.instance === undefined || window.process_instance === target.instance))
         .map(window => ({
           id: String(window.id),
           title: typeof window.title === 'string' ? window.title.replace(/[\x00-\x1f\x7f]/g, ' ').slice(0, 120).toWellFormed() : '',
@@ -38,15 +55,20 @@ export function agentDesktop(executable: string): ComputerDriver {
         }));
     },
     async snapshot(root, app, signal, windowId) {
+      const target = await resolveApp(executable, root, app, signal);
       const options = windowId ? ['--window-id', windowId] : [];
-      const data = await runDriver(executable, root, ['snapshot', '--app', app, '-i', ...options], signal);
+      const data = await runDriver(executable, root, ['snapshot', '--app', target.name, '-i', ...options], signal);
       if (!data?.tree) throw new Error('No application snapshot was available.');
+      if (target.pid !== undefined && data.pid !== target.pid) {
+        throw new Error('The snapshot did not belong to the configured application process.');
+      }
       const stable = JSON.stringify(data.tree, (key, value) => key === 'ref_id' ? undefined : value);
       return { tree: element(data.tree), fingerprint: createHash('sha256').update(stable).digest('hex'),
         windowId: data.window_id, pid: data.pid };
     },
     async screenshot(root, app, windowId, path, signal) {
-      await runDriver(executable, root, ['screenshot', '--app', app, '--window-id', windowId, path], signal);
+      const target = await resolveApp(executable, root, app, signal);
+      await runDriver(executable, root, ['screenshot', '--app', target.name, '--window-id', windowId, path], signal);
     },
     async click(root, reference, signal) {
       await runDriver(executable, root, ['click', reference], signal);
