@@ -404,8 +404,8 @@ function App() {
                   <button disabled={busy} onClick={() => command('accept_result')}>{task.desktopReconciliationRequired ? 'Confirm click took effect' : 'Accept result'}</button>
                   <button disabled={busy} onClick={() => command('reject_result')}>{task.desktopReconciliationRequired ? 'Confirm click did not take effect' : 'Reject result'}</button>
                 </section>}
-                <ChannelLinks key={task.id} taskId={task.id} token={connected} cursor={snapshot.cursor} />
-                {!memoryUnavailable && <Timeline key={task.id} taskId={task.id} token={connected} cursor={snapshot.cursor} />}
+                <ChannelLinks key={'links:' + task.id} taskId={task.id} token={connected} cursor={snapshot.cursor} />
+                {!memoryUnavailable && <Timeline key={'timeline:' + task.id} taskId={task.id} token={connected} cursor={snapshot.cursor} />}
                 {!task.desktopReconciliationRequired && ['queued', 'running', 'waiting_user', 'waiting_dependency', 'waiting_device'].includes(task.status) &&
                   <button disabled={busy} onClick={() => command('pause')}>Pause task</button>}
                 {task.status === 'paused' &&
