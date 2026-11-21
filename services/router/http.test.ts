@@ -86,6 +86,11 @@ test('Router authenticates, deduplicates commands and replays task changes over 
   const address = server.address();
   assert(address && typeof address !== 'string');
   const url = `http://127.0.0.1:${address.port}`;
+  const health = await fetch(url + '/v1/health');
+  assert.equal(health.status, 200);
+  assert.deepEqual(await health.json(), { service: 'blazar-router', status: 'ready' });
+  assert.equal((await fetch(url + '/v1/health', { headers: { 'X-Blazar-Public-Gateway': '1' } })).status, 404);
+  assert.equal((await fetch(url + '/v1/health?redirect=1')).status, 401);
   const headers = { Authorization: `Bearer ${token}` };
   const post = (path: string, key: string, data: object) => fetch(url + path, {
     method: 'POST',

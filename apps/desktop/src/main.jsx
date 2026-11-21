@@ -26,6 +26,7 @@ async function readTaskFiles(files) {
 function App() {
   const [token, setToken] = useState('');
   const [connected, setConnected] = useState('');
+  const [localRouter, setLocalRouter] = useState('checking');
   const [snapshot, setSnapshot] = useState(null);
   const [syncError, setSyncError] = useState('');
   const snapshotSequence = useRef({ requested: 0, applied: 0 });
@@ -53,6 +54,25 @@ function App() {
   const [pairing, setPairing] = useState(null);
   const [clients, setClients] = useState([]);
   const [pairingRequests, setPairingRequests] = useState([]);
+
+  useEffect(() => {
+    if (connected) return;
+    const stop = new AbortController();
+    let timer;
+    async function check() {
+      try {
+        const health = await callRouter('', '/health', { signal: stop.signal });
+        if (!stop.signal.aborted) setLocalRouter(
+          health?.service === 'blazar-router' && health.status === 'ready' ? 'ready' : 'unavailable');
+      } catch {
+        if (!stop.signal.aborted) setLocalRouter('unavailable');
+      } finally {
+        if (!stop.signal.aborted) timer = setTimeout(check, 5_000);
+      }
+    }
+    void check();
+    return () => { stop.abort(); clearTimeout(timer); };
+  }, [connected]);
 
   useEffect(() => {
     if (!preview?.expires) return;
@@ -204,6 +224,11 @@ function App() {
           });
         }}>
           <h2>Connect to your Router</h2>
+          <p role="status">{{
+            checking: 'Checking the local Router…',
+            ready: 'The local Router is ready.',
+            unavailable: 'The local Router is unavailable. Start the Router service, then try again.',
+          }[localRouter]}</p>
           <label>Access token<input type="password" value={token} onChange={event => setToken(event.target.value)} required /></label>
           <button className="primary" disabled={busy}>Connect</button>
         </form>

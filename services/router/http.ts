@@ -149,6 +149,14 @@ export function routerServer(store: TaskStore, config: { owner: string; token: s
     try {
       const auth = request.headers.authorization ?? '';
       const url = new URL(request.url ?? '/', 'http://localhost');
+      if (request.method === 'GET' && url.pathname === '/v1/health' && !url.search) {
+        const local = ['127.0.0.1', '::1', '::ffff:127.0.0.1'].includes(request.socket.remoteAddress ?? '');
+        if (!local || request.headers['x-blazar-public-gateway'] !== undefined) {
+          throw new RequestError(404, 'Not found');
+        }
+        reply(response, 200, { service: 'blazar-router', status: 'ready' });
+        return;
+      }
       if (request.method === 'POST' && url.pathname === '/v1/channels/qq/events' && qq && config.qq) {
         const { body, raw } = await jsonBody(request);
         const event = qq(body, raw, request.headers['x-signature-timestamp'],

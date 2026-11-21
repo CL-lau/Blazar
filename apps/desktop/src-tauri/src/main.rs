@@ -52,7 +52,7 @@ fn allowed(method: &Method, path: &str) -> bool {
             .is_some_and(|cursor| {
                 !cursor.is_empty() && cursor.bytes().all(|byte| byte.is_ascii_digit())
             }),
-        ("GET", ["", "state" | "app-connections" | "memory"]) => true,
+        ("GET", ["", "health" | "state" | "app-connections" | "memory"]) => true,
         (
             "POST",
             ["", "events" | "conversation" | "workflows" | "pairings" | "app-connections" | "memory"],
@@ -181,6 +181,7 @@ mod tests {
             "/memory/00000000-0000-0000-0000-000000000000"
         ));
         for (method, path) in [
+            (Method::GET, "/health"),
             (Method::GET, "/admin/metrics"),
             (Method::PUT, "/admin/worker-policies"),
             (Method::GET, "/admin/mobile-pairings"),
@@ -205,6 +206,8 @@ mod tests {
         assert!(!allowed(&Method::GET, "/stream?after=10"));
         assert!(!allowed(&Method::GET, "/stream?once=1&after=10&after=0"));
         assert!(!allowed(&Method::GET, "/state?redirect=1"));
+        assert!(!allowed(&Method::POST, "/health"));
+        assert!(!allowed(&Method::GET, "/health?redirect=1"));
         assert!(!allowed(&Method::POST, "/device/claim"));
         assert!(!allowed(&Method::POST,
             "/app-connections/00000000-0000-0000-0000-000000000000/capabilities/document.publish"));
