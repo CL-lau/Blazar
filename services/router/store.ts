@@ -903,6 +903,11 @@ export class TaskStore {
     return row ? JSON.parse(String(row.refs)) as { id: string; version: number }[] : undefined;
   }
 
+  personalEvidence(taskId: string) {
+    return this.db.prepare('SELECT memory_id AS id,version FROM task_memory_input WHERE task_id=? ORDER BY position')
+      .all(taskId) as { id: string; version: number }[];
+  }
+
   appEvidenceTasks(owner: string) {
     return this.db.prepare(`SELECT e.task_id FROM task_app_evidence e JOIN task t ON t.id=e.task_id
       WHERE t.owner=?`).all(owner).map(row => String(row.task_id));
@@ -912,19 +917,26 @@ export class TaskStore {
     return this.db.prepare('SELECT taskId FROM run WHERE id=? AND device=?').get(runId, device)?.taskId as string | undefined;
   }
 
-  pendingAppEvidenceTasks() {
-    return this.db.prepare(`SELECT t.id,t.owner,t.workspace,e.refs,r.id AS run_id,r.device FROM task_app_evidence e
-      JOIN task t ON t.id=e.task_id LEFT JOIN run r ON r.taskId=t.id
-      WHERE (r.id IS NULL AND t.status IN ('queued','waiting_device','waiting_dependency','waiting_review'))
-        OR (r.id IS NOT NULL AND t.status IN ('running','waiting_user')
-          AND NOT EXISTS(SELECT 1 FROM run_evidence_stop s WHERE s.run_id=r.id))`)
-      .all().map(row => ({
-        id: String(row.id), owner: String(row.owner), workspace: String(row.workspace), refs: String(row.refs),
-        run: row.run_id === null ? undefined : { id: String(row.run_id), device: String(row.device) },
-      }));
+  pendingMemoryTasks() {
+    return this.db.prepare(`WITH candidates AS (
+      SELECT task_id FROM task_app_evidence UNION SELECT task_id FROM task_memory_input
+    )
+    SELECT t.id,t.owner,t.workspace,e.refs AS app_refs,r.id AS run_id,r.device,
+      (SELECT json_group_array(json_object('id',memory_id,'version',version)) FROM (
+        SELECT memory_id,version FROM task_memory_input WHERE task_id=t.id ORDER BY position
+      )) AS personal_refs
+    FROM candidates c JOIN task t ON t.id=c.task_id LEFT JOIN task_app_evidence e ON e.task_id=t.id
+    LEFT JOIN run r ON r.taskId=t.id
+    WHERE (r.id IS NULL AND t.status IN ('queued','waiting_device','waiting_dependency','waiting_review'))
+      OR (r.id IS NOT NULL AND t.status IN ('running','waiting_user')
+        AND NOT EXISTS(SELECT 1 FROM run_evidence_stop s WHERE s.run_id=r.id))`).all().map(row => ({
+      id: String(row.id), owner: String(row.owner), workspace: String(row.workspace),
+      appRefs: row.app_refs === null ? undefined : String(row.app_refs), personalRefs: String(row.personal_refs),
+      run: row.run_id === null ? undefined : { id: String(row.run_id), device: String(row.device) },
+    }));
   }
 
-  suspendTaskForAppEvidence(taskId: string) {
+  suspendTaskForMemory(taskId: string) {
     return this.transaction(() => {
       const updated = this.db.prepare(`UPDATE task SET status='waiting_user',result=NULL WHERE id=?
         AND status IN ('queued','waiting_device','waiting_dependency','waiting_review')

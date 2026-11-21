@@ -19,6 +19,12 @@ test('a registered JSONL extension executes a real subprocess through Router and
   await writeFile(script, `
     const request = JSON.parse(require('node:fs').readFileSync(0, 'utf8'));
     if (request.version !== 1 || request.type !== 'run') process.exit(2);
+    if (request.input.goal === 'Wait with the forecast') {
+      if (!request.input.backgroundMemory?.some(note => note.body === 'Forecast input active')) process.exit(8);
+      console.log(JSON.stringify({version:1,type:'progress',message:'Forecast input loaded'}));
+      setInterval(() => {}, 1000);
+      return;
+    }
     if (request.input.goal === 'Inspect the attachment') {
       const [attachment] = request.input.attachments ?? [];
       if (attachment?.name !== 'notes.txt' || attachment.text !== 'Attachment fixture body' ||
@@ -207,6 +213,27 @@ test('a registered JSONL extension executes a real subprocess through Router and
   assert.equal(memory.remove('owner', removedNote), true);
   assert.equal(await client.runOnce(AbortSignal.timeout(5_000)), false);
   assert.equal(store.get('owner', personalTask.id)?.status, 'waiting_user');
+  const activeNote = memory.remember('owner', 'project', 'Forecast input active')!;
+  const activePersonalResponse = await fetch(base + '/v1/events', {
+    method: 'POST', headers: {
+      Authorization: 'Bearer local', 'Content-Type': 'application/json', 'Idempotency-Key': 'active-personal-note',
+    }, body: JSON.stringify({ workspace: 'project', text: 'Wait with the forecast', usePersonalMemory: true }),
+  });
+  assert.equal(activePersonalResponse.status, 202);
+  const activePersonal = await activePersonalResponse.json();
+  const abortPersonal = AbortSignal.timeout(5_000);
+  const stoppedPersonal = assert.rejects(client.runOnce(abortPersonal), /aborted/i);
+  while (!store.timeline('owner', activePersonal.id)?.events.some(event => event.data.message === 'Forecast input loaded')) {
+    await delay(10, undefined, { signal: abortPersonal });
+  }
+  assert.equal((await fetch(base + '/v1/memory/' + activeNote, {
+    method: 'DELETE', headers: { Authorization: 'Bearer local' },
+  })).status, 200);
+  await stoppedPersonal;
+  assert.equal(store.get('owner', activePersonal.id)?.status, 'waiting_user');
+  const stopEvents = store.timeline('owner', activePersonal.id)?.events.filter(event => event.type === 'run.memory_access_changed');
+  assert.equal(stopEvents?.length, 1);
+  assert.equal(store.runTaskId(String(stopEvents?.[0]?.data.runId), device.id), undefined);
   const attachment = { name: 'notes.txt', text: 'Attachment fixture body' };
   assert.equal((await createAttachmentTask('path-attachment', [{ ...attachment, name: '../notes.txt' }])).status, 400);
   assert.equal((await createAttachmentTask('large-attachment', [{ ...attachment, text: 'a'.repeat(8193) }])).status, 400);

@@ -405,6 +405,13 @@ async function handleMemory(
   return false;
 }
 
+function workerMemoryAvailable(store: TaskStore, memory: MemoryStore | undefined, owner: string, workspace: string, taskId: string) {
+  const app = store.appEvidence(taskId);
+  const personal = store.personalEvidence(taskId);
+  return (!app || Boolean(memory?.resolveAppEvidence(owner, workspace, app))) &&
+    (!personal.length || Boolean(memory?.resolvePersonalEvidence(owner, workspace, personal)));
+}
+
 function deviceOperation(store: TaskStore, bearer: string, pathname: string, data: Record<string, unknown>, memory?: MemoryStore) {
   const device = store.deviceForToken(bearer);
   if (!device) throw new RequestError(401, 'Device authentication required');
@@ -516,8 +523,8 @@ function deviceOperation(store: TaskStore, bearer: string, pathname: string, dat
   if (!run) throw new RequestError(404, 'Route not found');
   if (['renew', 'finish', 'progress', 'request-approval', 'approval', 'consume-approval', 'input-artifact', 'steer'].includes(run[2])) {
     const taskId = store.runTaskId(run[1], device.id);
-    const refs = taskId ? store.appEvidence(taskId) : undefined;
-    if (store.runEvidenceStopping(run[1]) || (refs && !memory?.resolveAppEvidence(device.owner, device.workspace, refs))) {
+    if (store.runEvidenceStopping(run[1]) ||
+        (taskId && !workerMemoryAvailable(store, memory, device.owner, device.workspace, taskId))) {
       if (run[2] === 'finish') store.rejectRunEvidence(run[1], device.id);
       else store.requestRunEvidenceStop(run[1], device.id);
       return { status: 409, body: { accepted: false } };
@@ -640,16 +647,18 @@ export function routerServer(store: TaskStore, config: { owner: string; token: s
   }
   function flushStopNotifications() {
     const checked = new Map<string, boolean>();
-    for (const task of store.pendingAppEvidenceTasks()) {
-      const key = JSON.stringify([task.owner, task.workspace, task.refs]);
+    for (const task of store.pendingMemoryTasks()) {
+      const key = JSON.stringify([task.owner, task.workspace, task.appRefs, task.personalRefs]);
       let allowed = checked.get(key);
       if (allowed === undefined) {
-        allowed = Boolean(config.memory?.resolveAppEvidence(task.owner, task.workspace, JSON.parse(task.refs)));
+        const personal = JSON.parse(task.personalRefs);
+        allowed = (!task.appRefs || Boolean(config.memory?.resolveAppEvidence(task.owner, task.workspace, JSON.parse(task.appRefs)))) &&
+          (!personal.length || Boolean(config.memory?.resolvePersonalEvidence(task.owner, task.workspace, personal)));
         checked.set(key, allowed);
       }
       if (!allowed) {
         if (task.run) store.requestRunEvidenceStop(task.run.id, task.run.device);
-        else store.suspendTaskForAppEvidence(task.id);
+        else store.suspendTaskForMemory(task.id);
       }
     }
     for (const device of stopSubscribers.keys()) {
@@ -1183,10 +1192,9 @@ export function routerServer(store: TaskStore, config: { owner: string; token: s
           command = { action, approvalId: requiredText(data.approvalId, 'approval ID', 36) };
         } else throw new RequestError(400, 'Invalid action');
         if (['approve', 'accept_result', 'append', 'resume', 'retry'].includes(command.action)) {
-          const refs = store.appEvidence(taskId);
-          if (refs && !config.memory?.resolveAppEvidence(owner, current.workspace, refs)) {
+          if (!workerMemoryAvailable(store, config.memory, owner, current.workspace, taskId)) {
             flushStopNotifications();
-            throw new RequestError(409, 'Application memory access changed');
+            throw new RequestError(409, 'Task memory access changed');
           }
         }
         const result = store.command(owner, taskId, version, command, key);
