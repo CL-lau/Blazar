@@ -591,17 +591,18 @@ export class TaskStore {
     });
   }
 
-  channelAttachmentTask(owner: string, channel: string, workspace: string, message: { id: string; chat: string; thread: string }) {
+  channelAttachmentTask(owner: string, channel: string, workspace: string, message: { id: string; chat: string; thread: string; taskId?: string }) {
     return this.db.prepare(`SELECT t.id,t.status FROM channel_thread c JOIN task t ON t.id=c.task_id
-      WHERE c.owner=? AND c.channel=? AND c.chat=? AND c.thread=? AND t.workspace=?
+      WHERE c.owner=? AND c.channel=? AND c.chat=? AND t.workspace=?
+      AND (CASE WHEN ? IS NULL THEN c.thread=? ELSE t.id=? END)
       AND t.status NOT IN ('cancelled','cancelling','paused','pausing')
       AND substr(t.goal,1,9) NOT IN ('/observe ','/preview ') AND substr(t.goal,1,7)<>'/click '
       AND NOT EXISTS(SELECT 1 FROM channel_message m WHERE m.owner=c.owner AND m.channel=c.channel AND m.message=?)`)
-      .get(owner, channel, message.chat, message.thread, workspace, message.id);
+      .get(owner, channel, message.chat, workspace, message.taskId ?? null, message.thread, message.taskId ?? null, message.id);
   }
 
   addChannelAttachment(owner: string, channel: string, workspace: string, taskId: string,
-                       message: { id: string; chat: string; thread: string }, attachment: TaskAttachment) {
+                       message: { id: string; chat: string; thread: string; taskId?: string }, attachment: TaskAttachment) {
     return this.transaction(() => {
       const task = this.channelAttachmentTask(owner, channel, workspace, message);
       if (task?.id !== taskId) return false;

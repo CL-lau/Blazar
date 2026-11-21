@@ -582,7 +582,7 @@ function deviceOperation(store: TaskStore, bearer: string, pathname: string, dat
   return { status: accepted ? 200 : 409, body: { accepted } };
 }
 
-export function routerServer(store: TaskStore, config: { owner: string; token: string; memory?: MemoryStore; harness?: RouterHarness; feishu?: FeishuConfig; readFeishuAttachment?: (messageId: string, key: string) => Promise<string | undefined>; qq?: QQConfig; documents?: readonly DocumentConnector[]; answerMemory?: MemoryAnswer; pushEnabled?: boolean }) {
+export function routerServer(store: TaskStore, config: { owner: string; token: string; memory?: MemoryStore; harness?: RouterHarness; feishu?: FeishuConfig; readFeishuAttachment?: (messageId: string, key: string) => Promise<string | undefined>; qq?: QQConfig; readQQAttachment?: (url: string, name?: string) => Promise<TaskAttachment | undefined>; documents?: readonly DocumentConnector[]; answerMemory?: MemoryAnswer; pushEnabled?: boolean }) {
   const metrics = new RouterMetrics();
   const stopSubscribers = new Map<string, Set<WebSocket>>();
   function sendStop(device: string, runId: string) {
@@ -595,6 +595,25 @@ export function routerServer(store: TaskStore, config: { owner: string; token: s
   function notifyStop(owner: string, taskId: string) {
     const target = store.stopTarget(owner, taskId);
     if (target) sendStop(target.device, target.runId);
+  }
+  async function attachFromChannel(channel: string, workspace: string,
+                                   message: Parameters<TaskStore['channelAttachmentTask']>[3],
+                                   download: () => Promise<TaskAttachment | undefined>) {
+    const task = store.channelAttachmentTask(config.owner, channel, workspace, message);
+    if (!task) return;
+    let file;
+    try { file = await download(); }
+    catch { throw new RequestError(503, 'Attachment download failed'); }
+    if (!file) return;
+    let attachment: TaskAttachment;
+    try { [attachment] = textAttachments([file]); }
+    catch (error) {
+      if (error instanceof RequestError) return;
+      throw error;
+    }
+    if (store.addChannelAttachment(config.owner, channel, workspace, String(task.id), message, attachment)) {
+      notifyStop(config.owner, String(task.id));
+    }
   }
   function flushStopNotifications() {
     const checked = new Map<string, boolean>();
@@ -635,6 +654,10 @@ export function routerServer(store: TaskStore, config: { owner: string; token: s
             flushStopNotifications();
             metrics.observe('qq', performance.now() - started);
           }
+          if (event.kind === 'attachment' && config.readQQAttachment) {
+            const read = config.readQQAttachment;
+            await attachFromChannel(qqChannel(config.qq), config.qq.workspace, event.message, () => read(event.url, event.name));
+          }
           reply(response, 200, { op: 12 });
         }
         return;
@@ -653,22 +676,11 @@ export function routerServer(store: TaskStore, config: { owner: string; token: s
           metrics.observe('feishu', performance.now() - started);
         }
         if (event.kind === 'attachment' && config.readFeishuAttachment) {
-          const { workspace } = config.feishu;
-          const channel = feishuChannel(config.feishu);
-          const task = store.channelAttachmentTask(config.owner, channel, workspace, event);
-          if (task) {
-            let text;
-            try { text = await config.readFeishuAttachment(event.id, event.key); }
-            catch { throw new RequestError(503, 'Feishu attachment download failed'); }
-            if (text !== undefined) {
-              let attachment: TaskAttachment | undefined;
-              try { [attachment] = textAttachments([{ name: event.name, text }]); }
-              catch (error) { if (!(error instanceof RequestError)) throw error; }
-              if (attachment && store.addChannelAttachment(config.owner, channel, workspace, String(task.id), event, attachment)) {
-                notifyStop(config.owner, String(task.id));
-              }
-            }
-          }
+          const read = config.readFeishuAttachment;
+          await attachFromChannel(feishuChannel(config.feishu), config.feishu.workspace, event, async () => {
+            const text = await read(event.id, event.key);
+            return text === undefined ? undefined : { name: event.name, text };
+          });
         }
         reply(response, 200, {});
         return;

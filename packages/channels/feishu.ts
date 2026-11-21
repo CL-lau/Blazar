@@ -1,3 +1,4 @@
+import { readAttachmentText } from './attachments.ts';
 import { timingSafeEqual } from 'node:crypto';
 
 export type FeishuConfig = {
@@ -129,23 +130,7 @@ export function createFeishuSender(appId: string, appSecret: string, region: 'fe
       if (response.status === 403 || response.status === 404) return undefined;
       throw new Error('Feishu attachment request failed');
     }
-    if (!response.body) return undefined;
-    const reader = response.body.getReader();
-    const chunks: Uint8Array[] = [];
-    let size = 0;
-    try {
-      for (;;) {
-        const chunk = await reader.read();
-        if (chunk.done) break;
-        size += chunk.value.byteLength;
-        if (size > 8_192) return undefined;
-        chunks.push(chunk.value);
-      }
-      try { return new TextDecoder('utf-8', { fatal: true }).decode(Buffer.concat(chunks)); }
-      catch { return undefined; }
-    } finally {
-      await reader.cancel();
-    }
+    return readAttachmentText(response);
   }
 
   return Object.assign(send, { readAttachment });

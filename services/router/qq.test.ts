@@ -1,7 +1,9 @@
 import assert from 'node:assert/strict';
 import { createPrivateKey, sign } from 'node:crypto';
 import test from 'node:test';
-import { createQQHandler, createQQSender } from '../../packages/channels/qq.ts';
+import { once } from 'node:events';
+import { createQQAttachmentReader, createQQHandler, createQQSender } from '../../packages/channels/qq.ts';
+import { routerServer } from './http.ts';
 import { TaskStore } from './store.ts';
 
 test('QQ matches the official challenge signature and rejects tampered or stale callbacks', () => {
@@ -106,4 +108,58 @@ test('QQ sends only to the original reply window and reserves distinct passive r
   assert.equal(body.msg_id, 'root');
   assert.equal(body.msg_seq, 1);
   assert.doesNotMatch(body.content, /private text/);
+});
+
+test('signed QQ text attachments enter only the task linked to the authorized chat', async t => {
+  const qq = { appId: 'app', secret: 'fixture-secret', workspace: 'work',
+    senders: new Set(['sender', 'other']), chats: new Set(['c2c:sender', 'c2c:other']) };
+  const privateKey = createPrivateKey({
+    key: Buffer.concat([Buffer.from('302e020100300506032b657004220420', 'hex'), Buffer.from(qq.secret.repeat(32)).subarray(0, 32)]),
+    format: 'der', type: 'pkcs8',
+  });
+  const downloads: string[] = [];
+  const readQQAttachment = createQQAttachmentReader(new Set(['media.qq.com']), async (url, init) => {
+    downloads.push(String(url));
+    assert.equal(init?.redirect, 'error');
+    assert.equal(new Headers(init?.headers).has('Authorization'), false);
+    return new Response(String(url).endsWith('/large.txt') ? 'x'.repeat(8193) : 'QQ fixture text');
+  });
+  const store = new TaskStore(':memory:');
+  const server = routerServer(store, { owner: 'owner', token: 'local', qq, readQQAttachment });
+  server.listen(0, '127.0.0.1');
+  await once(server, 'listening');
+  t.after(async () => {
+    await new Promise<void>(resolve => server.close(() => resolve()));
+    store.close();
+  });
+  const address = server.address();
+  assert.ok(address && typeof address !== 'string');
+  const endpoint = 'http://127.0.0.1:' + address.port + '/v1/channels/qq/events';
+  const post = (id: string, sender: string, content: string, url?: string) => {
+    const raw = JSON.stringify({ op: 0, t: 'C2C_MESSAGE_CREATE', d: {
+      id, author: { user_openid: sender }, content, ...(url && { attachments: [{ url }] }),
+    } });
+    const timestamp = String(Math.floor(Date.now() / 1000));
+    const signature = sign(null, Buffer.from(timestamp + raw), privateKey).toString('hex');
+    return fetch(endpoint, { method: 'POST', body: raw, headers: {
+      'Content-Type': 'application/json', 'X-Signature-Timestamp': timestamp, 'X-Signature-Ed25519': signature,
+    } });
+  };
+  assert.equal((await post('root', 'sender', '/blazar Review the file')).status, 200);
+  const [task] = store.snapshot('owner').tasks;
+  const command = '/blazar follow ' + task.id + ' /attach';
+  await post('other-chat', 'other', command, 'https://media.qq.com/notes.txt');
+  await post('unknown-host', 'sender', command, 'https://other.qq.com/notes.txt');
+  await post('unlisted', 'nobody', command, 'https://media.qq.com/notes.txt');
+  assert.deepEqual(downloads, []);
+  await post('oversized', 'sender', command, 'https://media.qq.com/large.txt');
+  assert.equal(store.get('owner', task.id)?.version, 1);
+  const valid = () => post('valid', 'sender', command, '//media.qq.com/notes.txt');
+  assert.equal((await valid()).status, 200);
+  assert.equal((await valid()).status, 200);
+  assert.equal(downloads.length, 2);
+  assert.equal(store.get('owner', task.id)?.version, 2);
+  const assignment = store.claim('owner', 'work', 'device', Date.now(), 45_000, '', '/preview ',
+    undefined, undefined, undefined, true);
+  assert.deepEqual(assignment?.attachments?.map(item => ({ ...item })), [{ name: 'notes.txt', text: 'QQ fixture text' }]);
 });

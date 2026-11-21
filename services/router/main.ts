@@ -4,7 +4,7 @@ import { weixinConfig } from '../../packages/channels/weixin.ts';
 import { startWeixin } from './weixin.ts';
 import { startWeCom } from './wecom.ts';
 import { weComConfig } from '../../packages/channels/wecom.ts';
-import { createQQSender, qqChannel } from '../../packages/channels/qq.ts';
+import { createQQAttachmentReader, createQQSender, qqChannel } from '../../packages/channels/qq.ts';
 import { dingTalkConfig, startDingTalk } from './dingtalk.ts';
 import { createFeishuSender, feishuChannel } from '../../packages/channels/feishu.ts';
 import { piHarness, piMemoryAnswer } from './harness.ts';
@@ -54,7 +54,10 @@ const feishuSecret = process.env.BLAZAR_FEISHU_APP_SECRET;
 const feishuSender = feishu && feishuSecret
   ? createFeishuSender(feishu.appId, feishuSecret, process.env.BLAZAR_FEISHU_REGION === 'lark' ? 'lark' : 'feishu')
   : undefined;
-const server = routerServer(store, { feishu, readFeishuAttachment: feishuSender?.readAttachment, qq, documents, owner: 'local', token, memory, harness, answerMemory, pushEnabled: Boolean(push) });
+const qqMediaHosts = new Set((process.env.BLAZAR_QQ_MEDIA_HOSTS ?? '').split(',')
+  .map(host => host.trim().toLowerCase()).filter(Boolean));
+const readQQAttachment = qq && qqMediaHosts.size ? createQQAttachmentReader(qqMediaHosts) : undefined;
+const server = routerServer(store, { feishu, readFeishuAttachment: feishuSender?.readAttachment, qq, readQQAttachment, documents, owner: 'local', token, memory, harness, answerMemory, pushEnabled: Boolean(push) });
 const stopPush = push && startPushDelivery(store, push);
 const documentSyncShutdown = new AbortController();
 let documentSync: Promise<unknown> | undefined;

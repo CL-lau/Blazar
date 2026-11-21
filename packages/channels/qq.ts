@@ -1,3 +1,4 @@
+import { readAttachmentText } from './attachments.ts';
 import { createPrivateKey, createPublicKey, sign, verify } from 'node:crypto';
 
 export type QQConfig = {
@@ -63,12 +64,40 @@ export function createQQHandler(config: QQConfig) {
     if (!text.startsWith('follow ')) return { kind: 'message', message } as const;
     const follow = /^follow ([a-f0-9-]{36}) ([\s\S]+)$/.exec(text);
     if (!follow?.[2].trim()) return { kind: 'ignore' } as const;
+    if (follow[2].trim() === '/attach') {
+      const attachment = Array.isArray(event.attachments) && event.attachments.length === 1 ? record(event.attachments[0]) : undefined;
+      if (typeof attachment?.url !== 'string' || attachment.url.length > 2_048) return { kind: 'ignore' } as const;
+      return { kind: 'attachment', message: { id: event.id, chat, thread: event.id, taskId: follow[1] },
+        url: attachment.url, name: typeof attachment.filename === 'string' ? attachment.filename : undefined } as const;
+    }
     return { kind: 'message', message: { ...message, root: false, taskId: follow[1], text: follow[2].trim() } } as const;
   };
 }
 
 export function qqChannel(config: QQConfig) {
   return JSON.stringify(['qq', config.appId]);
+}
+
+export function createQQAttachmentReader(hosts: ReadonlySet<string>, transport = fetch) {
+  return async (raw: string, reportedName?: string) => {
+    let url: URL;
+    let name: string;
+    try {
+      url = new URL(raw.startsWith('//') ? 'https:' + raw : raw);
+      name = reportedName ?? decodeURIComponent(url.pathname.split('/').at(-1) ?? '');
+    } catch { return undefined; }
+    if (url.protocol !== 'https:' || url.username || url.password || url.port || url.hash ||
+        !hosts.has(url.hostname) || !/(?:^|\.)(qq\.com|qpic\.cn)$/.test(url.hostname) ||
+        !/\.(txt|md|csv|json|log)$/i.test(name) || name.length > 128 || /[\x00-\x1f\x7f/\\]/.test(name)) return undefined;
+    const response = await transport(url, { redirect: 'error', signal: AbortSignal.timeout(2_000) });
+    if (!response.ok) {
+      await response.body?.cancel();
+      if (response.status === 403 || response.status === 404) return undefined;
+      throw new Error('QQ attachment download failed');
+    }
+    const text = await readAttachmentText(response);
+    return text === undefined ? undefined : { name, text };
+  };
 }
 
 export function createQQSender(config: QQConfig, transport = fetch) {
