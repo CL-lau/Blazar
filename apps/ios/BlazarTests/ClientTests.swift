@@ -3,6 +3,14 @@ import XCTest
 @testable import Blazar
 
 final class ClientTests: XCTestCase {
+    func testPairingCredentialMatchesOnlyTheSavedEndpoint() {
+        let paired = "https://router.example:8443"
+        XCTAssertTrue(PairingPayload.credentialApplies(to: paired, pairedEndpoint: paired))
+        XCTAssertFalse(PairingPayload.credentialApplies(to: "https://router.example", pairedEndpoint: paired))
+        XCTAssertFalse(PairingPayload.credentialApplies(to: "https://other.example:8443", pairedEndpoint: paired))
+        XCTAssertFalse(PairingPayload.credentialApplies(to: "", pairedEndpoint: ""))
+    }
+
     func testPairingAcceptsOnlySupportedSecureOrigins() throws {
         let code = String(repeating: "A", count: 32)
         func payload(_ endpoint: String, _ version: Int = 1) throws -> String {

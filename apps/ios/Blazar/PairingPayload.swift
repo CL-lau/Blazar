@@ -5,6 +5,10 @@ struct PairingPayload: Decodable {
     let endpoint: String
     let code: String
 
+    static func credentialApplies(to endpoint: String, pairedEndpoint: String) -> Bool {
+        !pairedEndpoint.isEmpty && endpoint == pairedEndpoint
+    }
+
     static func parse(_ value: String) -> PairingPayload? {
         guard value.utf8.count <= 1024,
               let payload = try? JSONDecoder().decode(Self.self, from: Data(value.utf8)),

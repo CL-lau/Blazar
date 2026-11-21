@@ -40,7 +40,7 @@ private struct TaskScreen: View {
     @Environment(\.scenePhase) private var scenePhase
     @AppStorage("router.endpoint") private var savedEndpoint = ""
     @State private var endpoint = ""
-    @State private var token = Credentials.read()
+    @State private var token = Credentials.read(for: UserDefaults.standard.string(forKey: "router.endpoint") ?? "")
     @State private var snapshot: RouterSnapshot?
     @State private var offlineSummary: OfflineTaskSummary?
     @State private var snapshotRequest = UUID()
@@ -69,7 +69,9 @@ private struct TaskScreen: View {
     }
 
     private var client: RouterClient? {
-        guard !token.isEmpty, let base = routerURL else { return nil }
+        guard !token.isEmpty,
+              PairingPayload.credentialApplies(to: endpoint, pairedEndpoint: savedEndpoint),
+              let base = routerURL else { return nil }
         return RouterClient(base: base, token: token)
     }
 
@@ -105,8 +107,9 @@ private struct TaskScreen: View {
                             do {
                                 let paired = try await RouterClient.pair(base: base, code: code, name: "iPhone")
                                 guard base == routerURL else { return }
-                                try Credentials.save(paired.token)
+                                try Credentials.save(paired.token, for: base.absoluteString)
                                 savedEndpoint = base.absoluteString
+                                endpoint = savedEndpoint
                                 token = paired.token
                                 pairingCode = ""
                                 await reload()
@@ -370,7 +373,7 @@ private struct TaskScreen: View {
             }
             .onChange(of: endpoint) { previous, updated in
                 if previous.isEmpty && updated == savedEndpoint { return }
-                token = ""
+                snapshotRequest = UUID()
                 snapshot = nil
                 offlineSummary = nil
                 attachments = []
@@ -378,6 +381,7 @@ private struct TaskScreen: View {
                 OfflineTaskSummary.clear()
                 answer = nil
                 plan = nil
+                followUp = nil
             }
 
         }
