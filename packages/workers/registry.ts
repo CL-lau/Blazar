@@ -61,7 +61,7 @@ export async function resolveWorker(mode: string, manifest?: string, executableO
     if (!worker) throw new Error('Unsupported configured device worker');
     if (executableOverride && !isAbsolute(executableOverride)) throw new Error('Worker executable override must be absolute');
     if (worker.protocol === 'claude' && !executableOverride) return worker;
-    return { ...worker, executable: await locate(executableOverride || worker.executable) };
+    return { ...worker, executable: await locateWorkerExecutable(executableOverride || worker.executable) };
   }
   if (!manifest || !isAbsolute(manifest)) throw new Error('Set an absolute BLAZAR_WORKER_MANIFEST path');
   const metadata = await stat(manifest);
@@ -83,12 +83,12 @@ export async function resolveWorker(mode: string, manifest?: string, executableO
     typeof key !== 'string' || !/^[A-Z_][A-Z0-9_]*$/.test(key) || /^(BLAZAR_|NODE_OPTIONS$|DYLD_|LD_)/.test(key))) {
     throw new Error('Invalid worker environment list');
   }
-  const worker = { executable: await locate(data.executable), label: data.label, args: data.args, env };
+  const worker = { executable: await locateWorkerExecutable(data.executable), label: data.label, args: data.args, env };
   return data.protocol === 'jsonl' ? { ...worker, protocol: 'jsonl', includeFullInputArtifacts: data.includeFullInputArtifacts }
     : { ...worker, protocol: 'acp' };
 }
 
-async function locate(executable: string): Promise<string> {
+export async function locateWorkerExecutable(executable: string): Promise<string> {
   const candidates = isAbsolute(executable) ? [executable] : (process.env.PATH ?? '').split(delimiter)
     .filter(isAbsolute).flatMap(directory => process.platform === 'win32'
       ? [join(directory, executable + '.exe'), join(directory, executable)] : [join(directory, executable)]);

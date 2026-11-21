@@ -164,7 +164,10 @@ export function Devices({ token }) {
         {preset && <>
           <p>Set this on the execution device before restarting its service.</p>
           <pre>{'BLAZAR_DEVICE_WORKER=' + preset}</pre>
-          {preset === 'custom' && <p>Set <code>BLAZAR_WORKER_MANIFEST</code> to the absolute path to the extension manifest.</p>}
+          {preset === 'custom' && <>
+            <p>Set <code>BLAZAR_WORKER_MANIFEST</code> to the absolute path to the extension manifest.</p>
+            <p>To import a pinned ACP preset, run <code>npm run device:acp-registry -- list</code> on the execution device.</p>
+          </>}
           <p>Check the local configuration with <code>npm run device:probe -- {preset}</code>.</p>
         </>}
       </>}

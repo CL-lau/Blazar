@@ -106,6 +106,8 @@ Run `npm run device:probe -- <preset>` with the same configuration as the execut
 
 Use `BLAZAR_DEVICE_WORKER=custom` and `BLAZAR_WORKER_MANIFEST` to point to an absolute path containing a version 1 ACP manifest:
 
+Use `npm run device:acp-registry -- list` to browse the stable ACP Registry. Generate an ACP manifest on the execution device with `npm run device:acp-registry -- import ID npx /absolute/worker.json`. The command pins the registry version and writes a private manifest for review. Launching or probing a package-based Worker may download that pinned package. For a binary distribution, pass `binary` and the absolute path to the separately installed executable. Set any required credential variables in the device environment and use the generated manifest with the custom Worker mode.
+
 ```json
 {
   "version": 1,
