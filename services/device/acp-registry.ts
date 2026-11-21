@@ -1,6 +1,20 @@
 import { writeFile } from 'node:fs/promises';
-import { isAbsolute } from 'node:path';
+import { isAbsolute, join } from 'node:path';
+import { installAcpPackage } from './install-acp-package.ts';
 import { readAcpRegistry, registryWorkerManifest } from '../../packages/workers/acp-registry.ts';
+
+async function manifestFor(id: string, distribution: 'npx' | 'uvx' | 'binary', binaryPath?: string) {
+  const matches = (await readAcpRegistry()).filter(entry => entry.id === id);
+  if (matches.length !== 1) throw new Error('The ACP Registry agent ID is unavailable or ambiguous');
+  return registryWorkerManifest(matches[0], distribution, binaryPath);
+}
+
+async function saveManifest(destination: string, manifest: Awaited<ReturnType<typeof manifestFor>>) {
+  const content = JSON.stringify(manifest, null, 2) + '\n';
+  if (Buffer.byteLength(content) > 16_384) throw new Error('The generated Worker manifest is too large');
+  await writeFile(destination, content, { mode: 0o600, flag: 'wx' });
+  console.log(destination);
+}
 
 const [action, id, distribution, destination, binaryPath, ...extra] = process.argv.slice(2);
 if (action === 'list' && id === undefined) {
@@ -10,14 +24,12 @@ if (action === 'list' && id === undefined) {
   })), null, 2));
 } else if (action === 'import' && id && (distribution === 'npx' || distribution === 'uvx' || distribution === 'binary') &&
            destination && isAbsolute(destination) && !extra.length) {
-  const matches = (await readAcpRegistry()).filter(entry => entry.id === id);
-  if (matches.length !== 1) throw new Error('The ACP Registry agent ID is unavailable or ambiguous');
-  const manifest = await registryWorkerManifest(matches[0], distribution, binaryPath);
-  const content = JSON.stringify(manifest, null, 2) + '\n';
-  if (Buffer.byteLength(content) > 16_384) throw new Error('The generated Worker manifest is too large');
-  await writeFile(destination, content, { mode: 0o600, flag: 'wx' });
-  console.log(destination);
+  await saveManifest(destination, await manifestFor(id, distribution, binaryPath));
+} else if (action === 'install' && id && distribution && isAbsolute(distribution) && destination === undefined) {
+  const directory = distribution;
+  const manifest = await installAcpPackage(await manifestFor(id, 'npx'), directory);
+  await saveManifest(join(directory, 'worker.json'), manifest);
 } else {
-  console.error('Usage: device:acp-registry -- list | import ID npx|uvx|binary /absolute/worker.json [/absolute/binary]');
+  console.error('Usage: device:acp-registry -- list | import ID npx|uvx|binary /absolute/worker.json [/absolute/binary] | install ID /absolute/new-directory');
   process.exitCode = 2;
 }

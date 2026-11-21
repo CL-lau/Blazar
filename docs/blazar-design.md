@@ -323,3 +323,5 @@ packages/storage          事务、迁移、备份
 - 两个设备客户端使用独立注册凭据、共享设备账本及同一 Git 源仓库，经 Router WebSocket 并发执行工作流。两个真实 JSONL Worker 子进程在不同检出内并行修改同一文件，各自产生补丁供下游审阅，源工作区未提交的编辑仍保留。
 
 - 从官方 ACP Registry 导入 Gemini CLI 0.70.0 的固定版本 manifest。在临时工作区预安装相同版本后，由生成的 manifest 真正启动 Gemini，ACP v1 握手成功。Agent 声明可加载会话及四种认证方法。模型账号与新会话执行未在此次探测中验证。
+
+- 使用设备端 ACP Registry 安装命令，把官方 Gemini CLI 0.70.0 安装在独立目录并生成 manifest。在独立工作区运行探测，Blazar 直接调用已安装的 Gemini 可执行文件，ACP v1 握手成功。账号登录仍未验证。
