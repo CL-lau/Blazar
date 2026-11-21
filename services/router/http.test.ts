@@ -629,6 +629,11 @@ test('admin progress retention expires replay cursors and preserves durable task
   assert.equal(store.finish(run.id, 'device', Date.now(), { status: 'succeeded', result: 'Done' }), true);
   const feed = await fetch(base + '/v1/stream?once=1&after=' + state.cursor, { headers: admin });
   assert.match(await feed.text(), /run\.finished/);
+  const live = await fetch(base + '/v1/stream?once=1&after=' + store.eventCursor(), { headers: admin });
+  store.create('test', 'fixture', 'live-event', 'project', 'Read the status');
+  assert.match(await live.text(), /task\.created/);
+  const metrics = await (await fetch(base + '/v1/admin/metrics', { headers: admin })).json();
+  assert.deepEqual(metrics.stream, { opened: 2, replayedEvents: 1, resnapshotRequired: 1 });
   const timeline = store.timeline('test', task.id)!;
   assert.deepEqual(timeline.events.map(event => event.type), ['run.finished', 'run.started', 'task.created']);
 });

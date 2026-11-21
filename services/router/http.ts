@@ -68,20 +68,25 @@ function reply(response: ServerResponse, status: number, data: unknown) {
 }
 
 async function stream(store: TaskStore, owner: string, cursor: number, response: ServerResponse, authorized: () => boolean,
-                      once: boolean, canReadTask: (taskId: string) => boolean) {
+                      once: boolean, canReadTask: (taskId: string) => boolean, replayThrough: number, metrics: RouterMetrics) {
   response.writeHead(200, { 'Content-Type': 'text/event-stream', 'Cache-Control': 'no-store' });
   response.flushHeaders();
+  metrics.recordStream('opened');
   const controller = new AbortController();
   response.once('close', () => controller.abort());
   const deadline = Date.now() + 25_000;
   try {
     while (!controller.signal.aborted && Date.now() < deadline && authorized()) {
-      if (cursor < store.eventReplayFloor()) return;
+      if (cursor < store.eventReplayFloor()) {
+        metrics.recordStream('resnapshotRequired');
+        return;
+      }
       const events = store.events(owner, cursor);
       for (const event of events) {
         const frame = JSON.stringify({ ...event, data: canReadTask(event.taskId) ? JSON.parse(event.data) : {} });
-        if (!response.write(`id: ${event.seq}\nevent: task\ndata: ${frame}\n\n`)) return;
-        if (once) return;
+        const writable = response.write(`id: ${event.seq}\nevent: task\ndata: ${frame}\n\n`);
+        if (event.seq <= replayThrough) metrics.recordStream('replayedEvents');
+        if (!writable || once) return;
         cursor = event.seq;
       }
       if (!events.length) await delay(250, undefined, { signal: controller.signal });
@@ -1058,11 +1063,14 @@ export function routerServer(store: TaskStore, config: { owner: string; token: s
         if (!/^\d+$/.test(String(raw)) || !Number.isSafeInteger(cursor)) {
           throw new RequestError(400, 'Invalid event cursor');
         }
-        if (cursor < store.eventReplayFloor() || cursor > store.eventCursor()) {
+        const replayThrough = store.eventCursor();
+        const metrics = ownerMetrics(owner);
+        if (cursor < store.eventReplayFloor() || cursor > replayThrough) {
+          metrics.recordStream('resnapshotRequired');
           throw new RequestError(409, 'Event cursor requires a new snapshot');
         }
         await stream(store, owner, cursor, response, () => admin || store.mobileOwner(mobileToken) === owner,
-          url.searchParams.get('once') === '1', canReadTask);
+          url.searchParams.get('once') === '1', canReadTask, replayThrough, metrics);
         return;
       }
       if (request.method === 'POST' && url.pathname === '/v1/workflows') {

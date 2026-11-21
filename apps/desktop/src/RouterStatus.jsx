@@ -71,6 +71,10 @@ export function RouterStatus({ token }) {
           </table>
         </div>}
       </section>
+      {data.stream && <section>
+        <h3>Client event streams</h3>
+        <p>{data.stream.opened} opened · {data.stream.replayedEvents} events replayed · {data.stream.resnapshotRequired} snapshot refreshes required</p>
+      </section>}
       <section>
         <h3>Channel delivery</h3>
         {!data.channelDelivery?.length ? <p>No channel deliveries yet.</p> : <div className="status-table">

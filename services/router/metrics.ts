@@ -7,6 +7,12 @@ export class RouterMetrics {
   private timings = new Map<Timing, { count: number; totalMs: number; buckets: number[] }>();
   private routes = { deterministic: 0, model: 0, replayed: 0, modelErrors: 0 };
 
+  private stream = { opened: 0, replayedEvents: 0, resnapshotRequired: 0 };
+
+  recordStream(kind: keyof RouterMetrics['stream']) {
+    this.stream[kind]++;
+  }
+
   private tokens = { samples: 0, input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0 };
 
   recordModelUsage(usage: ModelTokens) {
@@ -38,6 +44,7 @@ export class RouterMetrics {
 
   snapshot() {
     return {
+      stream: { ...this.stream },
       modelTokens: { ...this.tokens },
       routing: { ...this.routes },
       latencyMs: Object.fromEntries([...this.timings].map(([name, timing]) => {
