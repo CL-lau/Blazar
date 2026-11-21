@@ -46,11 +46,13 @@ try {
     try {
       while (!shutdown.signal.aborted) {
         try {
-          if (await device.runOnce(shutdown.signal)) continue;
+          if (!await device.runOnce(shutdown.signal)) await device.waitForWork(shutdown.signal);
         } catch (error) {
-          if (!shutdown.signal.aborted) console.error(error instanceof Error ? error.message : 'Device request failed');
+          if (!shutdown.signal.aborted) {
+            console.error(error instanceof Error ? error.message : 'Device request failed');
+            await delay(1_000, undefined, { signal: shutdown.signal }).catch(() => {});
+          }
         }
-        await delay(1_000, undefined, { signal: shutdown.signal }).catch(() => {});
       }
     } finally {
       device.close();

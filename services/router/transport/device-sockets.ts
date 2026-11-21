@@ -7,10 +7,19 @@ import { RequestError } from '../protocol/request.ts';
 export const maxDeviceFinishBytes = 1_350_000;
 export const maxDeviceClaimBytes = 400_000;
 
-type SocketDevices = Pick<TaskStore, 'deviceForToken' | 'deviceStopTargets'>;
+type SocketDevices = Pick<TaskStore, 'deviceForToken' | 'deviceStopTargets' | 'onWorkQueued'>;
 type DeviceOperation = (token: string, path: string, body: Record<string, unknown>) => { status: number; body: unknown };
 
 export function createDeviceSocketTransport(store: SocketDevices) {
+  const workSubscribers = new Map<string, Map<WebSocket, string>>();
+  const workScope = (owner: string, workspace: string) => JSON.stringify([owner, workspace]);
+  const stopWorkNotifications = store.onWorkQueued((owner, workspace) => {
+    for (const [peer, token] of workSubscribers.get(workScope(owner, workspace)) ?? []) {
+      if (peer.readyState === WebSocket.OPEN && peer.bufferedAmount < 256_000 && store.deviceForToken(token)) {
+        peer.send(JSON.stringify({ type: 'queue.changed' }));
+      }
+    }
+  });
   const stopSubscribers = new Map<string, Set<WebSocket>>();
   function sendStop(device: string, runId: string) {
     for (const peer of stopSubscribers.get(device) ?? []) {
@@ -48,6 +57,16 @@ export function createDeviceSocketTransport(store: SocketDevices) {
           for (const row of store.deviceStopTargets(device.id)) {
             connection.send(JSON.stringify({ type: 'run.stop', runId: row.id }));
           }
+        }
+        if (request.headers['x-blazar-device-queue-push'] === '1') {
+          const scope = workScope(device.owner, device.workspace);
+          const peers = workSubscribers.get(scope) ?? new Map<WebSocket, string>();
+          peers.set(connection, token);
+          workSubscribers.set(scope, peers);
+          connection.once('close', () => {
+            peers.delete(connection);
+            if (!peers.size) workSubscribers.delete(scope);
+          });
         }
         connection.on('message', (raw, binary) => {
           let id: number | undefined;
@@ -91,6 +110,7 @@ export function createDeviceSocketTransport(store: SocketDevices) {
   const closeDeviceSockets = () => {
     if (socketsClosed) return;
     socketsClosed = true;
+    stopWorkNotifications();
     for (const connection of socketServer.clients) connection.terminate();
     socketServer.close();
   };

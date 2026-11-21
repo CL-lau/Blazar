@@ -170,3 +170,42 @@ test('approval expiry sends a stop on the live device socket and replays it afte
   assert.equal((await reconnect.request('runs/' + run.id + '/stopped', {}, signal)).status, 200);
   assert.equal((await (await claim()).json()).assignment.task.id, queued.id);
 });
+
+test('an idle device wakes when its workspace receives a task', async t => {
+  const store = new TaskStore(':memory:');
+  const server = routerServer(store, { owner: 'owner', token: 'admin' });
+  server.listen(0, '127.0.0.1');
+  await once(server, 'listening');
+  const address = server.address();
+  assert(address && typeof address !== 'string');
+  const base = new URL('http://127.0.0.1:' + address.port);
+  const matching = new DeviceSocket(base, store.registerDevice('owner', 'Matching', 'work').token);
+  const other = new DeviceSocket(base, store.registerDevice('owner', 'Other workspace', 'other').token);
+  t.after(async () => {
+    matching.close();
+    other.close();
+    server.closeDeviceSockets();
+    await new Promise<void>(resolve => server.close(() => resolve()));
+    store.close();
+  });
+  const signal = AbortSignal.timeout(3_000);
+  for (const connection of [matching, other]) {
+    const response = await connection.request('claim', { capability: 'document.preview' }, signal);
+    assert.deepEqual(await response.json(), { assignment: null });
+  }
+  const ready = matching.waitForWork(signal, 10_000);
+  const cancelled = new AbortController();
+  let unrelatedWoke = false;
+  const unrelated = other.waitForWork(cancelled.signal, 10_000)
+    .then(() => { unrelatedWoke = true; }, () => {});
+  try {
+    const task = store.create('owner', 'fixture', 'queue-wakeup', 'work', '/preview README.md');
+    await ready;
+    const claim = await matching.request('claim', { capability: 'document.preview' }, signal);
+    assert.equal((await claim.json()).assignment.task.id, task.id);
+    assert.equal(unrelatedWoke, false);
+  } finally {
+    cancelled.abort();
+    await unrelated;
+  }
+});

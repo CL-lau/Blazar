@@ -68,6 +68,10 @@ export class DeviceClient {
     return this.socket.request(path, body, signal);
   }
 
+  waitForWork(signal: AbortSignal) {
+    return this.socket.waitForWork(signal);
+  }
+
   close() {
     this.socket.close();
   }

@@ -15,6 +15,7 @@ import { displayTaskStatus, windowImageLifetimeMs } from '../../packages/protoco
 
 const runLimitMs = 10 * 60_000;
 const runSilenceMs = 2 * 60_000;
+const workWakeEvents = new Set(['task.created', 'task.instruction_added', 'task.retry_requested', 'task.resumed', 'task.device_available', 'workflow.step_ready']);
 const queueLatencyBounds = [1, 5, 10, 25, 50, 100, 250, 500, 1_000, 5_000, 15_000, 60_000, 300_000];
 
 type ChannelReply = { channel: string; chat: string; thread: string; messageId: string };
@@ -30,6 +31,8 @@ export class TaskStore {
   private readonly dispatch: DispatchRepository;
   private readonly taskReads: TaskReadRepository;
   private readonly runInputs: RunInputRepository;
+  private readonly workListeners = new Set<(owner: string, workspace: string) => void>();
+  private readonly pendingWorkHints = new Set<string>();
   private readonly canUseChannelAppEvidence?: (owner: string, workspace: string, refs: AppEvidence['refs']) => boolean;
 
   constructor(path: string, canUseChannelAppEvidence?: TaskStore['canUseChannelAppEvidence']) {
@@ -50,7 +53,29 @@ export class TaskStore {
   }
 
   close() {
+    this.workListeners.clear();
     this.db.close();
+  }
+
+  onWorkQueued(listener: (owner: string, workspace: string) => void) {
+    this.workListeners.add(listener);
+    return () => this.workListeners.delete(listener);
+  }
+
+  private notifyQueuedWork(taskId: string) {
+    if (!this.workListeners.size || this.pendingWorkHints.has(taskId)) return;
+    this.pendingWorkHints.add(taskId);
+    if (this.pendingWorkHints.size > 1) return;
+    queueMicrotask(() => {
+      const taskIds = [...this.pendingWorkHints];
+      this.pendingWorkHints.clear();
+      if (!this.workListeners.size) return;
+      const workspaces = this.db.prepare(`SELECT DISTINCT owner,workspace FROM task
+        WHERE id IN (SELECT value FROM json_each(?)) AND status IN ('queued','waiting_device')`).all(JSON.stringify(taskIds));
+      for (const row of workspaces) {
+        for (const listener of this.workListeners) listener(String(row.owner), String(row.workspace));
+      }
+    });
   }
 
   private transaction<T>(operation: () => T): T {
@@ -112,6 +137,7 @@ export class TaskStore {
   private event(taskId: string, type: string, data: unknown, reply?: ChannelReply) {
     this.db.prepare('INSERT INTO event(taskId,type,data) VALUES(?,?,?)')
       .run(taskId, type, JSON.stringify(data));
+    if (workWakeEvents.has(type)) this.notifyQueuedWork(taskId);
     if (['run.finished', 'run.superseded', 'task.instruction_added', 'task.result_accepted'].includes(type)) {
       this.updateWorkflowReadiness(taskId);
     }

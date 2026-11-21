@@ -148,7 +148,7 @@ try {
       assert.equal(claim.status, 200);
       const { assignment } = await claim.json() as { assignment: { run: Run; task: Task } | null };
       if (!assignment) {
-        await delay(5, undefined, { signal: active });
+        await socket.waitForWork(active);
         continue;
       }
       const { run, task } = assignment;

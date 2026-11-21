@@ -11,6 +11,8 @@ export class DeviceSocket {
   private id = 0;
   private stopListeners = new Map<string, () => void>();
   private pendingStops = new Set<string>();
+  private workAvailable = false;
+  private wake?: () => void;
 
   constructor(base: URL, token: string) {
     this.endpoint = new URL('/v1/devices/connect', base);
@@ -22,7 +24,7 @@ export class DeviceSocket {
     if (this.socket?.readyState === WebSocket.OPEN) return Promise.resolve(this.socket);
     if (this.opening) return this.opening;
     const socket = new WebSocket(this.endpoint, {
-      headers: { Authorization: `Bearer ${this.token}`, 'X-Blazar-Device-Stop-Push': '1' }, handshakeTimeout: 4_000,
+      headers: { Authorization: `Bearer ${this.token}`, 'X-Blazar-Device-Stop-Push': '1', 'X-Blazar-Device-Queue-Push': '1' }, handshakeTimeout: 4_000,
       followRedirects: false, maxPayload: 8 * 1024 * 1024, perMessageDeflate: false,
     });
     this.socket = socket;
@@ -49,6 +51,11 @@ export class DeviceSocket {
       if (this.socket !== socket) return;
       try {
         const reply = JSON.parse(data.toString());
+        if (reply.type === 'queue.changed') {
+          this.workAvailable = true;
+          this.wake?.();
+          return;
+        }
         if (reply.type === 'run.stop' && typeof reply.runId === 'string' && /^[a-f0-9-]{36}$/.test(reply.runId)) {
           const handler = this.stopListeners.get(reply.runId);
           if (handler) handler();
@@ -94,6 +101,26 @@ export class DeviceSocket {
       active.removeEventListener('abort', abort);
       this.pending.delete(id);
     }
+  }
+
+  async waitForWork(signal: AbortSignal, milliseconds = 1_000) {
+    signal.throwIfAborted();
+    if (!this.workAvailable) {
+      const ready = Promise.withResolvers<void>();
+      const wake = () => ready.resolve();
+      this.wake = wake;
+      const timer = setTimeout(wake, milliseconds);
+      signal.addEventListener('abort', wake, { once: true });
+      try {
+        await ready.promise;
+      } finally {
+        clearTimeout(timer);
+        signal.removeEventListener('abort', wake);
+        this.wake = undefined;
+      }
+    }
+    this.workAvailable = false;
+    signal.throwIfAborted();
   }
 
   onStop(runId: string, handler: () => void) {
