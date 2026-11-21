@@ -298,6 +298,7 @@ test('a registered JSONL extension executes a real subprocess through Router and
   const claimed = await (await devicePost('claim', claimInput)).json();
   const replayed = await (await devicePost('claim', claimInput)).json();
   assert.equal(replayed.assignment.run.id, claimed.assignment.run.id);
+  assert.equal(replayed.assignment.replayed, undefined);
   assert.equal(claimed.assignment.task.id, activeTask.id);
   assert.equal(claimed.assignment.memoryInputs[0].body, 'Private review template');
   assert.equal(claimed.assignment.memoryInputs[0].connection, undefined);
@@ -315,6 +316,14 @@ test('a registered JSONL extension executes a real subprocess through Router and
   assert.equal(pendingResponse.status, 202);
   const pending = await pendingResponse.json();
   assert.equal(memory.disconnect('owner', connection), true);
+  const revokedReplay = await devicePost('claim', claimInput);
+  assert.equal(revokedReplay.status, 200);
+  assert.deepEqual(await revokedReplay.json(), { assignment: null });
+  const activeRunId = claimed.assignment.run.id;
+  assert.equal(store.runTaskId(activeRunId, device.id), activeTask.id);
+  assert.ok(store.deviceStopTargets(device.id).some(item => item.id === activeRunId));
+  assert.equal((await devicePost('runs/' + activeRunId + '/stopped', {})).status, 200);
+  assert.equal(store.runTaskId(activeRunId, device.id), undefined);
   assert.equal((await (await readUsage()).json()).usage.filter((entry: { operation: string }) =>
     entry.operation === 'worker_memory').length, 2);
   assert.equal((await devicePost('runs/' + claimed.assignment.run.id + '/finish', {

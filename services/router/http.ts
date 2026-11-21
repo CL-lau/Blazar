@@ -487,25 +487,28 @@ function deviceOperation(store: TaskStore, bearer: string, pathname: string, dat
     store.recordDeviceWorker(device.id, worker);
     store.recordDeviceActivity(device.id, now, data.capability, platform);
     store.expire(now);
-    const assignment = store.claim(device.owner, device.workspace, device.id, now, leaseMs,
+    const claim = store.claim(device.owner, device.workspace, device.id, now, leaseMs,
       data.capability === 'document.preview' ? '/preview ' : data.capability === 'computer.observe' ? '/observe ' : '',
       data.capability === 'agent.acp' ? '/preview ' : '', key, worker, desktopApps, data.capability === 'agent.acp');
-    if (assignment) {
-      const refs = store.appEvidence(assignment.task.id);
-      if (refs) {
-        if (store.runEvidenceStopping(assignment.run.id)) return { status: 200, body: { assignment: null } };
-        const evidence = memory?.resolveAppEvidence(device.owner, device.workspace, refs);
-        if (data.capability !== 'agent.acp' || !memory || !evidence) {
-          store.rejectRunEvidence(assignment.run.id, device.id);
-          return { status: 200, body: { assignment: null } };
-        }
-        memory.recordWorkerAppUsage(device.workspace, assignment.task.id, assignment.run.id,
-          [...new Set(evidence.map(input => input.connection))]);
-        assignment.memoryInputs = [...(assignment.memoryInputs || []), ...evidence.map(({ id, body, version }) => ({ id, body, version }))];
+    if (!claim) {
+      store.clearInterruption(device.id);
+      return { status: 200, body: { assignment: null } };
+    }
+    const { replayed, ...assignment } = claim;
+    const refs = store.appEvidence(assignment.task.id);
+    if (refs) {
+      const evidence = memory?.resolveAppEvidence(device.owner, device.workspace, refs);
+      if (data.capability !== 'agent.acp' || !memory || !evidence) {
+        if (replayed) store.requestRunEvidenceStop(assignment.run.id, device.id);
+        else store.rejectRunEvidence(assignment.run.id, device.id);
+        return { status: 200, body: { assignment: null } };
       }
+      memory.recordWorkerAppUsage(device.workspace, assignment.task.id, assignment.run.id,
+        [...new Set(evidence.map(input => input.connection))]);
+      assignment.memoryInputs = [...(assignment.memoryInputs || []), ...evidence.map(({ id, body, version }) => ({ id, body, version }))];
     }
     store.clearInterruption(device.id);
-    return { status: 200, body: { assignment: assignment ?? null, ...(assignment && { leaseRemainingMs: Math.max(0, assignment.run.expires - Date.now()) }) } };
+    return { status: 200, body: { assignment, leaseRemainingMs: Math.max(0, assignment.run.expires - Date.now()) } };
   }
   const run = /^\/v1\/device\/runs\/([a-f0-9-]{36})\/(renew|finish|stopped|request-approval|approval|consume-approval|progress|input-artifact|steer)$/.exec(pathname);
   if (!run) throw new RequestError(404, 'Route not found');

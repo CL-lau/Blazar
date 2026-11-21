@@ -1456,7 +1456,7 @@ export class TaskStore {
             .get(assignment.run.id, device, now, Number(Boolean(workerPermitted)), Number(allowWorkerInputs));
           if (!current) return undefined;
           assignment.run.expires = Number(current.expires);
-          return assignment as ReturnType<TaskStore['assignment']>;
+          return { ...(assignment as ReturnType<TaskStore['assignment']>), replayed: true };
         }
       }
       if (this.db.prepare('SELECT 1 FROM device_pause WHERE device_id=?').get(device)) return undefined;
@@ -1524,7 +1524,7 @@ export class TaskStore {
       const assignment = this.assignment(owner, run, predecessors);
       if (requestId) this.db.prepare('INSERT INTO device_claim VALUES(?,?,?,?,?)')
         .run(device, requestId, fingerprint, JSON.stringify(assignment), now + 10 * 60_000);
-      return assignment;
+      return { ...assignment, replayed: false };
     });
   }
 
