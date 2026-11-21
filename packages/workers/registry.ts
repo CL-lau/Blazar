@@ -1,12 +1,12 @@
 import type { CustomJsonlWorker } from './custom-jsonl.ts';
 import type { PiWorker } from './pi.ts';
-import type { JsonWorker } from './jsonl.ts';
+import type { ClaudeWorker } from './claude.ts';
 import type { WorkerCommand } from './process.ts';
 import { access, constants, readFile, stat } from 'node:fs/promises';
 import { delimiter, isAbsolute, join } from 'node:path';
 import { deepSeekWorker, type AcpWorker } from './acp.ts';
 
-export type Worker = (WorkerCommand & { protocol: 'codex' | 'aider' }) | (AcpWorker & { protocol?: 'acp' }) | JsonWorker | PiWorker | CustomJsonlWorker;
+export type Worker = (WorkerCommand & { protocol: 'codex' | 'aider' }) | (AcpWorker & { protocol?: 'acp' }) | ClaudeWorker | PiWorker | CustomJsonlWorker;
 
 const builtInWorkers = new Map<string, Worker>([
   ['codex', { executable: 'codex', args: ['app-server'], label: 'Codex', protocol: 'codex', env: ['OPENAI_API_KEY', 'CODEX_HOME'] }],
@@ -16,7 +16,7 @@ const builtInWorkers = new Map<string, Worker>([
       '--no-check-update', '--no-analytics'],
     env: ['ANTHROPIC_API_KEY', 'OPENAI_API_KEY', 'OPENROUTER_API_KEY', 'AIDER_MODEL'] }],
   ['claude', { executable: 'claude', label: 'Claude Code', protocol: 'claude',
-    args: ['-p', '--verbose', '--output-format', 'stream-json', '--tools', '', '--strict-mcp-config', '--no-session-persistence'],
+    args: [],
     env: ['ANTHROPIC_API_KEY', 'CLAUDE_CODE_OAUTH_TOKEN', 'CLAUDE_CONFIG_DIR'] }],
   ['pi', { executable: 'pi', label: 'Pi', protocol: 'pi',
     args: ['--mode', 'rpc', '--no-tools', '--no-extensions', '--no-mcp', '--no-session',
@@ -60,6 +60,7 @@ export async function resolveWorker(mode: string, manifest?: string, executableO
     const worker = builtInWorkers.get(mode);
     if (!worker) throw new Error('Unsupported configured device worker');
     if (executableOverride && !isAbsolute(executableOverride)) throw new Error('Worker executable override must be absolute');
+    if (worker.protocol === 'claude' && !executableOverride) return worker;
     return { ...worker, executable: await locate(executableOverride || worker.executable) };
   }
   if (!manifest || !isAbsolute(manifest)) throw new Error('Set an absolute BLAZAR_WORKER_MANIFEST path');

@@ -31,7 +31,8 @@ if (!mode || mode === 'preview' || extra.length) {
       }
       console.log(JSON.stringify({
         label: worker.label, protocol, executable: worker.executable, credentials,
-        executableChecked: true, handshake: handshake ?? null, providerLogin: 'unverified',
+        executableChecked: protocol !== 'claude' || worker.executable !== 'claude',
+        handshake: handshake ?? null, providerLogin: 'unverified',
       }, null, 2));
     }
   } catch (error) {

@@ -1,29 +1,39 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { runPi } from '../../packages/workers/pi.ts';
-import { runJsonWorker, type JsonWorker } from '../../packages/workers/jsonl.ts';
+import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { runClaude } from '../../packages/workers/claude.ts';
 
 const job = { goal: 'Summarize the notes', instructions: ['Use bullets'], predecessors: [] };
 
-function fixture(protocol: JsonWorker['protocol'], records: string): JsonWorker {
-  return {
-    label: protocol, protocol, executable: process.execPath,
-    args: ['-e', `let text = '';
-      process.stdin.on('data', chunk => text += chunk);
-      process.stdin.on('end', () => {
-        const input = JSON.parse(text);
-        const result = input.goal + ': ' + input.instructions[0];
-        const emit = record => console.log(JSON.stringify(record));
-        ${records}
-      });`],
-  };
-}
-
-test('Claude Code stream-json requires a successful result', async () => {
-  const success = fixture('claude', "emit({type:'result',subtype:'success',is_error:false,result});");
-  assert.equal(await runJsonWorker(success, process.cwd(), job, AbortSignal.timeout(2_000)), 'Summarize the notes: Use bullets');
-  const failure = fixture('claude', "emit({type:'result',subtype:'error',is_error:true,result});");
-  await assert.rejects(runJsonWorker(failure, process.cwd(), job, AbortSignal.timeout(2_000)), /completed response/);
+test('Claude Agent SDK accepts only a successful result from its subprocess', async t => {
+  const root = mkdtempSync(join(tmpdir(), 'blazar-claude-'));
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  const script = join(root, 'claude-fixture');
+  writeFileSync(script, `#!${process.execPath}
+    const assert = require('node:assert/strict');
+    const args = process.argv.slice(2);
+    assert.ok(args.includes('--strict-mcp-config'));
+    assert.ok(args.includes('--no-session-persistence'));
+    const emit = record => console.log(JSON.stringify(record));
+    require('node:readline').createInterface({input:process.stdin}).on('line', line => {
+      const packet = JSON.parse(line);
+      if (packet.type === 'control_request') {
+        emit({type:'control_response',response:{subtype:'success',request_id:packet.request_id,response:{}}});
+      } else if (packet.type === 'user') {
+        const content = packet.message.content;
+        const input = JSON.parse(typeof content === 'string' ? content : content[0].text);
+        const failed = input.goal === 'Fail';
+        emit({type:'result',subtype:failed?'error_during_execution':'success',is_error:failed,
+          result:input.goal + ': ' + input.instructions[0]});
+      }
+    });
+  `, { mode: 0o700 });
+  const worker = { label: 'Claude', protocol: 'claude' as const, executable: script, args: [] };
+  assert.equal(await runClaude(worker, root, job, AbortSignal.timeout(3_000)), 'Summarize the notes: Use bullets');
+  await assert.rejects(runClaude(worker, root, { ...job, goal: 'Fail' }, AbortSignal.timeout(3_000)), /completed response/);
 });
 
 test('Pi RPC requires a correlated prompt acknowledgment and a settled run', async () => {

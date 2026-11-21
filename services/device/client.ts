@@ -4,7 +4,7 @@ import { DeviceSocket } from './socket.ts';
 import { runAider } from '../../packages/workers/aider.ts';
 import { runCustomJsonl } from '../../packages/workers/custom-jsonl.ts';
 import { runPi } from '../../packages/workers/pi.ts';
-import { runJsonWorker } from '../../packages/workers/jsonl.ts';
+import { runClaude } from '../../packages/workers/claude.ts';
 import type { JobContext, WorkerSteer } from '../../packages/workers/prompt.ts';
 import { runCodex } from '../../packages/workers/codex.ts';
 import type { Worker } from '../../packages/workers/registry.ts';
@@ -253,7 +253,7 @@ export class DeviceClient {
             : this.worker.protocol === 'pi' || this.worker.protocol === 'codex'
             ? await this.runSteerableWorker(this.worker, prefix, job, stop, active)
             : this.worker.protocol === 'claude'
-            ? await runJsonWorker(this.worker, this.root, job, active)
+            ? await runClaude(this.worker, this.root, job, active)
               : this.worker.protocol === 'aider'
                 ? await runAider(this.worker, this.root, job, active)
                 : await runAcp(this.worker, this.root, job, active, async (summary, signal) => {

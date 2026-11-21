@@ -75,7 +75,8 @@ Set `BLAZAR_DEVICE_WORKER` to choose the locally installed executable for a devi
 
 | Preset | Executable |
 | --- | --- |
-| `codex`, `claude`, `pi` | `codex`, `claude`, `pi` |
+| `codex`, `pi` | `codex`, `pi` |
+| `claude` | Claude Agent SDK, with its bundled Claude Code executable |
 | `deepseek`, `opencode`, `copilot` | `dsh`, `opencode`, `copilot` |
 | `droid`, `qwen`, `kimi`, `kiro`, `auggie` | `droid`, `qwen`, `kimi`, `kiro-cli`, `auggie` |
 | `gemini`, `cursor`, `antigravity` | `gemini`, `cursor-agent`, Antigravity ACP server |
