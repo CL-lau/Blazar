@@ -239,11 +239,12 @@ struct RouterClient: Equatable {
         _ = try await request("v1/workflows", body: body, key: key)
     }
 
-    func command(task: RouterSnapshot.Task, action: String, text: String? = nil, approval: String? = nil) async throws {
+    func command(task: RouterSnapshot.Task, action: String, text: String? = nil, approval: String? = nil,
+                 key: UUID) async throws {
         var body: [String: Any] = ["action": action, "expectedVersion": task.version]
         body["text"] = text
         body["approvalId"] = approval
-        _ = try await request("v1/tasks/\(task.id)/commands", body: body, key: UUID())
+        _ = try await request("v1/tasks/\(task.id)/commands", body: body, key: key)
     }
 
     func sendFollowUp(taskId: String, version: Int, text: String, key: UUID) async throws {

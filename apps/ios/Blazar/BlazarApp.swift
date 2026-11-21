@@ -405,6 +405,14 @@ private struct TaskDetails: View {
     let artifacts: [RouterSnapshot.Artifact]
     let reload: () async -> Void
     @Environment(\.dismiss) private var dismiss
+    private struct CommandIntent: Equatable {
+        let version: Int
+        let action: String
+        let text: String?
+        let approval: String?
+    }
+
+    @State private var pendingCommand: (intent: CommandIntent, key: UUID)?
     @State private var instruction = ""
     @State private var error: String?
     @State private var preview: String?
@@ -594,11 +602,17 @@ private struct TaskDetails: View {
     }
 
     private func send(_ action: String, text: String? = nil, approval: String? = nil) {
+        guard !working else { return }
+        let intent = CommandIntent(version: task.version, action: action, text: text, approval: approval)
+        let key = pendingCommand.flatMap { $0.intent == intent ? $0.key : nil } ?? UUID()
+        pendingCommand = (intent, key)
+        working = true
+        error = nil
         Task {
-            working = true
             defer { working = false }
             do {
-                try await client.command(task: task, action: action, text: text, approval: approval)
+                try await client.command(task: task, action: action, text: text, approval: approval, key: key)
+                pendingCommand = nil
                 await reload()
                 dismiss()
             } catch { self.error = error.localizedDescription }
