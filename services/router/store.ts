@@ -4,6 +4,7 @@ import type { ConversationTurn, Decision, RouteRequest } from './harness.ts';
 import { createHash, randomBytes, randomUUID } from 'node:crypto';
 import { DatabaseSync } from 'node:sqlite';
 import type { PredecessorInput, Run, RunOutcome, Task, TaskEvent, WorkerConfiguration, WorkflowStep } from '../../packages/protocol/task.ts';
+import { windowImageLifetimeMs } from '../../packages/protocol/task.ts';
 
 const runLimitMs = 10 * 60_000;
 
@@ -179,6 +180,7 @@ export class TaskStore {
       CREATE TABLE IF NOT EXISTS artifact_image (
         artifact_id TEXT PRIMARY KEY REFERENCES artifact(id) ON DELETE CASCADE, expires INTEGER NOT NULL
       );
+      CREATE INDEX IF NOT EXISTS artifact_image_expiry ON artifact_image(expires);
       CREATE TABLE IF NOT EXISTS artifact_version (
         artifact_id TEXT PRIMARY KEY REFERENCES artifact(id) ON DELETE CASCADE, task_version INTEGER NOT NULL
       );
@@ -1211,7 +1213,7 @@ export class TaskStore {
         this.db.prepare('INSERT INTO artifact VALUES(?,?,?,?,?,?,?)')
           .run(id, taskId, runId, name, sha256, content.length, content);
         this.db.prepare('INSERT INTO artifact_version VALUES(?,?)').run(id, row.version!);
-        if (mime) this.db.prepare('INSERT INTO artifact_image VALUES(?,?)').run(id, now + 5 * 60_000);
+        if (mime) this.db.prepare('INSERT INTO artifact_image VALUES(?,?)').run(id, now + windowImageLifetimeMs);
         this.event(taskId, 'artifact.created', { id, taskId, runId, name, sha256, size: content.length, version: row.version });
       }
       this.db.prepare('INSERT INTO run_receipt VALUES(?,?,?)').run(runId, device, digest);

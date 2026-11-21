@@ -9,6 +9,25 @@ import { routerServer } from './http.ts';
 import { TaskStore } from './store.ts';
 import { DeviceClient } from '../device/client.ts';
 import { DeviceLedger } from '../device/ledger.ts';
+import { windowImageLifetimeMs } from '../../packages/protocol/task.ts';
+
+test('the device drops expired screenshot uploads while retaining pending text results', t => {
+  const root = mkdtempSync(join(tmpdir(), 'blazar-expiring-upload-'));
+  const path = join(root, 'ledger.sqlite');
+  const created = Date.now();
+  let ledger = new DeviceLedger(path);
+  t.after(() => { ledger.close(); rmSync(root, { recursive: true, force: true }); });
+  ledger.save('scope', 'screenshot', {
+    status: 'succeeded', result: 'Screenshot', artifact: { name: 'window.png', text: 'test', mime: 'image/png' },
+  }, created);
+  ledger.save('scope', 'ordinary', { status: 'succeeded', result: 'Text result' }, created);
+  ledger.close();
+  ledger = new DeviceLedger(path);
+  assert.equal(ledger.next('scope', created + windowImageLifetimeMs - 1)?.runId, 'screenshot');
+  assert.equal(ledger.next('scope', created + windowImageLifetimeMs)?.runId, 'ordinary');
+  ledger.acknowledge('scope', 'ordinary');
+  assert.equal(ledger.next('scope', created + windowImageLifetimeMs), undefined);
+});
 
 test('a device crash blocks the workspace after restart and credential rotation', { timeout: 5000 }, async t => {
   const dir = mkdtempSync(join(tmpdir(), 'blazar-interrupted-'));

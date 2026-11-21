@@ -1,5 +1,5 @@
 import { DatabaseSync } from 'node:sqlite';
-import type { RunOutcome } from '../../packages/protocol/task.ts';
+import { windowImageLifetimeMs, type RunOutcome } from '../../packages/protocol/task.ts';
 
 export type SessionCheckpoint = { key: string; id: string; instructionCount: number };
 
@@ -16,7 +16,7 @@ export class DeviceLedger {
         workspace TEXT PRIMARY KEY, run_id TEXT NOT NULL
       );
       CREATE TABLE IF NOT EXISTS pending_result (
-        scope TEXT NOT NULL, run_id TEXT NOT NULL, outcome TEXT NOT NULL,
+        scope TEXT NOT NULL, run_id TEXT NOT NULL, outcome TEXT NOT NULL, expires INTEGER,
         PRIMARY KEY(scope,run_id)
       );
       CREATE TABLE IF NOT EXISTS pending_session (
@@ -27,10 +27,34 @@ export class DeviceLedger {
         key TEXT PRIMARY KEY, session_id TEXT NOT NULL, instruction_count INTEGER NOT NULL
       );
     `);
+    if (!this.db.prepare("SELECT 1 FROM pragma_table_info('pending_result') WHERE name='expires'").get()) {
+      this.db.exec('BEGIN IMMEDIATE');
+      try {
+        if (!this.db.prepare("SELECT 1 FROM pragma_table_info('pending_result') WHERE name='expires'").get()) {
+          this.db.exec(`
+            ALTER TABLE pending_result ADD COLUMN expires INTEGER;
+            DELETE FROM pending_result WHERE json_extract(outcome,'$.artifact.mime')='image/png';
+          `);
+        }
+        this.db.exec('COMMIT');
+      } catch (error) {
+        this.db.exec('ROLLBACK');
+        this.db.close();
+        throw error;
+      }
+    }
+    this.db.exec('CREATE INDEX IF NOT EXISTS pending_image_expiry ON pending_result(expires) WHERE expires IS NOT NULL');
+    this.pruneImages(Date.now());
   }
 
-  save(scope: string, runId: string, outcome: RunOutcome) {
-    this.db.prepare('INSERT INTO pending_result VALUES(?,?,?)').run(scope, runId, JSON.stringify(outcome));
+  private pruneImages(now: number) {
+    this.db.prepare('DELETE FROM pending_result WHERE expires<=?').run(now);
+  }
+
+  save(scope: string, runId: string, outcome: RunOutcome, now = Date.now()) {
+    const expires = outcome.artifact?.mime === 'image/png' ? now + windowImageLifetimeMs : null;
+    this.db.prepare('INSERT INTO pending_result(scope,run_id,outcome,expires) VALUES(?,?,?,?)')
+      .run(scope, runId, JSON.stringify(outcome), expires);
   }
 
   begin(workspace: string, runId: string) {
@@ -52,7 +76,7 @@ export class DeviceLedger {
     try {
       if (!this.clearExecution(workspace, runId)) throw new Error('Execution record missing');
       this.save(scope, runId, outcome);
-      if (checkpoint && outcome.status === 'succeeded') {
+      if (checkpoint && outcome.status === 'succeeded' && !outcome.artifact?.mime) {
         this.db.prepare('INSERT INTO pending_session VALUES(?,?,?)').run(scope, runId, JSON.stringify(checkpoint));
       }
       this.db.exec('COMMIT');
@@ -62,7 +86,8 @@ export class DeviceLedger {
     }
   }
 
-  next(scope: string) {
+  next(scope: string, now = Date.now()) {
+    this.pruneImages(now);
     const row = this.db.prepare('SELECT run_id,outcome FROM pending_result WHERE scope=? ORDER BY rowid LIMIT 1')
       .get(scope);
     if (!row) return undefined;

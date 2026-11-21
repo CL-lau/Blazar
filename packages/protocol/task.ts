@@ -25,6 +25,8 @@ export interface TaskEvent {
   data: string;
 }
 
+export const windowImageLifetimeMs = 5 * 60_000;
+
 export interface RunOutcome {
   status: 'succeeded' | 'failed';
   result: string;
