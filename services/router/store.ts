@@ -412,12 +412,15 @@ export class TaskStore {
     return Number(this.db.prepare('SELECT replay_floor FROM event_retention WHERE id=1').get()?.replay_floor ?? 0);
   }
 
-  pruneProgressEvents(before: number) {
+  pruneProgressEvents(before: number, limit = -1) {
     return this.transaction(() => {
-      const latestRemoved = this.db.prepare('SELECT MAX(seq) AS last FROM progress_event_time WHERE created_at<?').get(before);
+      const latestRemoved = this.db.prepare(`SELECT MAX(seq) AS last FROM (
+        SELECT seq FROM progress_event_time WHERE created_at<? ORDER BY seq LIMIT ?
+      )`).get(before, limit);
       if (latestRemoved?.last == null) return 0;
-      const { changes } = this.db.prepare('DELETE FROM event WHERE seq IN (SELECT seq FROM progress_event_time WHERE created_at<?)')
-        .run(before);
+      const { changes } = this.db.prepare(`DELETE FROM event WHERE seq IN (
+        SELECT seq FROM progress_event_time WHERE created_at<? AND seq<=?
+      )`).run(before, latestRemoved.last);
       this.db.prepare(`INSERT INTO event_retention VALUES(1,?) ON CONFLICT(id)
         DO UPDATE SET replay_floor=MAX(replay_floor,excluded.replay_floor)`).run(latestRemoved.last);
       return Number(changes);

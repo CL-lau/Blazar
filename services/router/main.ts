@@ -17,6 +17,11 @@ const token = process.env.BLAZAR_ROUTER_TOKEN;
 if (!token || token.length < 32) throw new Error('Set BLAZAR_ROUTER_TOKEN to a randomly generated secret');
 const port = Number(process.env.BLAZAR_PORT ?? 4199);
 if (!Number.isInteger(port) || port < 1 || port > 65535) throw new Error('Invalid BLAZAR_PORT');
+const retentionDays = process.env.BLAZAR_PROGRESS_RETENTION_DAYS;
+if (retentionDays !== undefined && (!/^[1-9]\d{0,3}$/.test(retentionDays) || Number(retentionDays) > 3_650)) {
+  throw new Error('Set BLAZAR_PROGRESS_RETENTION_DAYS to a whole number from 1 to 3650');
+}
+const progressRetentionMs = retentionDays === undefined ? undefined : Number(retentionDays) * 86_400_000;
 const provider = process.env.BLAZAR_MODEL_PROVIDER;
 const model = process.env.BLAZAR_MODEL;
 if (Boolean(provider) !== Boolean(model)) throw new Error('Set BLAZAR_MODEL_PROVIDER and BLAZAR_MODEL together');
@@ -68,12 +73,18 @@ const documentSyncTimer = setInterval(() => {
     .finally(() => { documentSync = undefined; });
 }, 5_000);
 documentSyncTimer.unref();
+let nextProgressCleanup = 0;
+const progressCleanupBatch = 1_000;
 const watchdog = setInterval(() => {
   const now = Date.now();
   store.expire(now);
   store.watchSilentRuns(now);
   store.updateDeviceReadiness(now);
   server.flushStopNotifications();
+  if (progressRetentionMs !== undefined && now >= nextProgressCleanup) {
+    const removed = store.pruneProgressEvents(now - progressRetentionMs, progressCleanupBatch);
+    nextProgressCleanup = now + (removed < progressCleanupBatch ? 60 * 60_000 : 1_000);
+  }
 }, 1_000);
 
 let delivery: Promise<void> | undefined;

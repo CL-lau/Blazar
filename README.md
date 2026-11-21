@@ -47,6 +47,8 @@ BLAZAR_DB=/recovery/router.sqlite npm run router:db -- restore /backup/blazar.sq
 
 Create the destination directory before running either command. Restore into a fresh path, then point the Router at that database. Before enabling live IM or device connections after a restore, review any work or outbound deliveries that may have occurred after the backup was taken.
 
+Set `BLAZAR_PROGRESS_RETENTION_DAYS` on the Router to clear old Worker progress events at startup and hourly. Choose a whole number from 1 to 3650. Task instructions, approvals, and results remain available.
+
 ## Remote iOS and device access
 
 Run Caddy on the Router host with a public DNS name pointing to that host. Allow Caddy to receive traffic on ports 80 and 443 so it can obtain and renew a TLS certificate. If the Router uses a custom `BLAZAR_PORT`, pass the same value to Caddy.
