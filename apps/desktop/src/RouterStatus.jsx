@@ -51,6 +51,14 @@ export function RouterStatus({ token }) {
         <h3>Execution devices</h3>
         <p>{data.devices.online} online · {data.devices.active} registered · {data.devices.interrupted} interrupted</p>
       </section>
+      {data.runRecovery && <section>
+        <h3>Run recovery</h3>
+        <p>{data.runRecovery.leaseExpired} expired leases · {data.runRecovery.deadlineExceeded} run timeouts · {data.runRecovery.deviceInterrupted} device interruptions · {data.runRecovery.deviceRevoked} runs stopped by device revocation</p>
+      </section>}
+      {data.modelTokens?.samples > 0 && <section>
+        <h3>Routing model tokens</h3>
+        <p>{data.modelTokens.totalTokens.toLocaleString()} total across {data.modelTokens.samples} reported model calls since Router startup</p>
+      </section>}
       <section>
         <h3>Latency</h3>
         {timings.length === 0 ? <p>No latency samples yet.</p> : <div className="status-table">

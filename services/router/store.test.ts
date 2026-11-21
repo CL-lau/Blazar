@@ -470,6 +470,36 @@ test('a run cannot extend its lease past the Router time limit', t => {
   assert.equal(db.timeline('owner', task.id)?.events[0].type, 'run.deadline_exceeded');
 });
 
+test('run recovery metrics survive restart and remain scoped to the task owner', t => {
+  const dir = mkdtempSync(join(tmpdir(), 'blazar-recovery-'));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  const file = join(dir, 'router.sqlite');
+  const db = new TaskStore(file);
+  try {
+    db.create('owner', 'desktop', 'lease-expiry', 'project', 'Review notes');
+    db.create('other', 'desktop', 'run-timeout', 'project', 'Read the draft');
+    assert.ok(db.claim('owner', 'project', 'device', 0, 45_000));
+    assert.ok(db.claim('other', 'project', 'other-device', 0, 600_000));
+    assert.equal(db.expire(45_000), 1);
+    assert.equal(db.expire(600_000), 1);
+    assert.equal(db.expire(600_000), 0);
+  } finally {
+    db.close();
+  }
+
+  const reopened = new TaskStore(file);
+  try {
+    assert.deepEqual(reopened.metrics('owner', 600_000).runRecovery, {
+      leaseExpired: 1, deadlineExceeded: 0, deviceInterrupted: 0, deviceRevoked: 0,
+    });
+    assert.deepEqual(reopened.metrics('other', 600_000).runRecovery, {
+      leaseExpired: 0, deadlineExceeded: 1, deviceInterrupted: 0, deviceRevoked: 0,
+    });
+  } finally {
+    reopened.close();
+  }
+});
+
 test('workspace Worker time limits apply at claim and survive policy changes', t => {
   const db = new TaskStore(':memory:');
   t.after(() => db.close());

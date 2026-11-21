@@ -299,6 +299,8 @@ export class TaskStore {
       CREATE INDEX IF NOT EXISTS task_memory_watch ON task(status)
         WHERE status IN ('queued','waiting_device','waiting_dependency','waiting_review','running','waiting_user');
       CREATE INDEX IF NOT EXISTS event_task ON event(taskId,seq);
+      CREATE INDEX IF NOT EXISTS event_run_recovery ON event(taskId,type)
+        WHERE type IN ('run.lease_expired','run.deadline_exceeded','run.device_interrupted','run.device_revoked');
     `);
     if (!this.db.prepare("SELECT 1 FROM pragma_table_info('workspace_worker_policy') WHERE name='max_concurrent'").get()) {
       this.db.exec('ALTER TABLE workspace_worker_policy ADD COLUMN max_concurrent INTEGER');
@@ -1313,6 +1315,10 @@ export class TaskStore {
     const total = queue.reduce((sum, row) => sum + Number(row.total_ms), 0);
     let cumulative = 0;
     const p95 = queue.find(row => (cumulative += Number(row.count)) >= Math.ceil(count * 0.95));
+    const recovery = Object.fromEntries(this.db.prepare(`SELECT e.type,COUNT(*) AS count
+      FROM task t JOIN event e ON e.taskId=t.id
+      WHERE t.owner=? AND e.type IN ('run.lease_expired','run.deadline_exceeded','run.device_interrupted','run.device_revoked')
+      GROUP BY e.type`).all(owner).map(row => [String(row.type), Number(row.count)]));
     const channelDelivery = this.db.prepare(`SELECT
       CASE WHEN json_valid(b.channel) THEN json_extract(b.channel,'$[0]') ELSE b.channel END AS channel,
       SUM(o.delivered=1) AS sent,SUM(o.delivered=-1) AS failed,SUM(o.delivered=-2) AS unknown,
@@ -1324,6 +1330,12 @@ export class TaskStore {
     return {
       tasks: Object.fromEntries(tasks.map(row => [row.status, row.count])),
       channelDelivery,
+      runRecovery: {
+        leaseExpired: recovery['run.lease_expired'] ?? 0,
+        deadlineExceeded: recovery['run.deadline_exceeded'] ?? 0,
+        deviceInterrupted: recovery['run.device_interrupted'] ?? 0,
+        deviceRevoked: recovery['run.device_revoked'] ?? 0,
+      },
       queueLatencyMs: { count, mean: count ? total / count : null,
         p95UpperBound: p95 ? queueLatencyBounds[Number(p95.bucket)] ?? null : null },
       devices: {
