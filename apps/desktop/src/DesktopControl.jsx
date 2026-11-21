@@ -8,7 +8,7 @@ function inventoryWindows(task) {
   if (task?.status !== 'succeeded') return [];
   try {
     const windows = JSON.parse(task.result);
-    return Array.isArray(windows) ? windows.filter(window => window?.accessible &&
+    return Array.isArray(windows) ? windows.filter(window => window &&
       /^w-[0-9]{1,20}$/.test(window.id) && /^[a-f0-9]{64}$/.test(window.identity)) : [];
   } catch {
     return [];
@@ -73,21 +73,26 @@ export function DesktopControl({ targets, tasks, workspace, setWorkspace, busy, 
     {inventory?.binding === binding && <fieldset disabled={busy}>
       <legend>Window operations</legend>
       {inventoryTask?.status !== 'succeeded' ? <p role="status">Window inventory {inventoryTask?.status?.replaceAll('_', ' ') ?? 'pending'}.</p>
-        : windows.length === 0 ? <p role="status">No accessible windows found.</p> : <>
+        : windows.length === 0 ? <p role="status">No identifiable windows found.</p> : <>
           <label>Window<select value={window?.id ?? ''} onChange={event => setWindowId(event.target.value)}>
             <option value="">Choose a window</option>
             {windows.map(item => <option key={item.id} value={item.id}>{item.title || item.id}</option>)}
           </select></label>
-          <button type="button" disabled={!targetCommand} onClick={() => dispatch('/observe ' + targetCommand)}>Inspect window</button>
+          <button type="button" disabled={!targetCommand || !window?.accessible || target.accessibility === 'denied'}
+            onClick={() => dispatch('/observe ' + targetCommand)}>Inspect window</button>
           {controls?.visual && <button type="button" disabled={!targetCommand || target.screenRecording === 'denied'}
             onClick={() => dispatch('/observe ' + targetCommand + ' --visual')}>Capture screenshot</button>}
+          {controls?.visual && <button type="button" disabled={!targetCommand || !window?.accessible ||
+            target.accessibility === 'denied' || target.screenRecording === 'denied'}
+            onClick={() => dispatch('/observe ' + targetCommand + ' --hybrid')}>Inspect and capture</button>}
           {controls?.visual && target.screenRecording === 'denied' && <p>Grant Screen Recording permission on the device to capture screenshots.</p>}
           {controls?.buttons?.length > 0 && <>
             <label>Button<select value={button} onChange={event => setButton(event.target.value)}>
               <option value="">Choose a button</option>
               {controls.buttons.map(label => <option key={label}>{label}</option>)}
             </select></label>
-            <button type="button" disabled={!targetCommand || !controls.buttons.includes(button)}
+            <button type="button" disabled={!targetCommand || !window?.accessible ||
+              target.accessibility === 'denied' || !controls.buttons.includes(button)}
               onClick={() => dispatch('/click ' + targetCommand + ' ' + button)}>Request click approval</button>
           </>}
         </>}

@@ -4,9 +4,12 @@ enum DesktopOperation: String, CaseIterable, Identifiable {
     case windows = "List windows"
     case inspect = "Inspect"
     case visual = "View window image"
+    case hybrid = "Inspect and capture"
     case click = "Click button"
 
     var id: Self { self }
+    var requiresImage: Bool { self == .visual || self == .hybrid }
+    var requiresAccessibility: Bool { self == .inspect || self == .click || self == .hybrid }
 
     func command(alias rawAlias: String, window rawWindow: String, button rawButton: String,
                  identity: String? = nil) -> String? {
@@ -22,7 +25,10 @@ enum DesktopOperation: String, CaseIterable, Identifiable {
             target += " --instance \(identity)"
         }
         if self == .inspect { return "/observe \(target)" }
-        if self == .visual { return identity == nil ? nil : "/observe \(target) --visual" }
+        if requiresImage {
+            guard identity != nil else { return nil }
+            return "/observe \(target) --\(self == .hybrid ? "hybrid" : "visual")"
+        }
         guard (1...120).contains(button.utf16.count),
               button.rangeOfCharacter(from: .controlCharacters.union(.newlines)) == nil else { return nil }
         return "/click \(target) \(button)"
@@ -84,10 +90,21 @@ struct DesktopControl: View {
 
     private var command: String? {
         if operation != .windows, !window.isEmpty, let inventory, inventory.target != target { return nil }
-        if operation == .visual && appControls?.visual == false { return nil }
+        if operation.requiresImage && (appControls?.visual == false || selectedComputer?.screenRecording == "denied") {
+            return nil
+        }
+        if operation.requiresAccessibility && selectedComputer?.accessibility == "denied" { return nil }
         if operation == .click, let appControls, !appControls.buttons.contains(button) { return nil }
-        let identity = windows?.first { $0.id == window }?.identity
+        if operation.requiresAccessibility, windows?.contains(where: { $0.id == window && !$0.accessible }) == true {
+            return nil
+        }
+        let identity = selectableWindows.first { $0.id == window }?.identity
         return operation.command(alias: alias, window: window, button: button, identity: identity)
+    }
+
+    private var selectableWindows: [Window] {
+        (windows ?? []).filter { (!operation.requiresImage || $0.identity != nil) &&
+            (!operation.requiresAccessibility || $0.accessible) }
     }
 
     private var available: [RouterSnapshot.DesktopTarget] {
@@ -142,12 +159,12 @@ struct DesktopControl: View {
                     ForEach(aliases, id: \.self) { Text($0).tag($0) }
                 }
             }
-            if operation != .windows, let windows, windows.contains(where: { operation == .visual ? $0.identity != nil : $0.accessible }) {
+            if operation != .windows, !selectableWindows.isEmpty {
                 Picker("Window", selection: $window) {
-                    Text(operation == .visual ? "Choose a window" : "Active window").tag("")
-                    ForEach(windows.filter { operation == .visual ? $0.identity != nil : $0.accessible }) { item in Text(item.label).tag(item.id) }
+                    Text(operation.requiresImage ? "Choose a window" : "Active window").tag("")
+                    ForEach(selectableWindows) { item in Text(item.label).tag(item.id) }
                 }
-            } else if operation != .windows {
+            } else if operation != .windows && !operation.requiresImage {
                 TextField("Window ID (optional)", text: $window)
                     .autocorrectionDisabled()
             }
@@ -182,11 +199,11 @@ struct DesktopControl: View {
                 Text("Blazar will ask for approval before clicking.")
                     .font(.caption)
             }
-            if operation == .visual && appControls?.visual == false {
+            if operation.requiresImage && appControls?.visual == false {
                 Text("Window images are disabled for this application.").font(.caption)
-            } else if operation == .visual && selectedComputer?.screenRecording == "denied" {
+            } else if operation.requiresImage && selectedComputer?.screenRecording == "denied" {
                 Text("Screen Recording is disabled on the selected computer.").font(.caption)
-            } else if (operation == .inspect || operation == .click) && selectedComputer?.accessibility == "denied" {
+            } else if operation.requiresAccessibility && selectedComputer?.accessibility == "denied" {
                 Text("Accessibility is disabled on the selected computer.").font(.caption)
             }
             Button(operation.rawValue) {

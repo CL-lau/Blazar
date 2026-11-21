@@ -3,6 +3,14 @@ import XCTest
 @testable import Blazar
 
 final class ClientTests: XCTestCase {
+    func testHybridObservationRequiresAnIdentifiedWindow() {
+        let identity = String(repeating: "a", count: 64)
+        XCTAssertNil(DesktopOperation.hybrid.command(alias: "notes", window: "w-12", button: ""))
+        XCTAssertNil(DesktopOperation.hybrid.command(alias: "notes", window: "", button: "", identity: identity))
+        XCTAssertEqual(DesktopOperation.hybrid.command(alias: "notes", window: "w-12", button: "", identity: identity),
+                       "/observe notes --window w-12 --instance \(identity) --hybrid")
+    }
+
     func testStoredPairingSurvivesStalePreferencesAndReadsLegacyTokens() throws {
         let token = String(repeating: "A", count: 43)
         let pairing = Credentials.Pairing(endpoint: "https://new.example", token: token)
