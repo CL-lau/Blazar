@@ -150,6 +150,14 @@ export BLAZAR_MCP_DOCS='[{"account":"Handbook","endpoint":"http://127.0.0.1:4198
 
 Register the account in the desktop app with app type `mcp`, then use `review` as the document ID. For a server requiring bearer authentication, set `tokenEnv` to the name of a `BLAZAR_MCP_TOKEN_*` environment variable. The connector reads text resources by alias.
 
+To give a custom MCP application its own identity in the desktop catalog, add a versioned manifest to the Router environment. The same application ID may have multiple account entries with a shared label.
+
+```sh
+export BLAZAR_APP_MANIFESTS='[{"version":1,"id":"custom.handbook","label":"Team Handbook","connector":"mcp-resources","account":"Production","endpoint":"http://127.0.0.1:4198/mcp","resources":{"review":"docs://handbook/review"}}]'
+```
+
+Restart the Router, then connect `custom.handbook` with account `Production` in the desktop app. Credentials and endpoints stay on the Router. The catalog exposes the manifest name, account label, and document capabilities.
+
 In **Apps and memory**, choose a source account and workspace to refresh previously imported documents. You can also save an automatic refresh interval for that account and workspace.
 
 In the desktop task view, **Create task with selected apps** lets a Worker use matching knowledge from source accounts you select. Access is rechecked when the task is assigned and when the Worker submits a result. Administrators can share a completed result version with an individual paired phone while each referenced version remains authorized.

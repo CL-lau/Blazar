@@ -6,6 +6,7 @@ export class DocumentAccessDenied extends DocumentUnavailable {}
 export type DocumentConnector = {
   app: string;
   account: string;
+  definition?: { label: string; version: number };
   documentAliases?: readonly string[];
   accepts(document: string): boolean;
   read(document: string, signal: AbortSignal): Promise<{ text: string; revision: string }>;
@@ -22,10 +23,12 @@ const appCapabilities = [
 ] as const;
 
 export function documentAppCatalog(connectors: readonly DocumentConnector[]) {
-  const apps = new Map(documentApps);
-  for (const connector of connectors) if (!apps.has(connector.app)) apps.set(connector.app, connector.app);
-  return [...apps].map(([id, label]) => ({
-    id, label, version: 1,
+  const apps = new Map([...documentApps].map(([id, label]) => [id, { label, version: 1 }]));
+  for (const connector of connectors) {
+    if (!apps.has(connector.app)) apps.set(connector.app, connector.definition ?? { label: connector.app, version: 1 });
+  }
+  return [...apps].map(([id, definition]) => ({
+    id, ...definition,
     accounts: connectors.filter(connector => connector.app === id).map(connector => connector.account).sort(),
     capabilities: appCapabilities,
   }));

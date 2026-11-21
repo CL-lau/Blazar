@@ -52,14 +52,28 @@ export function configuredDocuments(env: NodeJS.ProcessEnv, transport = fetch): 
     const token = accessToken(env, entry.tokenEnv, /^BLAZAR_GITHUB_TOKEN_[A-Z0-9_]+$/);
     register(githubDocuments(accountName(entry.account), entry.repository, token, transport));
   }
-  for (const entry of entries(env, 'BLAZAR_MCP_DOCS')) {
+  const mcpReader = (entry: Record<string, unknown>) => {
     if (typeof entry.endpoint !== 'string' || !entry.resources ||
         typeof entry.resources !== 'object' || Array.isArray(entry.resources)) {
       throw new Error('Expected an MCP endpoint and a resource alias map');
     }
     const token = entry.tokenEnv === undefined ? undefined
       : accessToken(env, entry.tokenEnv, /^BLAZAR_MCP_TOKEN_[A-Z0-9_]+$/);
-    register(mcpDocuments(accountName(entry.account), entry.endpoint, entry.resources as Record<string, unknown>, token, transport));
+    return mcpDocuments(accountName(entry.account), entry.endpoint, entry.resources as Record<string, unknown>, token, transport);
+  };
+  for (const entry of entries(env, 'BLAZAR_MCP_DOCS')) register(mcpReader(entry));
+  const customLabels = new Map<string, string>();
+  for (const entry of entries(env, 'BLAZAR_APP_MANIFESTS')) {
+    if (entry.version !== 1 || entry.connector !== 'mcp-resources' || typeof entry.id !== 'string' ||
+        !/^custom\.[a-z][a-z0-9-]{0,62}$/.test(entry.id) || typeof entry.label !== 'string' ||
+        !entry.label.trim() || entry.label.length > 128 || /[\x00-\x1f\x7f]/.test(entry.label)) {
+      throw new Error('Invalid application manifest with version 1');
+    }
+    const label = entry.label.trim();
+    const previousLabel = customLabels.get(entry.id);
+    if (previousLabel !== undefined && previousLabel !== label) throw new Error('Conflicting application manifest labels');
+    customLabels.set(entry.id, label);
+    register({ ...mcpReader(entry), app: entry.id, definition: { label, version: entry.version } });
   }
   return [...readers.values()];
 }
