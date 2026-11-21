@@ -816,7 +816,8 @@ export class TaskStore {
       const statusQuery = message.text === '/status' || message.text === '/状态';
       const pause = message.text === '/pause' || message.text === '/暂停';
       const resume = message.text === '/resume' || message.text === '/继续';
-      if ((message.text === '/cancel' || statusQuery || pause || resume) && message.root) return;
+      const retry = message.text === '/retry' || message.text === '/重试';
+      if ((message.text === '/cancel' || statusQuery || pause || resume || retry) && message.root) return;
       const linking = message.text === '/link' || message.text.startsWith('/link ');
       if (linking || message.root) {
         let taskId: string;
@@ -855,10 +856,10 @@ export class TaskStore {
         const refs = this.appEvidence(taskId);
         return !refs || this.canUseChannelAppEvidence?.(owner, workspace, refs) === true;
       };
-      if (statusQuery || pause || resume) {
+      if (statusQuery || pause || resume || retry) {
         const previous = String(link.status);
         if (pause) this.pauseTask(taskId, previous, { channel });
-        if (resume && canContinue()) this.requeueTask(taskId, previous, 'resume', { channel });
+        if ((resume || retry) && canContinue()) this.requeueTask(taskId, previous, retry ? 'retry' : 'resume', { channel });
         const status = this.get(owner, taskId)!.status;
         const now = Date.now();
         const thread = String(link.thread);
@@ -868,7 +869,7 @@ export class TaskStore {
           this.db.prepare('INSERT OR IGNORE INTO channel_reply_window VALUES(?,?,?,?)')
             .run(channel, message.chat, replyId, message.replyExpires);
         }
-        const chinese = ['/状态', '/暂停', '/继续'].includes(message.text);
+        const chinese = ['/状态', '/暂停', '/继续', '/重试'].includes(message.text);
         const state = displayTaskStatus(status, chinese);
         const text = chinese ? `Blazar 任务${state}。任务 ID ${link.id}` : `Blazar task status: ${state}. Task: ${link.id}`;
         this.queueChannelNotice(owner, channel, message.chat, thread, replyId, text, now);

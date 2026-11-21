@@ -791,3 +791,24 @@ test('task command receipts distinguish callers sharing an owner and key', t => 
     /Idempotency key already used/);
   assert.equal(db.get('owner', task.id)?.version, 4);
 });
+
+test('IM retry is limited to a linked task and deduplicated by channel message ID', t => {
+  const db = new TaskStore(':memory:');
+  t.after(() => db.close());
+  const send = (id: string, text: string, root = false, chat = 'linked-chat') =>
+    db.receiveChannelMessage('owner', 'feishu', 'project', { id, text, chat, thread: 'root', root });
+  send('unbound-command', '/重试', true);
+  assert.equal(db.snapshot('owner').tasks.length, 0);
+  send('root', 'Review notes', true);
+  const [task] = db.snapshot('owner').tasks;
+  const now = Date.now();
+  const { run } = db.claim('owner', 'project', 'device', now, 45_000)!;
+  assert.equal(db.finish(run.id, run.device, now, { status: 'failed', result: 'Fixture failed' }), true);
+  send('wrong-chat', '/retry', false, 'other-chat');
+  assert.equal(db.get('owner', task.id)?.status, 'failed');
+  send('follow-up', '/重试');
+  send('follow-up', '/重试');
+  assert.equal(db.get('owner', task.id)?.status, 'queued');
+  assert.equal(db.get('owner', task.id)?.version, task.version + 1);
+  assert.equal(db.timeline('owner', task.id)?.events.filter(event => event.type === 'task.retry_requested').length, 1);
+});
