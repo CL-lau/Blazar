@@ -417,6 +417,7 @@ private struct TaskDetails: View {
     @State private var error: String?
     @State private var preview: String?
     @State private var attachmentPreview: (position: Int, text: String)?
+    @State private var previewRequest = UUID()
     @State private var previewArtifacts: [String] = []
     @State private var imagePreview: Data?
     @State private var imageExpiry: Int?
@@ -480,41 +481,21 @@ private struct TaskDetails: View {
             if !artifacts.isEmpty {
                 Section("Artifacts") {
                     ForEach(artifacts) { artifact in
-                        Button(artifact.name) {
-                            Task {
-                                do {
-                                    if artifact.mime == "image/png" {
-                                        preview = nil
-                                        imagePreview = try await client.artifactData(artifact)
-                                        imageExpiry = artifact.expires
-                                    } else {
-                                        imagePreview = nil
-                                        preview = try await client.artifact(artifact)
-                                    }
-                                    previewArtifacts = [artifact.id]
-                                } catch { self.error = error.localizedDescription }
-                            }
-                        }
-                        if let latest = artifacts.first, latest.id != artifact.id, latest.mime == nil, artifact.mime == nil {
-                            Button("Compare with latest") {
-                                Task {
-                                    do {
-                                        preview = try await client.compareArtifacts(latest, base: artifact)
-                                        previewArtifacts = [latest.id, artifact.id]
-                                    }
-                                    catch { self.error = error.localizedDescription }
-                                }
-                            }
+                        Button(artifact.name) { loadPreview(artifact) }
+                        if artifact.mime == nil,
+                           let latest = artifacts.first(where: { $0.name == artifact.name && $0.mime == nil }),
+                           latest.id != artifact.id {
+                            Button("Compare with latest") { loadPreview(latest, base: artifact) }
                         }
                     }
-                    if let preview, previewArtifacts.allSatisfy({ id in artifacts.contains { $0.id == id } }) {
-                        Text(preview).textSelection(.enabled)
+                    if previewArtifacts.allSatisfy({ id in artifacts.contains { $0.id == id } }) {
+                        if let preview { Text(preview).textSelection(.enabled) }
+                        #if os(iOS)
+                        if let imagePreview, let image = UIImage(data: imagePreview) {
+                            Image(uiImage: image).resizable().scaledToFit().accessibilityLabel("Captured window")
+                        }
+                        #endif
                     }
-                    #if os(iOS)
-                    if let imagePreview, let image = UIImage(data: imagePreview) {
-                        Image(uiImage: image).resizable().scaledToFit().accessibilityLabel("Captured window")
-                    }
-                    #endif
                 }
                 .task(id: imageExpiry) {
                     guard let imageExpiry else { return }
@@ -587,6 +568,38 @@ private struct TaskDetails: View {
             }
         }
         .refreshable { await loadActivity() }
+    }
+
+    private func loadPreview(_ artifact: RouterSnapshot.Artifact, base: RouterSnapshot.Artifact? = nil) {
+        let request = UUID()
+        previewRequest = request
+        preview = nil
+        imagePreview = nil
+        imageExpiry = nil
+        error = nil
+        Task {
+            do {
+                if artifact.mime == "image/png" {
+                    let image = try await client.artifactData(artifact)
+                    guard previewRequest == request else { return }
+                    previewArtifacts = [artifact.id]
+                    imageExpiry = artifact.expires
+                    imagePreview = image
+                } else {
+                    let text: String
+                    if let base {
+                        text = try await client.compareArtifacts(artifact, base: base)
+                    } else {
+                        text = try await client.artifact(artifact)
+                    }
+                    guard previewRequest == request else { return }
+                    previewArtifacts = [artifact.id] + (base.map { [$0.id] } ?? [])
+                    preview = text
+                }
+            } catch {
+                if previewRequest == request { self.error = error.localizedDescription }
+            }
+        }
     }
 
     private func loadActivity(before cursor: Int? = nil) async {
