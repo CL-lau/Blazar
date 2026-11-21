@@ -61,12 +61,17 @@ export async function runAcp(worker: AcpWorker, root: string, job: JobContext, s
   let previousProgress: string | undefined;
   const requested = new Set<string>();
   let asking = false;
+  let missingReadLocation = false;
   const peer = client({ name: 'Blazar' })
     .onRequest(methods.client.session.requestPermission, async ({ params }) => {
       const cancelled = { outcome: { outcome: 'cancelled' as const } };
       const { toolCall } = params;
-      if (!approve || active.aborted || !sessionId || sessionId !== params.sessionId ||
-          toolCall.kind !== 'read' || !toolCall.locations?.length || toolCall.locations.length > 10 ||
+      if (active.aborted || !sessionId || sessionId !== params.sessionId || toolCall.kind !== 'read') return cancelled;
+      if (!toolCall.locations?.length) {
+        missingReadLocation = true;
+        return cancelled;
+      }
+      if (!approve || toolCall.locations.length > 10 ||
           requested.has(toolCall.toolCallId)) return cancelled;
       requested.add(toolCall.toolCallId);
       const targets: string[] = [];
@@ -155,7 +160,10 @@ export async function runAcp(worker: AcpWorker, root: string, job: JobContext, s
         }, options);
         await reports.catch(() => {});
         active.throwIfAborted();
-        if (outcome.stopReason !== 'end_turn' || !text.trim()) throw new Error('ACP worker did not return a completed response');
+        if (outcome.stopReason !== 'end_turn' || !text.trim()) {
+          throw new Error(missingReadLocation ? 'The ACP Worker requested file access without identifying the file.'
+            : 'ACP worker did not return a completed response');
+        }
         if (ready.agentCapabilities?.loadSession || ready.agentCapabilities?.sessionCapabilities?.resume) {
           continuity?.onCompleted?.(sessionId);
         }
