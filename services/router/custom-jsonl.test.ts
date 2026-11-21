@@ -149,7 +149,7 @@ test('a registered JSONL extension executes a real subprocess through Router and
   assert.deepEqual(progress, ['Running Fixture JSONL', 'Read the input']);
   const workflow = store.createWorkflow('owner', 'full-input', 'project', [
     { key: 'source', goal: 'Prepare full file', needs: [] },
-    { key: 'verify', goal: 'Verify upstream file', needs: ['source'], acceptanceCriteria: ['Check the full input'] },
+    { key: 'verify', goal: 'Verify upstream file', needs: ['source'], workerCapability: 'full-input-artifacts', acceptanceCriteria: ['Check the full input'] },
   ]);
   const draft = store.claim('owner', 'project', device.id, Date.now(), 45_000)!;
   assert.equal(store.finish(draft.run.id, device.id, Date.now(), {
@@ -160,6 +160,23 @@ test('a registered JSONL extension executes a real subprocess through Router and
   assert.equal(store.get('owner', String(verified.taskId))?.result, 'Complete input verified');
   assert.equal(store.snapshot('owner').criteria[0].criterion, 'Check the full input');
   assert.deepEqual(store.snapshot('another').criteria, []);
+
+  const sources = ['one', 'two', 'three'];
+  const oversized = store.createWorkflow('owner', 'oversized-full-input', 'project', [
+    ...sources.map(key => ({ key, goal: 'Prepare ' + key, needs: [] })),
+    { key: 'verify', goal: 'Verify oversized handoff', needs: sources, workerCapability: 'full-input-artifacts' },
+  ]);
+  for (const key of sources) {
+    const source = store.claim('owner', 'project', device.id, Date.now(), 45_000)!;
+    assert.equal(source.task.goal, 'Prepare ' + key);
+    assert.ok(store.finish(source.run.id, device.id, Date.now(), {
+      status: 'succeeded', result: 'Prepared', artifact: { name: key + '.txt', text: 'X'.repeat(24_000) },
+    }));
+  }
+  assert.equal(await client.runOnce(AbortSignal.timeout(4000)), true);
+  const rejected = store.get('owner', String(oversized.steps.find(step => step.key === 'verify')!.taskId));
+  assert.equal(rejected?.status, 'failed');
+  assert.match(rejected?.result ?? '', /artifacts exceed the device input budget/);
 
   const pausable = store.create('owner', 'fixture', 'pause-task', 'project', 'Wait for pause');
   const signal = AbortSignal.timeout(4000);

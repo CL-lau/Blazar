@@ -129,13 +129,17 @@ async function runAcpWorker(execution: WorkerExecution, worker: Worker, prefix: 
 
 async function completeInputArtifacts(context: WorkerExecution, inputs: PredecessorInput[], prefix: string, signal: AbortSignal, required: boolean) {
   let budget = 64_000;
+  if (required && inputs.reduce((total, input) => total + (input.artifact?.size ?? 0), 0) > budget) {
+    throw new Error('Required workflow input artifacts exceed the device input budget');
+  }
   for (const input of inputs) {
     const artifact = input.artifact;
-    if (!artifact || !artifact.truncated || artifact.size <= 0) continue;
-    if (artifact.size > budget) {
-      if (required) throw new Error('Required workflow input artifacts exceed the device input budget');
+    if (!artifact || artifact.size <= 0) continue;
+    if (!artifact.truncated) {
+      if (required) artifact.text = artifact.excerpt;
       continue;
     }
+    if (artifact.size > budget) continue;
     const response = await context.post(prefix + 'input-artifact', { artifactId: artifact.id }, signal);
     if (!response.ok) {
       await response.body?.cancel();
