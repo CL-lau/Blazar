@@ -9,6 +9,7 @@ export function Knowledge({ token }) {
   const [results, setResults] = useState(null);
   const [searchQuery, setSearchQuery] = useState('');
   const [documentMatches, setDocumentMatches] = useState(null);
+  const [discovered, setDiscovered] = useState(null);
   const [deriving, setDeriving] = useState(null);
   const [editing, setEditing] = useState(null);
   const [selected, setSelected] = useState('');
@@ -28,6 +29,7 @@ export function Knowledge({ token }) {
     setAnswer(null);
     setHistory(null);
     setDocumentMatches(null);
+    setDiscovered(null);
     setBusy(true);
     try { await action(); }
     catch (failure) { setError(failure.message); }
@@ -36,6 +38,7 @@ export function Knowledge({ token }) {
 
   useEffect(() => {
     setDocumentMatches(null);
+    setDiscovered(null);
     let current = true;
     callRouter(token, '/app-connections')
       .then(data => {
@@ -51,6 +54,10 @@ export function Knowledge({ token }) {
   const active = connections.filter(connection => connection.active);
   const importAccounts = active.filter(connection => connection.canImportDocument);
   const importSource = importAccounts.find(connection => connection.id === importAccount) ?? importAccounts[0];
+  const discovery = discovered?.connection === importSource?.id ? discovered : null;
+  const documentAliases = discovery?.aliases ?? importSource?.documentAliases;
+  const canDiscover = importSource?.capabilities?.some(capability =>
+    capability.id === 'document.discover' && capability.state === 'configured');
   const accountName = connection => `${connection.app} · ${connection.account}`;
 
   async function refreshConnections() {
@@ -229,16 +236,34 @@ export function Knowledge({ token }) {
               onChange={event => {
                 setImportAccount(event.target.value);
                 setDocumentMatches(null);
+                setDiscovered(null);
               }} required>
               {importAccounts.map(item => (
                 <option key={item.id} value={item.id}>{accountName(item)}</option>
               ))}
             </select></label>
             <label>Workspace<input name="workspace" key={importSource.id + (importSource.workspace ?? '')}
-              defaultValue={importSource.workspace ?? ''} readOnly={Boolean(importSource.workspace)} required maxLength={128} /></label>
-            {importSource.documentAliases ? <label>Document<select name="document" key={importSource.id} required>
+              defaultValue={importSource.workspace ?? ''} readOnly={Boolean(importSource.workspace)}
+              onChange={() => setDiscovered(null)} required maxLength={128} /></label>
+            {canDiscover && <button type="button" onClick={event => {
+              const form = event.currentTarget.form;
+              if (!form.elements.namedItem('workspace').reportValidity()) return;
+              const { connection, workspace } = Object.fromEntries(new FormData(form));
+              void perform(async () => {
+                const result = await request('/app-connections/' + connection + '/capabilities/document.discover', {
+                  method: 'POST', body: { workspace },
+                });
+                setDiscovered({ connection, ...result });
+              });
+            }}>Check available documents</button>}
+            {discovery && <p role="status">
+              {discovery.aliases.length ? `${discovery.aliases.length} available documents` : 'No available documents found.'}
+              {!discovery.complete && ' The server listing was only partially checked.'}
+              {' '}<button type="button" onClick={() => setDiscovered(null)}>Show configured documents</button>
+            </p>}
+            {documentAliases ? <label>Document<select name="document" key={importSource.id + (discovery ? '-discovered' : '')} required>
               <option value="">Choose a document</option>
-              {importSource.documentAliases.map(alias => <option key={alias} value={alias}>{alias}</option>)}
+              {documentAliases.map(alias => <option key={alias} value={alias}>{alias}</option>)}
             </select></label> : <label>Document ID or repository path<input name="document" required maxLength={128} /></label>}
             <button>Import into memory</button>
             <button type="submit" value="test">Test document access</button>

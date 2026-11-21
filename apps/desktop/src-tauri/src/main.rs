@@ -62,7 +62,7 @@ fn allowed(method: &Method, path: &str) -> bool {
             identifier(id)
         }
         ("POST", ["", "app-connections", id, "capabilities",
-            "document.test" | "document.import" | "document.refresh" | "document.search"]) => identifier(id),
+            "document.test" | "document.import" | "document.refresh" | "document.search" | "document.discover"]) => identifier(id),
         ("PATCH" | "DELETE", ["", "app-connections" | "memory", id]) => {
             identifier(id)
         }
@@ -194,6 +194,7 @@ mod tests {
             (Method::POST, "/app-connections/00000000-0000-0000-0000-000000000000/capabilities/document.test"),
             (Method::POST, "/app-connections/00000000-0000-0000-0000-000000000000/capabilities/document.import"),
             (Method::POST, "/app-connections/00000000-0000-0000-0000-000000000000/capabilities/document.refresh"),
+            (Method::POST, "/app-connections/00000000-0000-0000-0000-000000000000/capabilities/document.discover"),
             (Method::POST, "/app-connections/00000000-0000-0000-0000-000000000000/capabilities/document.search"),
             (Method::POST, "/tasks/00000000-0000-0000-0000-000000000000/remember-result"),
         ] {
