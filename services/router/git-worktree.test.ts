@@ -5,7 +5,7 @@ import { mkdir, mkdtemp, readFile, realpath, rm, writeFile } from 'node:fs/promi
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
-import { gitRunWorktrees } from '../device/execution/git-worktree.ts';
+import { gitRunWorktrees, inspectRunWorktree } from '../device/execution/git-worktree.ts';
 import { executeWorker } from '../device/execution/worker.ts';
 
 test('isolated Worker runs keep their changes in independent retained worktrees', async t => {
@@ -46,5 +46,19 @@ test('isolated Worker runs keep their changes in independent retained worktrees'
   assert.equal(await readFile(notes, 'utf8'), 'Uncommitted user edit');
   assert.equal(await readFile(join(first, 'notes.txt'), 'utf8'), 'First edit');
   assert.equal(await readFile(join(second, 'notes.txt'), 'utf8'), 'Second edit');
+  const initial = await inspectRunWorktree(repository, state, firstId);
+  assert.equal(initial.state, 'ready');
+  assert(initial.state === 'ready');
+  assert.deepEqual(initial.changes, [' M notes.txt']);
+  assert.deepEqual(initial.commits, []);
+  execFileSync('git', ['-c', 'user.name=Test', '-c', 'user.email=test@example.com', '-c',
+    'commit.gpgsign=false', 'commit', '-am', 'Worker edit'], { cwd: first, stdio: 'pipe' });
+  await writeFile(join(first, 'untracked.txt'), 'Retained output');
+  const changed = await inspectRunWorktree(repository, state, firstId);
+  assert(changed.state === 'ready');
+  assert.equal(changed.baseCommit, initial.head);
+  assert.deepEqual(changed.commits, [changed.head]);
+  assert.deepEqual(changed.changes, ['?? untracked.txt']);
+  assert.deepEqual(await inspectRunWorktree(repository, state, randomUUID()), { state: 'missing' });
   await assert.rejects(prepare(firstId), /Unable to prepare the run Git worktree/);
 });

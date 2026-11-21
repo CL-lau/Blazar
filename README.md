@@ -65,7 +65,13 @@ A new execution run has a ten-minute maximum duration, including time spent awai
 
 ## Interrupted device recovery
 
-If an execution device exits unexpectedly during a task, its workspace remains blocked on that OS account. Review the interrupted run in Blazar, confirm that the Worker and its children have stopped, and check the workspace and any external effects. The execution devices view shows the interrupted run ID when the device reconnects. Stop the device service, clear that run, and then restart the service.
+If an execution device exits unexpectedly during a task, its workspace remains blocked on that OS account. Review the interrupted run in Blazar, confirm that the Worker and its children have stopped, and check the workspace and any external effects. The execution devices view shows the interrupted run ID when the device reconnects. Stop the device service before inspecting or clearing an interrupted run. For an isolated Git run, inspect the recorded base commit, current HEAD, up to 100 commits added by the Worker, and staged, unstaged, and untracked changes. Older checkouts may have no recorded base commit.
+
+```sh
+BLAZAR_WORKSPACE_PATH=/path/to/workspace npm run device:reconcile -- --inspect RUN_ID
+```
+
+After reviewing the run, clear its interrupted record and restart the device service.
 
 ```sh
 BLAZAR_WORKSPACE_PATH=/path/to/workspace npm run device:reconcile -- RUN_ID
