@@ -308,6 +308,7 @@ export class TaskStore {
         WHERE NOT EXISTS(SELECT 1 FROM channel_notice_binding b WHERE b.notice=o.id)
         GROUP BY o.id HAVING COUNT(*)=1`);
       this.db.prepare('INSERT OR IGNORE INTO run_deadline SELECT id,expires+? FROM run').run(runLimitMs);
+      this.db.prepare("UPDATE task_memory_input SET body='' WHERE body<>''").run();
       this.db.prepare(`INSERT OR IGNORE INTO task_queue_time
         SELECT id,? FROM task WHERE status IN ('queued','waiting_device')`).run(Date.now());
       this.db.prepare('INSERT OR IGNORE INTO run_activity(run_id,last_output) SELECT id,? FROM run').run(Date.now());
@@ -878,7 +879,7 @@ export class TaskStore {
       if (desktopDevice) this.db.prepare('INSERT INTO task_desktop_device VALUES(?,?)').run(id, desktopDevice);
       for (const [position, input] of (memoryInputs ?? []).entries()) {
         this.db.prepare('INSERT INTO task_memory_input VALUES(?,?,?,?,?)')
-          .run(id, position, input.id, input.version, input.body);
+          .run(id, position, input.id, input.version, '');
       }
       if (appEvidence) {
         if (!appEvidence.refs.length) throw new Error('No authorized application evidence was found');
@@ -1559,7 +1560,7 @@ export class TaskStore {
       .map(row => JSON.parse(String(row.data)).text as string);
     const acceptanceCriteria = this.db.prepare('SELECT criterion FROM task_criterion WHERE task_id=? ORDER BY position')
       .all(run.taskId).map(row => String(row.criterion));
-    const memoryInputs = this.db.prepare('SELECT memory_id AS id,version,body FROM task_memory_input WHERE task_id=? ORDER BY position')
+    const memoryInputs = this.db.prepare(`SELECT memory_id AS id,version,'' AS body FROM task_memory_input WHERE task_id=? ORDER BY position`)
       .all(run.taskId) as unknown as TaskMemoryInput[];
     const attachments = this.db.prepare('SELECT name,text FROM task_attachment WHERE task_id=? ORDER BY position')
       .all(run.taskId) as unknown as TaskAttachment[];

@@ -72,6 +72,11 @@ test('expired memory cleanup removes bounded batches and clears derived indexes 
   const source = store.remember('owner', 'work', 'Source forecast', { connection, resource: 'guide', revision: '1' }, now + 20_000)!;
   const permanent = store.remember('owner', 'work', 'Permanent forecast')!;
   const future = store.remember('owner', 'work', 'Future forecast', undefined, now + 60_000)!;
+  const past = store.remember('owner', 'work', 'Already expired', undefined, now - 1)!;
+  assert.equal(store.resolvePersonalEvidence('owner', 'work', [{ id: past, version: 1 }]), undefined);
+  assert.equal(store.resolvePersonalEvidence('owner', 'work', [{ id: expired, version: 1 }]), undefined);
+  assert.equal(store.resolvePersonalEvidence('owner', 'work', [{ id: expired, version: 2 }])?.[0].body, 'Updated forecast');
+  assert.equal(store.pruneExpired(now, 1), 1);
   assert.equal(store.pruneExpired(now + 20_000, 1), 1);
   assert.equal(db.prepare('SELECT 1 FROM memory_revision WHERE id=?').get(expired), undefined);
   assert.ok(db.prepare('SELECT 1 FROM memory WHERE id=?').get(source));

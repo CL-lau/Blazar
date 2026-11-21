@@ -495,17 +495,19 @@ function deviceOperation(store: TaskStore, bearer: string, pathname: string, dat
       return { status: 200, body: { assignment: null } };
     }
     const { replayed, ...assignment } = claim;
-    const refs = store.appEvidence(assignment.task.id);
-    if (refs) {
-      const evidence = memory?.resolveAppEvidence(device.owner, device.workspace, refs);
-      if (data.capability !== 'agent.acp' || !memory || !evidence) {
+    const personal = assignment.memoryInputs?.map(({ id, version }) => ({ id, version })) ?? [];
+    const app = store.appEvidence(assignment.task.id);
+    if (personal.length || app) {
+      const personalEvidence = personal.length ? memory?.resolvePersonalEvidence(device.owner, device.workspace, personal) : [];
+      const appEvidence = app ? memory?.resolveAppEvidence(device.owner, device.workspace, app) : [];
+      if (data.capability !== 'agent.acp' || !memory || !personalEvidence || !appEvidence) {
         if (replayed) store.requestRunEvidenceStop(assignment.run.id, device.id);
         else store.rejectRunEvidence(assignment.run.id, device.id);
         return { status: 200, body: { assignment: null } };
       }
-      memory.recordWorkerAppUsage(device.workspace, assignment.task.id, assignment.run.id,
-        [...new Set(evidence.map(input => input.connection))]);
-      assignment.memoryInputs = [...(assignment.memoryInputs || []), ...evidence.map(({ id, body, version }) => ({ id, body, version }))];
+      if (appEvidence.length) memory.recordWorkerAppUsage(device.workspace, assignment.task.id, assignment.run.id,
+        [...new Set(appEvidence.map(input => input.connection))]);
+      assignment.memoryInputs = [...personalEvidence, ...appEvidence.map(({ id, body, version }) => ({ id, body, version }))];
     }
     store.clearInterruption(device.id);
     return { status: 200, body: { assignment, leaseRemainingMs: Math.max(0, assignment.run.expires - Date.now()) } };
@@ -515,7 +517,7 @@ function deviceOperation(store: TaskStore, bearer: string, pathname: string, dat
   if (['renew', 'finish', 'progress', 'request-approval', 'approval', 'consume-approval', 'input-artifact', 'steer'].includes(run[2])) {
     const taskId = store.runTaskId(run[1], device.id);
     const refs = taskId ? store.appEvidence(taskId) : undefined;
-    if (refs && (store.runEvidenceStopping(run[1]) || !memory?.resolveAppEvidence(device.owner, device.workspace, refs))) {
+    if (store.runEvidenceStopping(run[1]) || (refs && !memory?.resolveAppEvidence(device.owner, device.workspace, refs))) {
       if (run[2] === 'finish') store.rejectRunEvidence(run[1], device.id);
       else store.requestRunEvidenceStop(run[1], device.id);
       return { status: 409, body: { accepted: false } };

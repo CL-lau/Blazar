@@ -420,6 +420,18 @@ export class MemoryStore {
       .map(row => ({ id: String(row.id), body: String(row.body).toWellFormed(), version: Number(row.version) }));
   }
 
+  resolvePersonalEvidence(owner: string, workspace: string, references: { id: string; version: number }[]) {
+    const rows = this.db.prepare(`SELECT m.id,substr(m.body,1,1200) AS body,COALESCE(s.version,1) AS version
+      FROM memory m LEFT JOIN memory_state s ON s.id=m.id
+      JOIN json_each(?) ref ON json_extract(ref.value,'$.id')=m.id
+        AND json_extract(ref.value,'$.version')=COALESCE(s.version,1)
+      WHERE m.owner=? AND m.workspace=? AND m.connection IS NULL AND COALESCE(s.disabled,0)=0
+        AND (m.expires IS NULL OR m.expires>?)
+      ORDER BY CAST(ref.key AS INTEGER)`).all(JSON.stringify(references), owner, workspace, Date.now());
+    if (rows.length !== references.length) return undefined;
+    return rows.map(row => ({ id: String(row.id), body: String(row.body).toWellFormed(), version: Number(row.version) }));
+  }
+
   resolveAppEvidence(owner: string, workspace: string, references: { id: string; version: number }[]) {
     const rows = this.db.prepare(`SELECT m.id,m.connection,substr(m.body,1,1200) AS body,COALESCE(s.version,1) AS version
       FROM memory m JOIN app_connection a ON a.id=m.connection AND a.owner=m.owner

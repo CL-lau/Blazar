@@ -195,6 +195,18 @@ test('a registered JSONL extension executes a real subprocess through Router and
       Authorization: 'Bearer local', 'Content-Type': 'application/json', 'Idempotency-Key': key,
     }, body: JSON.stringify({ workspace: 'project', text: 'Inspect the attachment', attachments }),
   });
+  const removedNote = memory.remember('owner', 'project', 'Forecast assumptions for the task')!;
+  const personalResponse = await fetch(base + '/v1/events', {
+    method: 'POST', headers: {
+      Authorization: 'Bearer local', 'Content-Type': 'application/json', 'Idempotency-Key': 'removed-personal-note',
+    }, body: JSON.stringify({ workspace: 'project', text: 'Forecast assumptions', usePersonalMemory: true }),
+  });
+  assert.equal(personalResponse.status, 202);
+  const personalTask = await personalResponse.json();
+  assert.deepEqual(store.timeline('owner', personalTask.id)?.events[0].data.memoryInputs, [{ id: removedNote, version: 1 }]);
+  assert.equal(memory.remove('owner', removedNote), true);
+  assert.equal(await client.runOnce(AbortSignal.timeout(5_000)), false);
+  assert.equal(store.get('owner', personalTask.id)?.status, 'waiting_user');
   const attachment = { name: 'notes.txt', text: 'Attachment fixture body' };
   assert.equal((await createAttachmentTask('path-attachment', [{ ...attachment, name: '../notes.txt' }])).status, 400);
   assert.equal((await createAttachmentTask('large-attachment', [{ ...attachment, text: 'a'.repeat(8193) }])).status, 400);
