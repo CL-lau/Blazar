@@ -248,6 +248,16 @@ test('Router requires explicit confirmation for a configured application write',
   assert.deepEqual(await (await request(uncertain + '/confirm', 'POST')).json(), { status: 'outcome_unknown' });
   assert.equal(calls.filter(method => method === 'tools/call').length, 4);
   assert.equal(dispatchedIds.length, 2);
+  const collection = '/v1/app-connections/' + connection + '/write-proposals';
+  const history = await (await request(collection, 'GET')).json();
+  assert.deepEqual(history.proposals.map((item: { id: string; resolution: string | null }) =>
+    [item.id, item.resolution]), [[uncertainId, 'applied'], [id, null]]);
+  assert.ok(history.proposals.every((item: Record<string, unknown>) => !('input' in item) && !('evidence' in item)));
+  assert.equal((await request(collection, 'GET', undefined, iphone.token)).status, 403);
+  assert.equal(memory.disconnect('owner', connection), true);
+  const catalog = await (await request('/v1/app-connections', 'GET')).json();
+  assert.equal(catalog.connections[0].hasWriteHistory, true);
+  assert.deepEqual((await (await request(collection, 'GET')).json()).proposals, history.proposals);
 });
 
 test('local browser fallback and a browser device submit only authorized form data', {

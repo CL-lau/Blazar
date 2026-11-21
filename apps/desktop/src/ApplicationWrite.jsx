@@ -4,8 +4,10 @@ export function ApplicationWrite({ connection, request }) {
   const [proposal, setProposal] = useState(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
+  const [history, setHistory] = useState(null);
   const [clients, setClients] = useState(null);
   const [shareNotice, setShareNotice] = useState('');
+  const collection = '/app-connections/' + connection.id + '/write-proposals';
   const path = proposal && '/app-write-proposals/' + proposal.id;
 
   async function run(operation) {
@@ -24,7 +26,7 @@ export function ApplicationWrite({ connection, request }) {
       try { input = JSON.parse(fields.get('input')); }
       catch { throw new Error('Enter valid JSON for the write input.'); }
       if (!input || typeof input !== 'object' || Array.isArray(input)) throw new Error('Enter a JSON object.');
-      const { id } = await request('/app-connections/' + connection.id + '/write-proposals', {
+      const { id } = await request(collection, {
         method: 'POST', body: {
           workspace: connection.workspace ?? fields.get('workspace'), capability: fields.get('capability'), input,
         },
@@ -50,7 +52,7 @@ export function ApplicationWrite({ connection, request }) {
       <pre aria-label="Proposed write input">{JSON.stringify(proposal.input, null, 2)}</pre>
       <p role="status">{proposal.status.replaceAll('_', ' ')}</p>
       <p>Proposal ID <code>{proposal.id}</code></p>
-      {proposal.status === 'pending' && <button type="button" disabled={busy || proposal.expires <= Date.now()}
+      {connection.active && proposal.status === 'pending' && <button type="button" disabled={busy || proposal.expires <= Date.now()}
         onClick={() => run(async () => {
           const result = await request(path + '/confirm', { method: 'POST' });
           setProposal({ ...proposal, status: result.status });
@@ -59,7 +61,7 @@ export function ApplicationWrite({ connection, request }) {
       <button type="button" disabled={busy} onClick={() => run(async () => {
         setProposal(await request(path));
       })}>Refresh status</button>
-      {proposal.status === 'pending' && <div>
+      {connection.active && proposal.status === 'pending' && <div>
         <button type="button" disabled={busy} onClick={() => run(async () => {
           const data = await request('/admin/mobile-clients');
           setClients(data.clients);
@@ -97,26 +99,28 @@ export function ApplicationWrite({ connection, request }) {
         <label>External evidence<input name="evidence" maxLength={1024} required /></label>
         <button disabled={busy}>Record result</button>
       </form>}
-      <button type="button" disabled={busy} onClick={() => { setProposal(null); setError(''); setClients(null); setShareNotice(''); }}>Close proposal</button>
-    </div> : <div><form onSubmit={prepare}>
+      <button type="button" disabled={busy} onClick={() => { setProposal(null); setError(''); setHistory(null); setClients(null); setShareNotice(''); }}>Close proposal</button>
+    </div> : <div>
+    {connection.writeCapabilities?.length > 0 && <form onSubmit={prepare}>
       {!connection.workspace && <label>Workspace<input name="workspace" maxLength={128} required /></label>}
       <label>Capability<select name="capability">
         {connection.writeCapabilities.map(id => <option key={id}>{id}</option>)}
       </select></label>
       <label>Input JSON<textarea name="input" defaultValue="{}" maxLength={12000} required /></label>
       <button disabled={busy}>Review write</button>
-    </form>
-    <form onSubmit={event => {
-      event.preventDefault();
-      const id = new FormData(event.currentTarget).get('proposal');
-      void run(async () => {
-        const restored = await request('/app-write-proposals/' + id);
-        if (restored.connection !== connection.id) throw new Error('That proposal belongs to another connection.');
-        setProposal(restored);
-      });
-    }}>
-      <label>Proposal ID<input name="proposal" pattern="[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}" required /></label>
-      <button disabled={busy}>Open proposal</button>
-    </form></div>}
+    </form>}
+    <button type="button" disabled={busy} onClick={() => run(async () => {
+      const { proposals } = await request(collection);
+      setHistory(proposals);
+    })}>{history ? 'Refresh write history' : 'View write history'}</button>
+    {history && (history.length ? <ul aria-label="Recent write proposals">
+      {history.map(item => <li key={item.id}>
+        <button type="button" disabled={busy} onClick={() => run(async () => {
+          setProposal(await request('/app-write-proposals/' + item.id));
+        })}>{item.capability} · {item.workspace} · {(item.resolution ??
+          (item.status === 'pending' && item.expires <= Date.now() ? 'expired' : item.status)).replaceAll('_', ' ')}</button>
+      </li>)}
+    </ul> : <p>No write proposals.</p>)}
+    </div>}
   </details>;
 }

@@ -44,6 +44,13 @@ export class AppWriteRepository {
     return row && { ...row, input: JSON.parse(row.input) as ApplicationAction['input'] };
   }
 
+  history(owner: string, connection: string) {
+    if (!this.db.prepare('SELECT 1 FROM app_connection WHERE owner=? AND id=?').get(owner, connection)) return undefined;
+    return this.db.prepare(`SELECT w.id,w.workspace,w.capability,w.status,w.expires,r.resolution
+      FROM app_write w LEFT JOIN app_write_reconciliation r ON r.proposal=w.id
+      WHERE w.owner=? AND w.connection=? ORDER BY w.rowid DESC LIMIT 50`).all(owner, connection);
+  }
+
   claim(owner: string, id: string, definitionRevision: string, now = Date.now()) {
     // Commit the claim before contacting an external system. A restarted Router never replays it.
     return this.db.prepare(`UPDATE app_write SET status='dispatching'

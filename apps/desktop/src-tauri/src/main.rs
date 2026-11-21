@@ -58,7 +58,7 @@ fn allowed(method: &Method, path: &str) -> bool {
             ["", "events" | "conversation" | "workflows" | "pairings" | "app-connections" | "memory"],
         ) => true,
         ("POST", ["", "app-connections", id, "import-document" | "test-document" | "revoke-resource" | "refresh-documents" | "document-sync" | "write-proposals"])
-        | ("GET", ["", "app-connections", id, "usage"]) => {
+        | ("GET", ["", "app-connections", id, "usage" | "write-proposals"]) => {
             identifier(id)
         }
         ("GET", ["", "app-write-proposals", id])

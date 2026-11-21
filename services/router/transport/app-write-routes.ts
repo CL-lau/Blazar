@@ -23,6 +23,12 @@ export async function handleApplicationWrites(
     return definitions.find(item => item.app === active?.app && item.account === active.account && item.capability === capability);
   };
   const create = /^\/v1\/app-connections\/([a-f0-9-]{36})\/write-proposals$/.exec(url.pathname);
+  if (create && request.method === 'GET' && access.kind === 'admin') {
+    const proposals = writes.history(owner, create[1]);
+    if (!proposals) throw new RequestError(404, 'Application connection not found');
+    reply(response, 200, { proposals });
+    return true;
+  }
   if (create && request.method === 'POST' && access.kind === 'admin') {
     const { workspace: rawWorkspace, capability: rawCapability, input } = await jsonObject(request, 16_384);
     const workspace = requiredText(rawWorkspace, 'workspace', 128);

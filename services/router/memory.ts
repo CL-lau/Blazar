@@ -65,6 +65,7 @@ export class MemoryStore {
 
   connections(owner: string) {
     const rows = this.db.prepare(`SELECT a.id,a.app,a.account,a.active,a.workspace,
+      EXISTS(SELECT 1 FROM app_write w WHERE w.owner=a.owner AND w.connection=a.id) AS has_write_history,
       u.status AS test_status,u.started AS test_started,u.workspace AS test_workspace,
       h.status AS health_status,h.started AS health_started,h.workspace AS health_workspace
       FROM app_connection a LEFT JOIN app_usage u ON u.id=(
@@ -76,10 +77,11 @@ export class MemoryStore {
         AND health.status<>'started' AND health.scope_version=a.scope_version AND a.active=1
         ORDER BY health.id DESC LIMIT 1
       ) WHERE a.owner=? ORDER BY a.rowid DESC`).all(owner);
-    return rows.map(({ id, app, account, active, workspace, test_status, test_started, test_workspace,
+    return rows.map(({ id, app, account, active, workspace, has_write_history, test_status, test_started, test_workspace,
       health_status, health_started, health_workspace }) => ({
       id: String(id), app: String(app), account: String(account), active: Number(active),
       workspace: workspace === null ? null : String(workspace),
+      ...(has_write_history && { hasWriteHistory: true }),
       ...(test_status !== null && { lastDocumentTest: {
         status: String(test_status), started: Number(test_started), workspace: String(test_workspace),
       } }),

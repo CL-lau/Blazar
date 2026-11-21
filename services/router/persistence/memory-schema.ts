@@ -17,6 +17,7 @@ export function initializeMemorySchema(db: DatabaseSync): boolean {
       status TEXT NOT NULL CHECK(status IN ('pending','dispatching','succeeded','unavailable','denied','outcome_unknown')),
       backend TEXT
     );
+    CREATE INDEX IF NOT EXISTS app_write_connection ON app_write(owner,connection);
     CREATE TABLE IF NOT EXISTS app_write_mobile_grant (
       proposal TEXT PRIMARY KEY REFERENCES app_write(id), client TEXT NOT NULL
     );
