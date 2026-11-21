@@ -31,7 +31,16 @@ const destination = join(dmgDirectory, name);
 try {
   mkdirSync(contents);
   symlinkSync('/Applications', join(contents, 'Applications'), 'dir');
-  execFileSync('ditto', [join(bundle, 'macos', 'Blazar.app'), join(contents, 'Blazar.app')], { stdio: 'inherit' });
+  const app = join(contents, 'Blazar.app');
+  execFileSync('ditto', [join(bundle, 'macos', 'Blazar.app'), app], { stdio: 'inherit' });
+  if (!process.env.APPLE_SIGNING_IDENTITY && !config.bundle?.macOS?.signingIdentity) {
+    try {
+      execFileSync('codesign', ['--verify', '--deep', '--strict', app], { stdio: 'ignore' });
+    } catch {
+      execFileSync('codesign', ['--force', '--sign', '-', '--timestamp=none', app], { stdio: 'inherit' });
+    }
+  }
+  execFileSync('codesign', ['--verify', '--deep', '--strict', app], { stdio: 'inherit' });
   execFileSync('hdiutil', ['create', '-quiet', '-volname', 'Blazar', '-srcfolder', contents, '-format', 'UDZO', temporaryDmg],
     { stdio: 'inherit' });
   execFileSync('hdiutil', ['verify', temporaryDmg], { stdio: 'inherit' });

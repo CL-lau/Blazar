@@ -18,7 +18,7 @@ Run `npm run router:benchmark` to test a temporary local SQLite database with 30
 
 ## Native desktop build
 
-Install the Rust toolchain and macOS build tools, run `npm ci`, then use `npm run desktop:bundle` to build the Tauri app and a background-safe DMG with an Applications shortcut. The native app connects to the Router over loopback. If you change the Router port, launch Blazar with the same `BLAZAR_PORT` value in its environment.
+Install the Rust toolchain and macOS build tools, run `npm ci`, then use `npm run desktop:bundle` to build the Tauri app and a background-safe DMG with an Applications shortcut. Local bundles use an ad hoc signature when no signing identity is configured. Public macOS distribution requires Developer ID signing and notarization. The native app connects to the Router over loopback. If you change the Router port, launch Blazar with the same `BLAZAR_PORT` value in its environment.
 
 ## iOS build
 
