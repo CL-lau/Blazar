@@ -33,8 +33,11 @@ test('Router authenticates, deduplicates commands and replays task changes over 
       assert.equal(new Headers(init?.headers).get('authorization'), 'Bearer fixture');
       return Response.json({ code: 0, data: { content: 'Design review findings' } });
     }), githubDocuments('engineering', 'example/handbook', 'other-fixture', async (url, init) => {
-      assert.match(String(url), /^https:\/\/api\.github\.com\/repos\/example\/handbook\/contents\/docs\/(review|other)\.md$/);
       assert.equal(new Headers(init?.headers).get('authorization'), 'Bearer other-fixture');
+      if (String(url) === 'https://api.github.com/repos/example/handbook') {
+        return new Response(githubStatus === 200 ? '{}' : null, { status: githubStatus });
+      }
+      assert.match(String(url), /^https:\/\/api\.github\.com\/repos\/example\/handbook\/contents\/docs\/(review|other)\.md$/);
       return new Response(githubStatus === 200 ? githubBody : null, { status: githubStatus });
     })],
     async draftMemory(evidence) {
@@ -223,6 +226,8 @@ test('Router authenticates, deduplicates commands and replays task changes over 
   const githubRegistration = await post('/v1/app-connections', 'github', { app: 'github', account: 'engineering' });
   const { id: github } = await githubRegistration.json();
   const repoImport = '/v1/app-connections/' + github + '/import-document';
+  const repoHealth = '/v1/app-connections/' + github + '/capabilities/connection.health';
+  assert.deepEqual(await (await post(repoHealth, 'github-health', { workspace: 'demo' })).json(), { status: 'succeeded' });
   assert.equal((await post(repoImport, 'bad-path', { workspace: 'demo', document: '../review.md' })).status, 400);
   assert.equal((await post(repoImport, 'github-import', { workspace: 'demo', document: 'docs/review.md' })).status, 200);
   const mixedRecall = importedRecall + '&source=' + github;
@@ -321,9 +326,11 @@ test('Router authenticates, deduplicates commands and replays task changes over 
   const remaining = await (await fetch(url + mixedRecall, { headers })).json();
   assert.deepEqual(remaining.items.map(item => item.connection), [github]);
   githubStatus = 503;
+  assert.deepEqual(await (await post(repoHealth, 'github-health-unavailable', { workspace: 'demo' })).json(), { status: 'failed' });
   assert.equal((await post(repoImport, 'transient-github', { workspace: 'demo', document: 'docs/review.md' })).status, 502);
   assert.equal(memory.recall('test', 'demo', 'findings', [github]).length, 1);
   githubStatus = 404;
+  assert.deepEqual(await (await post(repoHealth, 'github-health-denied', { workspace: 'demo' })).json(), { status: 'access_denied' });
   assert.equal((await post(repoImport, 'missing-github', { workspace: 'demo', document: 'docs/review.md' })).status, 502);
   assert.deepEqual(memory.recall('test', 'demo', 'findings', [github]), []);
   githubStatus = 200;

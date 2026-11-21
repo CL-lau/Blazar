@@ -64,6 +64,22 @@ export async function invokeDocumentCapability(store: DocumentMemory, owner: str
   if (!connection) throw new RequestError(404, 'Active connection not found');
   const reader = readers.find(candidate => candidate.app === connection.app && candidate.account === connection.account);
   if (!reader) throw new RequestError(409, 'No document reader is configured for this connection');
+  if (capability === 'connection.health') {
+    if (!reader.health) throw new RequestError(404, 'Connection health checks are unavailable');
+    const usage = store.startAppUsage(connectionId, workspace, 'health');
+    let status: 'succeeded' | 'access_denied' | 'failed' = 'succeeded';
+    try {
+      await reader.health(AbortSignal.timeout(10_000));
+    } catch (error) {
+      status = error instanceof DocumentAccessDenied ? 'access_denied' : 'failed';
+    }
+    if (store.connection(owner, connectionId, workspace)?.scopeVersion !== connection.scopeVersion) {
+      store.finishAppUsage(usage, 'access_changed');
+      throw new RequestError(409, 'Source access changed during the connection check');
+    }
+    store.finishAppUsage(usage, status);
+    return { status };
+  }
   if (capability === 'document.discover') {
     if (!reader.discover) throw new RequestError(404, 'Document discovery is unavailable for this connection');
     const usage = store.startAppUsage(connectionId, workspace, 'discover');

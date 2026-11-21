@@ -97,6 +97,7 @@ export function configuredDocuments(env: NodeJS.ProcessEnv, transport = fetch): 
     register({
       ...primary, app: entry.id, definition: { label, version: entry.version },
       read: (alias, signal) => tryBackends(signal, backend => backend.read(alias, signal)),
+      health: signal => tryBackends(signal, backend => backend.health(signal)),
       discover: signal => tryBackends(signal, backend => backend.discover(signal)),
     });
   }

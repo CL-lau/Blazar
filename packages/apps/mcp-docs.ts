@@ -3,7 +3,7 @@ import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/
 import { DocumentAccessDenied, DocumentBackendUnavailable, DocumentUnavailable, documentText, type DocumentConnector } from './documents.ts';
 
 export function mcpDocuments(account: string, rawEndpoint: string, resources: Record<string, unknown>,
-                             token?: string, fetcher = fetch): DocumentConnector & Required<Pick<DocumentConnector, 'discover'>> {
+                             token?: string, fetcher = fetch): DocumentConnector & Required<Pick<DocumentConnector, 'discover' | 'health'>> {
   const endpoint = new URL(rawEndpoint);
   if (endpoint.username || endpoint.password || endpoint.hash || endpoint.search || (
     endpoint.protocol !== 'https:' && !(endpoint.protocol === 'http:' && endpoint.hostname === '127.0.0.1')
@@ -69,6 +69,9 @@ export function mcpDocuments(account: string, rawEndpoint: string, resources: Re
           ? [item.text] : []).join('\n');
         return documentText(text);
       });
+    },
+    async health(signal) {
+      await withClient(signal, client => client.listResources(undefined, { signal }));
     },
     discover(signal) {
       return withClient(signal, async client => {

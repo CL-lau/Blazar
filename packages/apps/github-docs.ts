@@ -9,6 +9,18 @@ export function githubDocuments(account: string, repository: string, token: stri
   }
   return {
     app: 'github', account, accepts,
+    async health(signal) {
+      const response = await transport('https://api.github.com/repos/' + repository, {
+        headers: {
+          Authorization: 'Bearer ' + token,
+          Accept: 'application/vnd.github+json',
+          'X-GitHub-Api-Version': '2026-03-10',
+        },
+        redirect: 'error',
+        signal,
+      });
+      await readDocumentResponse(response);
+    },
     async read(path, signal) {
       if (!accepts(path)) throw new DocumentUnavailable('Invalid repository document path');
       const response = await transport('https://api.github.com/repos/' + repository + '/contents/' + path, {

@@ -182,6 +182,21 @@ export function Knowledge({ token }) {
               <label>Limit to workspace<input name="workspace" defaultValue={connection.workspace ?? ''} maxLength={128} /></label>
               <button>Save scope</button>
             </form>}
+            {connection.active && connection.capabilities?.some(capability => capability.id === 'connection.health' &&
+              capability.state === 'configured') && <form onSubmit={event => {
+              event.preventDefault();
+              const workspace = connection.workspace ?? new FormData(event.currentTarget).get('workspace');
+              perform(async () => {
+                const { status } = await request('/app-connections/' + connection.id + '/capabilities/connection.health', {
+                  method: 'POST', body: { workspace },
+                });
+                setNotice({ succeeded: 'Connection check passed.', access_denied: 'Source access was denied.',
+                  failed: 'Source could not be reached or returned an error.' }[status]);
+              });
+            }}>
+              {!connection.workspace && <label>Workspace<input name="workspace" required maxLength={128} /></label>}
+              <button>Check connection</button>
+            </form>}
             {connection.active ? <button onClick={() => perform(async () => {
               await request('/app-connections/' + connection.id, { method: 'DELETE' });
               setResults(null);
@@ -199,7 +214,7 @@ export function Knowledge({ token }) {
           <p>Connection ID <code>{usage.id}</code></p>
           {usage.items.length === 0 ? <p>No connection activity yet.</p> : <ul>{usage.items.map(item => (
             <li key={item.id}>
-              {{ import: 'Document import', test: 'Access test', refresh: 'Document refresh', search: 'Document search', discover: 'Document discovery', worker_memory: 'Worker memory access' }[item.operation]} · {item.workspace} ·{' '}
+              {{ import: 'Document import', test: 'Access test', health: 'Connection check', refresh: 'Document refresh', search: 'Document search', discover: 'Document discovery', worker_memory: 'Worker memory access' }[item.operation]} · {item.workspace} ·{' '}
               {item.taskId && <><code>{item.taskId}</code> · </>}
               {item.status.replaceAll('_', ' ')} · {new Date(item.started).toLocaleString()}
             </li>

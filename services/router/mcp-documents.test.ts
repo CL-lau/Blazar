@@ -87,6 +87,10 @@ test('a configured MCP account reads allowlisted text resources without invoking
   assert.deepEqual(methods, []);
   assert.deepEqual(await discover('project'), { aliases: ['review'], complete: true });
   assert.deepEqual(methods, ['primary', 'initialize', 'notifications/initialized', 'resources/list', 'resources/list', 'close']);
+  methods.length = 0;
+  assert.deepEqual(await invokeDocumentCapability(store, 'owner', connection, [extension], 'connection.health',
+    { workspace: 'project' }), { status: 'succeeded' });
+  assert.deepEqual(methods, ['primary', 'initialize', 'notifications/initialized', 'resources/list', 'close']);
   store.revokeResource('owner', connection, 'review');
   assert.deepEqual(await discover('project'), { aliases: [], complete: true });
   const changed = {
