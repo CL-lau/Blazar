@@ -248,6 +248,12 @@ test('a registered JSONL extension executes a real subprocess through Router and
   assert.equal(store.get('owner', questionTask.id)?.result, 'Which output format should I use?');
   assert.equal(store.snapshot('owner').approvals.filter(item => item.taskId === questionTask.id).length, 0);
   assert.equal(store.command('owner', questionTask.id, 1, { action: 'append', text: 'Use Markdown' })?.version, 2);
+  const askingWorker = store.devices('owner').find(item => item.id === device.id)!;
+  const workerIdentity = { label: 'Fixture JSONL', protocol: 'jsonl', adapterVersion: 1, revision: String(askingWorker.workerRevision) };
+  assert.equal(store.claim('owner', 'project', legacyDevice.id, Date.now(), 45_000, '', '', undefined, workerIdentity), undefined);
+  assert.equal(store.claim('owner', 'project', device.id, Date.now(), 45_000, '', '', undefined,
+    { ...workerIdentity, revision: 'b'.repeat(64) }), undefined);
+
   assert.equal(await client.runOnce(AbortSignal.timeout(5_000)), true);
   assert.equal(store.get('owner', questionTask.id)?.result, 'Formatted summary ready');
 

@@ -93,6 +93,8 @@ export class DispatchRepository {
         AND NOT EXISTS(SELECT 1 FROM json_each(?) WHERE value=wc.capability))
       AND (NOT EXISTS(SELECT 1 FROM task_worker_protocol wp WHERE wp.task_id=task.id) OR
         EXISTS(SELECT 1 FROM task_worker_protocol wp WHERE wp.task_id=task.id AND wp.protocol=?))
+      AND NOT EXISTS(SELECT 1 FROM task_question_worker q WHERE q.task_id=task.id
+        AND (q.device_id<>? OR ? IS NOT 'jsonl' OR q.revision IS NOT ?))
       AND NOT EXISTS(SELECT 1 FROM task_desktop_device target WHERE target.task_id=task.id AND target.device_id<>?)
       AND (? OR substr(task.goal,1,9) IN ('/observe ','/preview ') OR substr(task.goal,1,7)='/click ')
       AND (? OR (
@@ -111,7 +113,7 @@ export class DispatchRepository {
       ON d.owner=eligible.owner AND d.workspace=eligible.workspace AND d.channel=eligible.origin_channel
       AND d.goal_prefix=? AND d.excluding_prefix=?
     ORDER BY COALESCE(d.last_dispatch,0), eligible.queue_order LIMIT 1`).get(
-      owner, workspace, goalPrefix, goalPrefix, goalPrefix, excludingPrefix, excludingPrefix, excludingPrefix, now, capabilities, worker?.protocol ?? null, device, Number(Boolean(workerPermitted) && workerHasCapacity), Number(allowWorkerInputs),
+      owner, workspace, goalPrefix, goalPrefix, goalPrefix, excludingPrefix, excludingPrefix, excludingPrefix, now, capabilities, worker?.protocol ?? null, device, worker?.protocol ?? null, worker?.revision ?? null, device, Number(Boolean(workerPermitted) && workerHasCapacity), Number(allowWorkerInputs),
       desktopApps ? JSON.stringify(desktopApps) : null, desktopApps ? JSON.stringify(desktopApps) : null,
       goalPrefix, excludingPrefix) as unknown as (Task & { origin_channel: string }) | undefined;
     if (!task) {

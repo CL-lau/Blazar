@@ -2,6 +2,7 @@ import type { DatabaseSync } from 'node:sqlite';
 import { sqliteTransaction } from '../../../packages/storage/sqlite.ts';
 
 export function initializeTaskSchema(db: DatabaseSync, runLimitMs: number) {
+  const hasQuestionWorkers = db.prepare("SELECT 1 FROM sqlite_schema WHERE type='table' AND name='task_question_worker'").get();
   db.exec(`
     PRAGMA journal_mode=WAL;
     PRAGMA foreign_keys=ON;
@@ -374,6 +375,23 @@ export function initializeTaskSchema(db: DatabaseSync, runLimitMs: number) {
   if (!workerColumns.has('capabilities')) db.exec("ALTER TABLE device_worker ADD COLUMN capabilities TEXT NOT NULL DEFAULT '[]'");
   if (!workerColumns.has('revision')) db.exec('ALTER TABLE device_worker ADD COLUMN revision TEXT');
   if (!workerColumns.has('adapter_version')) db.exec('ALTER TABLE device_worker ADD COLUMN adapter_version INTEGER');
+  if (!hasQuestionWorkers) {
+    sqliteTransaction(db, () => db.exec(`CREATE TABLE task_question_worker (
+      task_id TEXT PRIMARY KEY REFERENCES task(id) ON DELETE CASCADE,
+      device_id TEXT NOT NULL, revision TEXT NOT NULL
+    );
+    INSERT OR IGNORE INTO task_question_worker(task_id,device_id,revision)
+      SELECT t.id,receipt.device,json_extract(start.data,'$.worker.revision')
+      FROM task t JOIN event finished ON finished.seq=(
+        SELECT seq FROM event WHERE taskId=t.id AND type='run.finished' ORDER BY seq DESC LIMIT 1
+      )
+      JOIN run_receipt receipt ON receipt.id=json_extract(finished.data,'$.runId')
+      JOIN event start ON start.taskId=t.id AND start.type='run.started' AND json_extract(start.data,'$.runId')=receipt.id
+      WHERE t.status IN ('queued','waiting_device','waiting_user','waiting_dependency','paused')
+        AND json_extract(finished.data,'$.waitingReason')='worker_question'
+        AND json_extract(start.data,'$.worker.protocol')='jsonl'
+        AND typeof(json_extract(start.data,'$.worker.revision'))='text'`));
+  }
   sqliteTransaction(db, () => {
     db.exec(`INSERT OR IGNORE INTO workflow_observation(task_id)
       SELECT s.task_id FROM workflow_step s JOIN task t ON t.id=s.task_id

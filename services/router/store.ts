@@ -1393,9 +1393,12 @@ export class TaskStore {
       const click = String(row.goal).startsWith('/click ');
       const patchInputWait = outcome.status === 'waiting_user' && outcome.waitingReason === 'git_patch_inputs' &&
         Boolean(this.db.prepare("SELECT 1 FROM task_worker_capability WHERE task_id=? AND capability='git-patch-inputs'").get(taskId));
-      const workerQuestion = outcome.status === 'waiting_user' && outcome.waitingReason === 'worker_question' &&
-        Boolean(this.db.prepare(`SELECT 1 FROM event WHERE taskId=? AND type='run.started'
-          AND json_extract(data,'$.runId')=? AND json_extract(data,'$.worker.protocol')='jsonl'`).get(taskId, runId));
+      const questionWorker = outcome.status === 'waiting_user' && outcome.waitingReason === 'worker_question'
+        ? this.db.prepare(`SELECT json_extract(data,'$.worker.revision') AS revision
+          FROM event WHERE taskId=? AND type='run.started'
+          AND json_extract(data,'$.runId')=? AND json_extract(data,'$.worker.protocol')='jsonl'`).get(taskId, runId)
+        : undefined;
+      const workerQuestion = typeof questionWorker?.revision === 'string';
       if (outcome.waitingReason && !patchInputWait && !workerQuestion) return false;
       if ((outcome.status === 'waiting_user' && !click && !patchInputWait && !workerQuestion) ||
           (click && outcome.status !== 'failed' && !this.db.prepare(`SELECT 1 FROM approval_use u
@@ -1426,6 +1429,12 @@ export class TaskStore {
         return false;
       }
       if (outcome.status === 'waiting_user' && click) this.requireDesktopReconciliation(taskId, runId);
+      if (workerQuestion) {
+        this.db.prepare(`INSERT INTO task_question_worker VALUES(?,?,?) ON CONFLICT(task_id)
+          DO UPDATE SET device_id=excluded.device_id,revision=excluded.revision`).run(taskId, device, questionWorker!.revision!);
+      } else if (outcome.status === 'succeeded') {
+        this.db.prepare('DELETE FROM task_question_worker WHERE task_id=?').run(taskId);
+      }
       this.db.prepare('DELETE FROM run WHERE id=?').run(runId);
       const finalStatus = pendingReview ? 'waiting_review' : outcome.status;
       this.db.prepare('UPDATE task SET status=?,result=? WHERE id=?').run(finalStatus, outcome.result, taskId);
@@ -1468,6 +1477,8 @@ export class TaskStore {
             OR substr(t.goal,1,7)='/click ' OR EXISTS(SELECT 1 FROM json_each(worker.capabilities) WHERE value='read-only'))
           AND (NOT EXISTS(SELECT 1 FROM task_worker_protocol wp WHERE wp.task_id=t.id) OR
             EXISTS(SELECT 1 FROM task_worker_protocol wp WHERE wp.task_id=t.id AND wp.protocol=worker.protocol))
+          AND NOT EXISTS(SELECT 1 FROM task_question_worker q WHERE q.task_id=t.id
+            AND (q.device_id<>d.id OR worker.protocol IS NOT 'jsonl' OR q.revision IS NOT worker.revision))
           AND NOT EXISTS(SELECT 1 FROM task_worker_capability wc WHERE wc.task_id=t.id
             AND NOT EXISTS(SELECT 1 FROM json_each(worker.capabilities) WHERE value=wc.capability))
           AND (p.capability='agent.acp' OR (

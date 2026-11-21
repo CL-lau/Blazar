@@ -201,7 +201,7 @@ interface ComputerDriver {
 
 [ACP 协议](https://agentclientprotocol.com/protocol/v1/overview) · [ACP Agent 目录](https://agentclientprotocol.com/get-started/agents) · [Cursor 无界面 CLI](https://cursor.com/docs/cli/headless) · [Antigravity CLI](https://codelabs.developers.google.com/genai-for-dev-antigravity-cli) · [Gemini CLI 账户迁移](https://developers.google.com/gemini-code-assist/docs/deprecations/code-assist-individuals)
 
-适配器接口为 `probe → start/resume → stream → steer/approve/cancel`，探测返回能力和账号状态。归一化事件包括 `started`、`progress`、`question`、`approval_requested`、`artifact`、`completed`、`failed`。基础能力是运行、产物、失败和取消。JSONL 扩展可用终态 question 暂停，Router 保存问题、释放租约，并在用户补充指令后把问题与回答交给新运行。若工具无法原生中止，执行端按进程组收尾；若工具缺少实时追加能力，追加排入下一轮。适配器无法承载工作区所要求的权限约束时，Router 会选择符合条件的 Worker 或向用户说明需要更改配置。
+适配器接口为 `probe → start/resume → stream → steer/approve/cancel`，探测返回能力和账号状态。归一化事件包括 `started`、`progress`、`question`、`approval_requested`、`artifact`、`completed`、`failed`。基础能力是运行、产物、失败和取消。JSONL 扩展可用终态 question 暂停，Router 保存问题、释放租约，并在用户补充指令后把问题与回答交给原设备上相同配置版本的新运行。若工具无法原生中止，执行端按进程组收尾；若工具缺少实时追加能力，追加排入下一轮。适配器无法承载工作区所要求的权限约束时，Router 会选择符合条件的 Worker 或向用户说明需要更改配置。
 
 管理员可在桌面端按工作区限制新任务允许使用的 Worker 协议，并设置同时运行的 Worker 数量、单次运行时限及工作区是否要求 Worker 只读执行。只读策略当前由 Codex 原生沙箱保障。Router 默认允许 600 秒，工作区可设为 30 至 600 秒。已领取任务保留领取时确定的截止时间。等待停止确认的 Worker 仍占用名额。Router 在设备可用性判断、任务领取和领取重放时核对设备声明的协议。策略变更保留运行中租约，文档预览和 Computer Use 仍按各自的设备能力派发。
 
