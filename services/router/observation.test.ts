@@ -31,7 +31,7 @@ console.log(JSON.stringify({ok:true,command:'snapshot',data:{tree:{role:'window'
   await once(server, 'listening');
   const address = server.address();
   assert(address && typeof address !== 'string');
-  const { token } = store.registerDevice('owner', 'Computer', 'work');
+  const { id: computer, token } = store.registerDevice('owner', 'Computer', 'work');
   const client = new DeviceClient(new URL('http://127.0.0.1:' + address.port), token, directory, ledger, undefined, observation);
   t.after(async () => {
     client.close();
@@ -46,7 +46,20 @@ console.log(JSON.stringify({ok:true,command:'snapshot',data:{tree:{role:'window'
     id: 'chat-request', chat: 'chat', thread: 'chat-request', root: true, text: '/observe calculator',
   });
   assert.equal(store.snapshot('owner').tasks.length, 0);
-  const task = store.create('owner', 'desktop', 'observation', 'work', '/observe calculator');
+  assert.equal(await client.runOnce(AbortSignal.timeout(8_000)), false);
+  const second = store.registerDevice('owner', 'Second computer', 'work');
+  store.recordDeviceActivity(second.id, Date.now(), 'computer.observe');
+  store.recordDesktopApps(second.id, ['calculator']);
+  const deskTask = await fetch(new URL('/v1/events', 'http://127.0.0.1:' + address.port), {
+    method: 'POST', headers: {
+      Authorization: 'Bearer admin', 'Content-Type': 'application/json', 'Idempotency-Key': 'targeted-observation',
+    },
+    body: JSON.stringify({ workspace: 'work', text: '/observe calculator', desktopDevice: computer }),
+  });
+  assert.equal(deskTask.status, 202);
+  const task = await deskTask.json();
+  assert.equal(store.claim('owner', 'work', second.id, Date.now(), 45_000, '/observe ',
+    '', undefined, undefined, ['calculator']), undefined);
   const denied = store.create('owner', 'desktop', 'unconfigured', 'work', '/observe other');
   const preview = store.create('owner', 'desktop', 'preview', 'work', '/preview notes.md');
   assert.equal(await client.runOnce(AbortSignal.timeout(8_000)), true);
@@ -54,7 +67,10 @@ console.log(JSON.stringify({ok:true,command:'snapshot',data:{tree:{role:'window'
   const state = await fetch(new URL('/v1/state', 'http://127.0.0.1:' + address.port), {
     headers: { Authorization: 'Bearer admin' },
   });
-  assert.deepEqual((await state.json()).desktopTargets, [{ workspace: 'work', alias: 'calculator' }]);
+  assert.deepEqual((await state.json()).desktopTargets, [
+    { workspace: 'work', deviceId: computer, deviceName: 'Computer', alias: 'calculator' },
+    { workspace: 'work', deviceId: second.id, deviceName: 'Second computer', alias: 'calculator' },
+  ]);
   const { artifacts } = store.snapshot('owner');
   assert.equal(artifacts.length, 1);
   assert.equal(artifacts[0].taskId, task.id);

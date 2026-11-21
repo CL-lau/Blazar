@@ -4,6 +4,8 @@ struct RouterSnapshot: Decodable {
     struct DesktopTarget: Decodable {
         let workspace: String
         let alias: String
+        let deviceId: String?
+        let deviceName: String?
     }
     struct Task: Decodable, Identifiable {
         let id: String
@@ -109,8 +111,10 @@ struct RouterClient: Equatable {
         }
     }
 
-    func submit(workspace: String, goal: String, key: UUID) async throws {
-        _ = try await request("v1/events", body: ["workspace": workspace, "text": goal], key: key)
+    func submit(workspace: String, goal: String, key: UUID, desktopDevice: String? = nil) async throws {
+        var body = ["workspace": workspace, "text": goal]
+        if let desktopDevice { body["desktopDevice"] = desktopDevice }
+        _ = try await request("v1/events", body: body, key: key)
     }
 
     struct WorkflowStep: Codable, Identifiable {

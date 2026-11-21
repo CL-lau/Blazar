@@ -32,6 +32,7 @@ struct DesktopControl: View {
 
     @State private var operation: DesktopOperation = .windows
     @State private var alias = ""
+    @State private var device = ""
     @State private var window = ""
     @State private var button = ""
     @State private var requestKey = UUID()
@@ -40,8 +41,25 @@ struct DesktopControl: View {
         operation.command(alias: alias, window: window, button: button)
     }
 
+    private var available: [RouterSnapshot.DesktopTarget] {
+        targets.filter { $0.workspace == workspace.trimmingCharacters(in: .whitespacesAndNewlines) }
+    }
+
+    private var computers: [RouterSnapshot.DesktopTarget] {
+        var seen = Set<String>()
+        return available.filter { target in
+            guard let id = target.deviceId else { return false }
+            return seen.insert(id).inserted
+        }
+    }
+
+    private var targetDevice: String? {
+        if computers.count == 1 { return computers.first?.deviceId }
+        return computers.contains { $0.deviceId == device } ? device : nil
+    }
+
     private var aliases: [String] {
-        targets.filter { $0.workspace == workspace.trimmingCharacters(in: .whitespacesAndNewlines) }.map(\.alias)
+        available.filter { $0.deviceId == targetDevice }.map(\.alias)
     }
 
     var body: some View {
@@ -49,6 +67,14 @@ struct DesktopControl: View {
             TextField("Workspace", text: $workspace)
             Picker("Operation", selection: $operation) {
                 ForEach(DesktopOperation.allCases) { Text($0.rawValue).tag($0) }
+            }
+            if computers.count > 1 {
+                Picker("Computer", selection: $device) {
+                    Text("Choose a computer").tag("")
+                    ForEach(computers, id: \.deviceId) { target in
+                        Text(target.deviceName ?? "Computer").tag(target.deviceId ?? "")
+                    }
+                }
             }
             if aliases.isEmpty {
                 TextField("Configured app alias", text: $alias)
@@ -72,11 +98,12 @@ struct DesktopControl: View {
                 guard let command else { return }
                 let targetWorkspace = workspace
                 let key = requestKey
+                let computer = targetDevice
                 sending = true
                 Task {
                     defer { sending = false }
                     do {
-                        try await client.submit(workspace: targetWorkspace, goal: command, key: key)
+                        try await client.submit(workspace: targetWorkspace, goal: command, key: key, desktopDevice: computer)
                         requestKey = UUID()
                         await reload()
                     } catch {
@@ -85,11 +112,16 @@ struct DesktopControl: View {
                 }
             }
             .disabled(command == nil || (!aliases.isEmpty && !aliases.contains(alias)) ||
+                      (!computers.isEmpty && targetDevice == nil) ||
                       workspace.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
         }
         .disabled(sending)
         .onChange(of: command) { _, _ in requestKey = UUID() }
         .onChange(of: workspace) { _, _ in requestKey = UUID() }
+        .onChange(of: targetDevice) { _, _ in
+            requestKey = UUID()
+            window = ""
+        }
         .onChange(of: aliases) { _, next in
             if !next.isEmpty && !next.contains(alias) { alias = "" }
         }

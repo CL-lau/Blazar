@@ -114,6 +114,9 @@ export class TaskStore {
       CREATE TABLE IF NOT EXISTS device_worker (
         device_id TEXT PRIMARY KEY REFERENCES device(id), label TEXT NOT NULL, protocol TEXT NOT NULL
       );
+      CREATE TABLE IF NOT EXISTS task_desktop_device (
+        task_id TEXT PRIMARY KEY REFERENCES task(id), device_id TEXT NOT NULL REFERENCES device(id)
+      );
       CREATE TABLE IF NOT EXISTS device_desktop_apps (
         device_id TEXT PRIMARY KEY REFERENCES device(id), aliases TEXT NOT NULL
       );
@@ -549,9 +552,9 @@ export class TaskStore {
     if (previousStatus === 'succeeded') this.invalidateCompletedDescendants(taskId);
   }
 
-  create(owner: string, source: string, key: string, workspace: string, goal: string): Task {
+  create(owner: string, source: string, key: string, workspace: string, goal: string, desktopDevice?: string): Task {
     return this.transaction(() => {
-      const fingerprint = JSON.stringify([workspace, goal]);
+      const fingerprint = JSON.stringify(desktopDevice ? [workspace, goal, desktopDevice] : [workspace, goal]);
       const receipt = this.db.prepare('SELECT fingerprint, taskId FROM receipt WHERE owner=? AND source=? AND key=?')
         .get(owner, source, key);
       if (receipt) {
@@ -561,7 +564,8 @@ export class TaskStore {
       const id = randomUUID();
       this.db.prepare('INSERT INTO task(id,owner,workspace,goal) VALUES(?,?,?,?)').run(id, owner, workspace, goal);
       this.db.prepare('INSERT INTO receipt VALUES(?,?,?,?,?)').run(owner, source, key, fingerprint, id);
-      this.event(id, 'task.created', { goal, workspace });
+      if (desktopDevice) this.db.prepare('INSERT INTO task_desktop_device VALUES(?,?)').run(id, desktopDevice);
+      this.event(id, 'task.created', { goal, workspace, ...(desktopDevice && { desktopDevice }) });
       return this.get(owner, id)!;
     });
   }
@@ -815,13 +819,18 @@ export class TaskStore {
   }
 
   desktopTargets(owner: string, now = Date.now()) {
-    return this.db.prepare(`SELECT DISTINCT d.workspace,j.value AS alias FROM device d
+    return this.db.prepare(`SELECT d.workspace,d.id AS deviceId,d.name AS deviceName,j.value AS alias FROM device d
       JOIN device_presence p ON p.device_id=d.id JOIN device_desktop_apps a ON a.device_id=d.id
       JOIN json_each(a.aliases) j WHERE d.owner=? AND d.revoked=0 AND p.last_seen>=?
       AND p.capability='computer.observe'
       AND NOT EXISTS(SELECT 1 FROM device_interruption i WHERE i.device_id=d.id)
       AND NOT EXISTS(SELECT 1 FROM device_pause x WHERE x.device_id=d.id)
-      ORDER BY d.workspace,j.value LIMIT 250`).all(owner, now - 45_000);
+      ORDER BY d.workspace,d.name,d.id,j.value LIMIT 250`).all(owner, now - 45_000);
+  }
+
+  ownsDesktopTarget(owner: string, workspace: string, id: string) {
+    return Boolean(this.db.prepare(`SELECT 1 FROM device d JOIN device_desktop_apps a ON a.device_id=d.id
+      WHERE d.owner=? AND d.workspace=? AND d.id=? AND d.revoked=0`).get(owner, workspace, id));
   }
 
   recordDeviceActivity(id: string, now: number, capability?: string, platform?: string) {
@@ -922,13 +931,14 @@ export class TaskStore {
       const task = this.db.prepare(`SELECT * FROM task WHERE owner=? AND workspace=?
         AND status IN ('queued','waiting_device') AND (substr(goal,1,length(?))=? OR (?='/observe ' AND substr(goal,1,7)='/click '))
         AND (?='' OR (substr(goal,1,length(?))!=? AND substr(goal,1,9)!='/observe ' AND substr(goal,1,7)!='/click '))
+        AND NOT EXISTS(SELECT 1 FROM task_desktop_device target WHERE target.task_id=task.id AND target.device_id<>?)
         AND (? IS NULL OR EXISTS(SELECT 1 FROM json_each(?) j WHERE
           substr(goal || ' ',1,length('/observe ' || j.value || ' '))='/observe ' || j.value || ' '
           OR substr(goal || ' ',1,length('/click ' || j.value || ' '))='/click ' || j.value || ' '))
         AND NOT EXISTS (
           SELECT 1 FROM workflow_dependency d JOIN task p ON p.id=d.predecessor
           WHERE d.task_id=task.id AND p.status!='succeeded'
-        ) ORDER BY rowid LIMIT 1`).get(owner, workspace, goalPrefix, goalPrefix, goalPrefix, excludingPrefix, excludingPrefix, excludingPrefix,
+        ) ORDER BY rowid LIMIT 1`).get(owner, workspace, goalPrefix, goalPrefix, goalPrefix, excludingPrefix, excludingPrefix, excludingPrefix, device,
           desktopApps ? JSON.stringify(desktopApps) : null, desktopApps ? JSON.stringify(desktopApps) : null) as unknown as Task | undefined;
       if (!task) {
         if (requestId) this.db.prepare('INSERT INTO device_claim VALUES(?,?,?,?,?)')
@@ -1213,6 +1223,7 @@ export class TaskStore {
             WHEN substr(t.goal,1,9)='/preview ' THEN 'document.preview'
             WHEN substr(t.goal,1,9)='/observe ' OR substr(t.goal,1,7)='/click ' THEN 'computer.observe'
             ELSE 'agent.acp' END)
+          AND NOT EXISTS(SELECT 1 FROM task_desktop_device target WHERE target.task_id=t.id AND target.device_id<>d.id)
           AND (a.aliases IS NULL OR EXISTS(SELECT 1 FROM json_each(a.aliases) j WHERE
             substr(t.goal || ' ',1,length('/observe ' || j.value || ' '))='/observe ' || j.value || ' '
             OR substr(t.goal || ' ',1,length('/click ' || j.value || ' '))='/click ' || j.value || ' '))
