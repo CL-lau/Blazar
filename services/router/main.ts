@@ -47,8 +47,9 @@ if (qq && (!qq.appId || !qq.workspace || !qq.senders.size || !qq.chats.size)) {
 const documents = configuredDocuments(process.env);
 const push = configuredPush(process.env);
 const instance = lockRouter(process.env.BLAZAR_DB ?? 'blazar.sqlite');
-const store = new TaskStore(instance.path);
 const memory = new MemoryStore(instance.path);
+const store = new TaskStore(instance.path,
+  (owner, workspace, refs) => Boolean(memory.resolveAppEvidence(owner, workspace, refs)));
 const server = routerServer(store, { feishu, qq, documents, owner: 'local', token, memory, harness, answerMemory, pushEnabled: Boolean(push) });
 const stopPush = push && startPushDelivery(store, push);
 const documentSyncShutdown = new AbortController();

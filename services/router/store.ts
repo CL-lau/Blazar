@@ -16,8 +16,10 @@ export class IdempotencyConflict extends Error {
 
 export class TaskStore {
   private db: DatabaseSync;
+  private readonly canUseChannelAppEvidence?: (owner: string, workspace: string, refs: AppEvidence['refs']) => boolean;
 
-  constructor(path: string) {
+  constructor(path: string, canUseChannelAppEvidence?: TaskStore['canUseChannelAppEvidence']) {
+    this.canUseChannelAppEvidence = canUseChannelAppEvidence;
     this.db = new DatabaseSync(path);
     this.db.exec(`
       PRAGMA journal_mode=WAL;
@@ -627,11 +629,15 @@ export class TaskStore {
         : this.db.prepare(`SELECT t.id,t.status,c.thread FROM channel_thread c JOIN task t ON t.id=c.task_id
             WHERE c.owner=? AND c.channel=? AND c.chat=? AND c.thread=? AND t.workspace=?`).get(...key, workspace);
       if (!link) return;
+      const taskId = String(link.id);
+      const canContinue = () => {
+        const refs = this.appEvidence(taskId);
+        return !refs || this.canUseChannelAppEvidence?.(owner, workspace, refs) === true;
+      };
       if (statusQuery || pause || resume) {
-        const taskId = String(link.id);
         const previous = String(link.status);
         if (pause) this.pauseTask(taskId, previous, { channel });
-        if (resume) this.requeueTask(taskId, previous, 'resume', { channel });
+        if (resume && canContinue()) this.requeueTask(taskId, previous, 'resume', { channel });
         const status = this.get(owner, taskId)!.status;
         const now = Date.now();
         const thread = String(link.thread);
@@ -657,8 +663,7 @@ export class TaskStore {
         this.cancelTask(String(link.id), String(link.status), { channel });
         return;
       }
-      if (['cancelled', 'cancelling', 'paused', 'pausing'].includes(String(link.status))) return;
-      const taskId = String(link.id);
+      if (['cancelled', 'cancelling', 'paused', 'pausing'].includes(String(link.status)) || !canContinue()) return;
       this.appendInstruction(taskId, message.text, String(link.status), { channel });
     });
   }

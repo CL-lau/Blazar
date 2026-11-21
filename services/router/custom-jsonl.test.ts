@@ -61,8 +61,9 @@ test('a registered JSONL extension executes a real subprocess through Router and
   }));
   const worker = await resolveWorker('custom', manifest);
   assert.equal(worker?.protocol, 'jsonl');
-  const store = new TaskStore(':memory:');
   const memory = new MemoryStore(':memory:');
+  const store = new TaskStore(':memory:',
+    (owner, workspace, refs) => Boolean(memory.resolveAppEvidence(owner, workspace, refs)));
   const ledger = new DeviceLedger(':memory:');
   let routedTaskCount: number | undefined;
   const server = routerServer(store, { owner: 'owner', token: 'local', memory,
@@ -367,9 +368,17 @@ test('a registered JSONL extension executes a real subprocess through Router and
       Authorization: 'Bearer local', 'Content-Type': 'application/json', 'Idempotency-Key': 'retry-evidence',
     }, body: JSON.stringify({ action: 'retry', expectedVersion: 1 }),
   });
+  const linkCode = store.createTaskLink('owner', recoveryTask.id, Date.now())!;
+  const channelMessage = (id: string, text: string, root = false) =>
+    store.receiveChannelMessage('owner', 'feishu', 'project', { id, text, root, chat: 'chat', thread: 'thread' });
+  channelMessage('link', '/link ' + linkCode.code, true);
+  assert.equal(store.taskChannels('owner', recoveryTask.id).length, 1);
   assert.equal((await changeScope('another-project')).status, 200);
   assert.equal(store.get('owner', recoveryTask.id)?.status, 'waiting_user');
   assert.equal((await retry()).status, 409);
+  channelMessage('revoked-follow-up', 'Start the task again');
+  channelMessage('status', '/status');
+  assert.equal(store.get('owner', recoveryTask.id)?.status, 'waiting_user');
   assert.equal(store.get('owner', recoveryTask.id)?.version, 1);
   assert.equal((await changeScope('project')).status, 200);
   const restoredState = await (await fetch(base + '/v1/state', { headers: { Authorization: 'Bearer local' } })).json();
@@ -378,6 +387,17 @@ test('a registered JSONL extension executes a real subprocess through Router and
   assert.equal(await client.runOnce(AbortSignal.timeout(5_000)), true);
   assert.equal(store.get('owner', recoveryTask.id)?.result, 'Private review template');
   assert.equal(store.get('owner', recoveryTask.id)?.version, 2);
+  channelMessage('authorized-follow-up', 'Use the original format');
+  assert.equal(store.get('owner', recoveryTask.id)?.version, 3);
+  assert.equal(store.get('owner', recoveryTask.id)?.status, 'queued');
+  assert.equal((await changeScope('another-project')).status, 200);
+  channelMessage('pause-while-revoked', '/pause');
+  assert.equal(store.get('owner', recoveryTask.id)?.status, 'paused');
+  channelMessage('resume-while-revoked', '/resume');
+  assert.equal(store.get('owner', recoveryTask.id)?.status, 'paused');
+  assert.equal((await changeScope('project')).status, 200);
+  channelMessage('resume-after-restore', '/resume');
+  assert.equal(store.get('owner', recoveryTask.id)?.status, 'queued');
 });
 
 test('JSONL rejects duplicate terminal events and stops a cancelled subprocess', async () => {
