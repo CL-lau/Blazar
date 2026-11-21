@@ -90,6 +90,35 @@ async function stream(store: TaskStore, owner: string, cursor: number, response:
   }
 }
 
+async function accessDocument(store: MemoryStore, owner: string, workspace: string, connection: string,
+                              reader: DocumentConnector, document: string, operation: 'test' | 'import' | 'refresh') {
+  if (store.resourceRevoked(connection, document)) throw new RequestError(409, 'Document access was revoked');
+  if (!reader.accepts(document)) throw new RequestError(400, 'Invalid document reference');
+  const usageId = store.startAppUsage(connection, workspace, operation);
+  let content;
+  try {
+    content = await reader.read(document, AbortSignal.timeout(10_000));
+  } catch (error) {
+    if (error instanceof DocumentAccessDenied) store.recordDocumentAccess(connection, document, usageId, false);
+    store.finishAppUsage(usageId, 'failed');
+    throw new RequestError(502, error instanceof DocumentUnavailable ? error.message : 'Document read failed');
+  }
+  if (operation === 'test') {
+    if (!store.connection(owner, connection, workspace) || store.resourceRevoked(connection, document)) {
+      store.finishAppUsage(usageId, 'access_changed');
+      throw new RequestError(409, 'Source access changed during the test');
+    }
+    store.finishAppUsage(usageId, 'succeeded');
+    return { readable: true };
+  }
+  const id = store.importDocument(owner, workspace, content.text, {
+    connection, resource: document, revision: content.revision,
+  }, usageId);
+  store.finishAppUsage(usageId, id ? 'succeeded' : 'access_changed');
+  if (!id) throw new RequestError(409, 'Source access changed during import');
+  return { id, revision: content.revision };
+}
+
 async function handleMemory(
   request: IncomingMessage, response: ServerResponse, url: URL, owner: string, store: MemoryStore, documents?: readonly DocumentConnector[], answerMemory?: MemoryAnswer,
 ): Promise<boolean> {
@@ -123,46 +152,31 @@ async function handleMemory(
     return true;
   }
 
-  const importPath = /^\/v1\/app-connections\/([a-f0-9-]{36})\/(import-document|test-document)$/.exec(pathname);
-  if (importPath && method === 'POST') {
+  const documentPath = /^\/v1\/app-connections\/([a-f0-9-]{36})\/(import-document|test-document|refresh-documents)$/.exec(pathname);
+  if (documentPath && method === 'POST') {
     const data = await jsonObject(request);
     const workspace = requiredText(data.workspace, 'workspace', 128);
-    const document = requiredText(data.document, 'document ID', 128);
-    const connection = store.connection(owner, importPath[1], workspace);
+    const connectionId = documentPath[1];
+    const connection = store.connection(owner, connectionId, workspace);
     if (!connection) throw new RequestError(404, 'Active connection not found');
     const reader = readerFor(connection);
-    if (!reader) {
-      throw new RequestError(409, 'No document reader is configured for this connection');
-    }
-    if (store.resourceRevoked(importPath[1], document)) throw new RequestError(409, 'Document access was revoked');
-    if (!reader.accepts(document)) throw new RequestError(400, 'Invalid document reference');
-    const testAccess = importPath[2] === 'test-document';
-    const usageId = store.startAppUsage(importPath[1], workspace, testAccess ? 'test' : 'import');
-    let content;
-    try {
-      content = await reader.read(document, AbortSignal.timeout(10_000));
-    } catch (error) {
-      if (error instanceof DocumentAccessDenied) {
-        store.recordDocumentAccess(importPath[1], document, usageId, false);
-      }
-      store.finishAppUsage(usageId, 'failed');
-      throw new RequestError(502, error instanceof DocumentUnavailable ? error.message : 'Document read failed');
-    }
-    if (testAccess) {
-      if (!store.connection(owner, importPath[1], workspace) || store.resourceRevoked(importPath[1], document)) {
-        store.finishAppUsage(usageId, 'access_changed');
-        throw new RequestError(409, 'Source access changed during the test');
-      }
-      store.finishAppUsage(usageId, 'succeeded');
-      reply(response, 200, { readable: true });
+    if (!reader) throw new RequestError(409, 'No document reader is configured for this connection');
+    if (documentPath[2] === 'refresh-documents') {
+      const after = data.after === undefined ? '' : requiredText(data.after, 'document cursor', 128);
+      const documents = store.documentsToRefresh(owner, workspace, connectionId, after);
+      const page = documents.slice(0, 8);
+      const results = await Promise.allSettled(page.map(document =>
+        accessDocument(store, owner, workspace, connectionId, reader, document, 'refresh')));
+      const refreshed = results.filter(result => result.status === 'fulfilled').length;
+      reply(response, 200, {
+        refreshed, unavailable: results.length - refreshed,
+        after: documents.length > page.length ? page.at(-1) : null,
+      });
       return true;
     }
-    const id = store.importDocument(owner, workspace, content.text, {
-      connection: importPath[1], resource: document, revision: content.revision,
-    }, usageId);
-    store.finishAppUsage(usageId, id ? 'succeeded' : 'access_changed');
-    if (!id) throw new RequestError(409, 'Source access changed during import');
-    reply(response, 200, { id, revision: content.revision });
+    const document = requiredText(data.document, 'document ID', 128);
+    reply(response, 200, await accessDocument(store, owner, workspace, connectionId, reader, document,
+      documentPath[2] === 'test-document' ? 'test' : 'import'));
     return true;
   }
 

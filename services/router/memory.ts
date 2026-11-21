@@ -178,7 +178,7 @@ export class MemoryStore {
       .get(owner, id, workspace ?? null, workspace ?? null) as { app: string; account: string } | undefined;
   }
 
-  startAppUsage(connection: string, workspace: string, operation: 'import' | 'test') {
+  startAppUsage(connection: string, workspace: string, operation: 'import' | 'test' | 'refresh') {
     return this.db.prepare("INSERT INTO app_usage(connection,workspace,operation,status,started) VALUES(?,?,?,'started',?)")
       .run(connection, workspace, operation, Date.now()).lastInsertRowid;
   }
@@ -191,6 +191,13 @@ export class MemoryStore {
     if (!this.db.prepare('SELECT 1 FROM app_connection WHERE owner=? AND id=?').get(owner, connection)) return undefined;
     return this.db.prepare('SELECT id,workspace,operation,status,started FROM app_usage WHERE connection=? ORDER BY id DESC LIMIT 50')
       .all(connection);
+  }
+
+  documentsToRefresh(owner: string, workspace: string, connection: string, after: string) {
+    return this.db.prepare(`SELECT h.resource FROM document_head h JOIN memory m ON m.id=h.memory_id
+      WHERE h.owner=? AND h.workspace=? AND h.connection=? AND h.resource>?
+      AND NOT EXISTS(SELECT 1 FROM revoked_resource r WHERE r.connection=h.connection AND r.resource=h.resource)
+      ORDER BY h.resource LIMIT 9`).all(owner, workspace, connection, after).map(row => String(row.resource));
   }
 
   recordDocumentAccess(connection: string, resource: string, requestId: number | bigint, allowed: boolean) {

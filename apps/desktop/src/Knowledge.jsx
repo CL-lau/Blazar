@@ -153,7 +153,7 @@ export function Knowledge({ token }) {
           <h3>{usage.account}</h3>
           {usage.items.length === 0 ? <p>No document activity yet.</p> : <ul>{usage.items.map(item => (
             <li key={item.id}>
-              {item.operation === 'import' ? 'Document import' : 'Access test'} · {item.workspace} ·{' '}
+              {{ import: 'Document import', test: 'Access test', refresh: 'Document refresh' }[item.operation]} · {item.workspace} ·{' '}
               {item.status.replaceAll('_', ' ')} · {new Date(item.started).toLocaleString()}
             </li>
           ))}</ul>}
@@ -196,6 +196,28 @@ export function Knowledge({ token }) {
             </select></label> : <label>Document ID or repository path<input name="document" required maxLength={128} /></label>}
             <button>Import into memory</button>
             <button type="submit" value="test">Test document access</button>
+            <button type="button" onClick={event => {
+              const form = event.currentTarget.form;
+              const field = form.elements.namedItem('workspace');
+              if (!field.reportValidity()) return;
+              const { connection, workspace } = Object.fromEntries(new FormData(form));
+              void perform(async () => {
+                let after;
+                let refreshed = 0;
+                let unavailable = 0;
+                do {
+                  const page = await request('/app-connections/' + connection + '/refresh-documents', {
+                    method: 'POST', body: { workspace, ...(after && { after }) },
+                  });
+                  refreshed += page.refreshed;
+                  unavailable += page.unavailable;
+                  after = page.after;
+                } while (after);
+                setUsage(null);
+                setResults(null);
+                setNotice(`Refreshed ${refreshed} documents. Could not refresh ${unavailable}.`);
+              });
+            }}>Refresh imported documents</button>
           </form>
         </fieldset>
       )}
