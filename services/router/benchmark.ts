@@ -72,6 +72,7 @@ const intake = [
 ] as const;
 const reception = intake.map(() => ({ first: [] as number[], replay: [] as number[] }));
 const dispatch: number[] = [];
+const dispatchByRoute = intake.map(() => [] as number[]);
 const cancellations: number[] = [];
 let rateLimitedRequests = 0;
 
@@ -155,9 +156,11 @@ try {
       assert.equal(task.workspace, workspace);
       assert(opened.has(task.goal), 'Unexpected goal reached a device');
       assert(!accepted.has(task.goal), 'Task was claimed more than once');
-      dispatch.push(performance.now() - opened.get(task.goal)!);
+      const claimLatency = performance.now() - opened.get(task.goal)!;
+      dispatch.push(claimLatency);
       accepted.add(task.goal);
       const index = Number(mixed ? task.goal.slice('Review fixture '.length) : task.goal.slice(9, -3));
+      dispatchByRoute[index % intake.length].push(claimLatency);
       const text = mixed ? 'Fixture ' + index : await preview(root, task.goal, active);
       assert.equal(text, 'Fixture ' + index);
       if (mixed && index % 10 === 0) {
@@ -237,14 +240,23 @@ try {
     return [client + ' ' + path, { firstRequests: first.length, firstP95Ms: p95(first), replayRequests: replay.length, replayP95Ms: p95(replay) }];
   }));
   const claimP95Ms = p95(dispatch);
+  const directRoutes = intake.flatMap(({ path }, index) => path === '/v1/events' ? [index] : []);
+  const directReceiptP95Ms = p95(directRoutes.flatMap(index => reception[index].first));
+  const directClaimP95Ms = p95(directRoutes.flatMap(index => dispatchByRoute[index]));
+  const claimByClient = Object.fromEntries(intake.map(({ client, path }, index) => [
+    client + ' ' + path, { claims: dispatchByRoute[index].length, p95Ms: p95(dispatchByRoute[index]) },
+  ]));
   console.log(JSON.stringify({
     workload: mixed ? 'mock-worker-with-approvals-and-cancellations' : 'document-preview',
     approvals, cpu: cpus()[0]?.model, node: process.version, concurrency, submitted: firstReceipts.length + replayReceipts.length,
     completed: finishes, cancelled: cancellations.length,
     cancelToStopP95Ms: cancellations.length ? p95(cancellations) : null, duplicateTasks: 0, unexpectedAssignments: 0,
-    modelRequests: serverMetrics.routing.model, modelTransportRequests, rateLimitedRequests, receiptP95Ms, firstReceiptP95Ms, claimP95Ms, receiptByClient,
+    modelRequests: serverMetrics.routing.model, modelTransportRequests, rateLimitedRequests, receiptP95Ms, firstReceiptP95Ms,
+    claimP95Ms, receiptByClient, claimByClient, directReceiptP95Ms, directClaimP95Ms,
     elapsedMs: Math.round(performance.now() - started),
   }, null, 2));
+  assert(directReceiptP95Ms < 100, 'Direct local acknowledgement p95 exceeded 100 ms');
+  assert(directClaimP95Ms < 250, 'Direct local claim p95 exceeded 250 ms');
   assert(firstReceiptP95Ms < 100, 'First local acknowledgement p95 exceeded 100 ms');
   assert(claimP95Ms < 250, 'Local claim p95 exceeded 250 ms');
 } finally {
