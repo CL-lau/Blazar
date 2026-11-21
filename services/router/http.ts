@@ -1311,7 +1311,7 @@ export function routerServer(store: TaskStore, config: { owner: string; token: s
             throw new RequestError(409, 'Task memory access changed');
           }
         }
-        const result = store.command(owner, taskId, version, command, key);
+        const result = store.command(owner, taskId, version, command, key, mobile?.id);
         if (result) {
           if (action === 'pause' || action === 'cancel' || action === 'append') notifyStop(owner, taskId);
           reply(response, 200, taskResponse(result));

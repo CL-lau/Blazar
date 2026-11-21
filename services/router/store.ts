@@ -295,8 +295,8 @@ export class TaskStore {
         PRIMARY KEY(owner,caller,key)
       );
       CREATE TABLE IF NOT EXISTS command_receipt (
-        owner TEXT NOT NULL, key TEXT NOT NULL, fingerprint TEXT NOT NULL,
-        response TEXT NOT NULL, PRIMARY KEY(owner,key)
+        owner TEXT NOT NULL, caller TEXT NOT NULL, key TEXT NOT NULL, fingerprint TEXT NOT NULL,
+        response TEXT NOT NULL, PRIMARY KEY(owner,caller,key)
       );
       CREATE INDEX IF NOT EXISTS task_dispatch ON task(workspace,status);
       CREATE INDEX IF NOT EXISTS task_memory_watch ON task(status)
@@ -317,6 +317,17 @@ export class TaskStore {
         );
         INSERT INTO routing_decision SELECT owner,'admin',key,request,decision FROM routing_decision_legacy;
         DROP TABLE routing_decision_legacy;
+      `));
+    }
+    if (!this.db.prepare("SELECT 1 FROM pragma_table_info('command_receipt') WHERE name='caller'").get()) {
+      this.transaction(() => this.db.exec(`
+        ALTER TABLE command_receipt RENAME TO command_receipt_legacy;
+        CREATE TABLE command_receipt (
+          owner TEXT NOT NULL, caller TEXT NOT NULL, key TEXT NOT NULL, fingerprint TEXT NOT NULL,
+          response TEXT NOT NULL, PRIMARY KEY(owner,caller,key)
+        );
+        INSERT INTO command_receipt SELECT owner,'admin',key,fingerprint,response FROM command_receipt_legacy;
+        DROP TABLE command_receipt_legacy;
       `));
     }
     this.db.exec("CREATE INDEX IF NOT EXISTS routing_workspace ON routing_decision(owner,caller,json_extract(request,'$[0]'))");
@@ -1098,12 +1109,12 @@ export class TaskStore {
       .all(id);
   }
 
-  command(owner: string, taskId: string, version: number, command: { action: 'cancel' | 'pause' | 'resume' | 'retry' | 'accept_result' | 'reject_result' } | { action: 'append'; text: string } | { action: 'approve' | 'deny'; approvalId: string }, key?: string) {
+  command(owner: string, taskId: string, version: number, command: { action: 'cancel' | 'pause' | 'resume' | 'retry' | 'accept_result' | 'reject_result' } | { action: 'append'; text: string } | { action: 'approve' | 'deny'; approvalId: string }, key?: string, caller = 'admin') {
     return this.transaction(() => {
       const fingerprint = JSON.stringify([taskId, version, command]);
       if (key) {
-        const receipt = this.db.prepare('SELECT fingerprint,response FROM command_receipt WHERE owner=? AND key=?')
-          .get(owner, key);
+        const receipt = this.db.prepare('SELECT fingerprint,response FROM command_receipt WHERE owner=? AND caller=? AND key=?')
+          .get(owner, caller, key);
         if (receipt) {
           if (receipt.fingerprint !== fingerprint) throw new IdempotencyConflict();
           return JSON.parse(String(receipt.response)) as Task;
@@ -1151,8 +1162,8 @@ export class TaskStore {
       }
       const updated = this.get(owner, taskId)!;
       if (key) {
-        this.db.prepare('INSERT INTO command_receipt VALUES(?,?,?,?)')
-          .run(owner, key, fingerprint, JSON.stringify(updated));
+        this.db.prepare('INSERT INTO command_receipt VALUES(?,?,?,?,?)')
+          .run(owner, caller, key, fingerprint, JSON.stringify(updated));
       }
       return updated;
     });

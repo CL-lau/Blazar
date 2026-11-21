@@ -777,3 +777,17 @@ test('routing decisions and task creation commit together', t => {
     reopened.close();
   }
 });
+
+test('task command receipts distinguish callers sharing an owner and key', t => {
+  const db = new TaskStore(':memory:');
+  t.after(() => db.close());
+  const task = db.create('owner', 'fixture', 'task', 'project', 'Review report');
+  const append = { action: 'append', text: 'Check the sources' } as const;
+  assert.equal(db.command('owner', task.id, 1, append, 'command-key')?.version, 2);
+  assert.equal(db.command('owner', task.id, 2, append, 'command-key', 'phone-one')?.version, 3);
+  assert.equal(db.command('owner', task.id, 3, append, 'command-key', 'phone-two')?.version, 4);
+  assert.equal(db.command('owner', task.id, 2, append, 'command-key', 'phone-one')?.version, 3);
+  assert.throws(() => db.command('owner', task.id, 4, append, 'command-key', 'phone-one'),
+    /Idempotency key already used/);
+  assert.equal(db.get('owner', task.id)?.version, 4);
+});
