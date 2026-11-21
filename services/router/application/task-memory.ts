@@ -13,7 +13,7 @@ export function workerMemoryAvailable(
     (!personal.length || Boolean(memory?.resolvePersonalEvidence(owner, workspace, personal)));
 }
 
-export function selectAppEvidence(memory: MemoryStore | undefined, owner: string, workspace: string, value: unknown): AppEvidence {
+export function selectAppEvidence(memory: Pick<MemoryStore, 'recall'> | undefined, owner: string, workspace: string, value: unknown): AppEvidence {
   if (!memory) throw new RequestError(503, 'Memory is unavailable');
   if (!value || typeof value !== 'object' || Array.isArray(value)) {
     throw new RequestError(400, 'Invalid application memory option');

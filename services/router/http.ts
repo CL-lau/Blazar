@@ -4,7 +4,9 @@ import { StaleRoutingEvidence } from './domain/idempotency.ts';
 import { deviceOperation } from './application/device-operation.ts';
 import { submitWorkflow } from './application/submit-workflow.ts';
 import { streamTaskEvents } from './transport/task-stream.ts';
-import { selectAppEvidence, workerMemoryAvailable } from './application/task-memory.ts';
+import { submitTask } from './application/submit-task.ts';
+import { textAttachments } from './domain/task-attachments.ts';
+import { workerMemoryAvailable } from './application/task-memory.ts';
 import { RequestError, requiredText } from './protocol/request.ts';
 import type { Task, TaskAttachment } from '../../packages/protocol/task.ts';
 import { ConversationError, createConversationRouter } from './application/conversation.ts';
@@ -23,21 +25,6 @@ import { timingSafeEqual } from 'node:crypto';
 import { createServer } from 'node:http';
 import type { MemoryStore } from './memory.ts';
 import { IdempotencyConflict, TaskStore } from './store.ts';
-
-function textAttachments(value: unknown): TaskAttachment[] {
-  if (!Array.isArray(value) || value.length < 1 || value.length > 4) throw new RequestError(400, 'Invalid task attachments');
-  let bytes = 0;
-  return value.map(item => {
-    if (!item || typeof item !== 'object' || Array.isArray(item)) throw new RequestError(400, 'Invalid task attachment');
-    const name = requiredText(item.name, 'attachment name', 128);
-    const text = requiredText(item.text, 'attachment text', 8_192).toWellFormed();
-    bytes += Buffer.byteLength(text);
-    if (/[\x00-\x1f\x7f/\\]/.test(name) || /[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]/.test(text) || bytes > 16_384) {
-      throw new RequestError(400, 'Invalid task attachment text or size');
-    }
-    return { name: name.toWellFormed(), text };
-  });
-}
 
 type StreamChannelSettings = Partial<Record<'weixin' | 'wecom' | 'dingtalk', { workspace: string; health?: () => StreamHealth | undefined }>>;
 
@@ -459,51 +446,7 @@ export function routerServer(store: TaskStore, config: { owner: string; token: s
         const data = await jsonObject(request);
         if (!admin && store.mobileOwner(mobileToken) !== owner) throw new RequestError(401, 'Authentication required');
         if (!taskCommand) {
-          const workspace = requiredText(data.workspace, 'workspace', 128);
-          const goal = requiredText(data.text, 'text', 32_000);
-          const desktopDevice = data.desktopDevice;
-          if (desktopDevice !== undefined) {
-            const targetApp = /^\/(?:observe|click) ([a-z0-9_-]{1,32})(?: |$)/.exec(goal)?.[1];
-            if (typeof desktopDevice !== 'string' || !/^[a-f0-9-]{36}$/.test(desktopDevice) ||
-                !targetApp) throw new RequestError(400, 'Invalid desktop target');
-            if (!store.ownsDesktopTarget(owner, workspace, desktopDevice, targetApp)) {
-              throw new RequestError(404, 'Desktop target unavailable');
-            }
-          }
-          if (data.usePersonalMemory !== undefined && typeof data.usePersonalMemory !== 'boolean') {
-            throw new RequestError(400, 'Invalid task memory option');
-          }
-          if (data.usePersonalMemory && (!admin || /^\/(observe|click|preview) /.test(goal))) {
-            throw new RequestError(403, 'Personal memory is only available for administrator Worker tasks');
-          }
-          if (data.usePersonalMemory && !config.memory) throw new RequestError(503, 'Memory is unavailable');
-          const memoryInputs = data.usePersonalMemory ? config.memory!.personalContext(owner, workspace, goal) : undefined;
-          let appEvidence;
-          if (data.appMemory !== undefined) {
-            if (!admin || desktopDevice || /^\/(observe|click|preview) /.test(goal)) {
-              throw new RequestError(403, 'Application memory is only available for administrator Worker tasks');
-            }
-            appEvidence = selectAppEvidence(config.memory, owner, workspace, data.appMemory);
-          }
-          if (data.attachments !== undefined && /^\/(observe|click|preview) /.test(goal)) {
-            throw new RequestError(400, 'Attachments require a Worker task');
-          }
-          const attachments = data.attachments === undefined ? undefined : textAttachments(data.attachments);
-          let copiedFromTask;
-          if (data.copiedFromTask !== undefined) {
-            if (!admin) throw new RequestError(403, 'Administrator required');
-            copiedFromTask = requiredText(data.copiedFromTask, 'source task ID', 36);
-            if (!/^[a-f0-9-]{36}$/.test(copiedFromTask)) throw new RequestError(400, 'Invalid source task ID');
-            if (store.get(owner, copiedFromTask)?.workspace !== workspace) {
-              throw new RequestError(404, 'Source task not found in this workspace');
-            }
-            if (store.appEvidence(copiedFromTask) && !appEvidence) {
-              throw new RequestError(400, 'Select application memory for the new task');
-            }
-          }
-          const source = mobile ? 'mobile-api:' + mobile.id : 'desktop-api';
-          const task = store.create(owner, source, key, workspace, goal, desktopDevice, memoryInputs,
-            appEvidence, attachments, copiedFromTask);
+          const task = submitTask(store, config.memory, owner, key, data, admin, mobile?.id);
           ownerMetrics(owner).observe('event', performance.now() - started);
           reply(response, 202, taskResponse(task));
           return;
