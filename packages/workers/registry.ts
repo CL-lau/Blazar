@@ -46,7 +46,8 @@ const builtInWorkers = new Map<string, Worker>([
     env: ['GOOGLE_APPLICATION_CREDENTIALS'] }],
   ['cline', { executable: 'cline', args: ['--acp'], label: 'Cline' }],
   ['goose', { executable: 'goose', args: ['acp'], label: 'Goose',
-    env: ['ANTHROPIC_API_KEY', 'OPENAI_API_KEY'] }],
+    env: ['ANTHROPIC_API_KEY', 'OPENAI_API_KEY', 'OPENAI_HOST', 'OPENAI_BASE_PATH',
+      'GOOSE_PROVIDER', 'GOOSE_MODEL', 'GOOSE_FAST_MODEL', 'GOOSE_PATH_ROOT', 'GOOSE_DISABLE_KEYRING'] }],
   ['amp', { executable: 'amp-acp', args: [], label: 'Amp ACP',
     env: ['AMP_API_KEY'] }],
 ]);

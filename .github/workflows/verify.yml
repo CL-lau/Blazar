@@ -48,6 +48,15 @@ jobs:
           python3 -m venv "$tool_dir/venv"
           "$tool_dir/venv/bin/python" -m pip install --disable-pip-version-check aider-chat==0.86.2
           BLAZAR_TEST_AIDER_EXECUTABLE="$tool_dir/venv/bin/aider" node --test services/router/aider-runtime.test.ts
+      - name: Verify Goose with a local model endpoint
+        if: matrix.node == '24'
+        shell: bash
+        run: |
+          tool_dir="$(mktemp -d)"
+          curl --fail --silent --show-error --location --max-time 180 https://github.com/aaif-goose/goose/releases/download/v1.57.0/goose-x86_64-unknown-linux-gnu.tar.bz2 -o "$tool_dir/goose.tar.bz2"
+          echo "e54036f3b7f95d3b0d7854c09465af5ef52a28c7fa03d2497d0ea68a6382282d  $tool_dir/goose.tar.bz2" | sha256sum -c
+          tar -xf "$tool_dir/goose.tar.bz2" -C "$tool_dir"
+          BLAZAR_TEST_GOOSE_EXECUTABLE="$tool_dir/goose" node --test services/router/goose-runtime.test.ts
 
   apple:
     runs-on: macos-26
