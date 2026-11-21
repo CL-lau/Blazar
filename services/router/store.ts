@@ -295,6 +295,8 @@ export class TaskStore {
         response TEXT NOT NULL, PRIMARY KEY(owner,key)
       );
       CREATE INDEX IF NOT EXISTS task_dispatch ON task(workspace,status);
+      CREATE INDEX IF NOT EXISTS task_memory_watch ON task(status)
+        WHERE status IN ('queued','waiting_device','waiting_dependency','waiting_review','running','waiting_user');
       CREATE INDEX IF NOT EXISTS event_task ON event(taskId,seq);
     `);
     this.transaction(() => {
@@ -923,18 +925,16 @@ export class TaskStore {
   }
 
   pendingMemoryTasks() {
-    return this.db.prepare(`WITH candidates AS (
-      SELECT task_id FROM task_app_evidence UNION SELECT task_id FROM task_memory_input
-    )
-    SELECT t.id,t.owner,t.workspace,e.refs AS app_refs,r.id AS run_id,r.device,
+    return this.db.prepare(`SELECT t.id,t.owner,t.workspace,e.refs AS app_refs,r.id AS run_id,r.device,
       (SELECT json_group_array(json_object('id',memory_id,'version',version)) FROM (
         SELECT memory_id,version FROM task_memory_input WHERE task_id=t.id ORDER BY position
       )) AS personal_refs
-    FROM candidates c JOIN task t ON t.id=c.task_id LEFT JOIN task_app_evidence e ON e.task_id=t.id
-    LEFT JOIN run r ON r.taskId=t.id
-    WHERE (r.id IS NULL AND t.status IN ('queued','waiting_device','waiting_dependency','waiting_review'))
-      OR (r.id IS NOT NULL AND t.status IN ('running','waiting_user')
-        AND NOT EXISTS(SELECT 1 FROM run_evidence_stop s WHERE s.run_id=r.id))`).all().map(row => ({
+    FROM task t LEFT JOIN task_app_evidence e ON e.task_id=t.id LEFT JOIN run r ON r.taskId=t.id
+    WHERE t.status IN ('queued','waiting_device','waiting_dependency','waiting_review','running','waiting_user')
+      AND (e.task_id IS NOT NULL OR EXISTS(SELECT 1 FROM task_memory_input m WHERE m.task_id=t.id))
+      AND ((r.id IS NULL AND t.status IN ('queued','waiting_device','waiting_dependency','waiting_review'))
+        OR (r.id IS NOT NULL AND t.status IN ('running','waiting_user')
+          AND NOT EXISTS(SELECT 1 FROM run_evidence_stop s WHERE s.run_id=r.id)))`).all().map(row => ({
       id: String(row.id), owner: String(row.owner), workspace: String(row.workspace),
       appRefs: row.app_refs === null ? undefined : String(row.app_refs), personalRefs: String(row.personal_refs),
       run: row.run_id === null ? undefined : { id: String(row.run_id), device: String(row.device) },
