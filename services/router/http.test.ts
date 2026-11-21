@@ -10,7 +10,8 @@ import { DeviceClient } from '../device/client.ts';
 import assert from 'node:assert/strict';
 import { once } from 'node:events';
 import test from 'node:test';
-import { routerServer, runDueDocumentSync } from './http.ts';
+import { routerServer } from './http.ts';
+import { runDueDocumentSync } from './application/document-sync.ts';
 import { MemoryStore } from './memory.ts';
 import { TaskStore } from './store.ts';
 

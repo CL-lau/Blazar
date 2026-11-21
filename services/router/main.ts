@@ -8,7 +8,8 @@ import { createQQAttachmentReader, createQQSender, qqChannel } from '../../packa
 import { dingTalkConfig, startDingTalk } from './dingtalk.ts';
 import { createFeishuSender, feishuChannel } from '../../packages/channels/feishu.ts';
 import { piHarness, piMemoryAnswer } from './harness.ts';
-import { routerServer, runDueDocumentSync } from './http.ts';
+import { routerServer } from './http.ts';
+import { runDueDocumentSync } from './application/document-sync.ts';
 import { MemoryStore } from './memory.ts';
 import { TaskStore } from './store.ts';
 import { lockRouter } from './instance.ts';
