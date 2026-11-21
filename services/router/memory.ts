@@ -1,5 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import { DatabaseSync } from 'node:sqlite';
+import { sqliteTransaction } from '../../packages/storage/sqlite.ts';
+import { initializeMemorySchema } from './persistence/memory-schema.ts';
 
 export interface ResourceRef {
   connection: string;
@@ -20,156 +22,9 @@ export class MemoryStore {
 
   constructor(path: string) {
     this.db = new DatabaseSync(path);
-    this.db.exec(`
-      PRAGMA journal_mode=WAL;
-      PRAGMA foreign_keys=ON;
-      PRAGMA busy_timeout=5000;
-      CREATE TABLE IF NOT EXISTS app_connection (
-        id TEXT PRIMARY KEY, owner TEXT NOT NULL, app TEXT NOT NULL,
-        account TEXT NOT NULL, active INTEGER NOT NULL DEFAULT 1, workspace TEXT
-      );
-      CREATE TABLE IF NOT EXISTS revoked_resource (
-        connection TEXT NOT NULL REFERENCES app_connection(id), resource TEXT NOT NULL,
-        PRIMARY KEY(connection,resource)
-      );
-      CREATE TABLE IF NOT EXISTS document_access (
-        connection TEXT NOT NULL REFERENCES app_connection(id), resource TEXT NOT NULL,
-        allowed INTEGER NOT NULL, request_id INTEGER NOT NULL, PRIMARY KEY(connection,resource)
-      );
-      CREATE TABLE IF NOT EXISTS app_usage (
-        id INTEGER PRIMARY KEY, connection TEXT NOT NULL REFERENCES app_connection(id),
-        workspace TEXT NOT NULL, operation TEXT NOT NULL, status TEXT NOT NULL, started INTEGER NOT NULL
-      );
-      CREATE INDEX IF NOT EXISTS app_usage_connection ON app_usage(connection,id);
-      CREATE INDEX IF NOT EXISTS app_usage_document_test ON app_usage(connection,id)
-        WHERE operation='test' AND status<>'started';
-      CREATE TABLE IF NOT EXISTS worker_app_usage (
-        connection TEXT NOT NULL REFERENCES app_connection(id), run_id TEXT NOT NULL,
-        task_id TEXT NOT NULL, workspace TEXT NOT NULL, started INTEGER NOT NULL,
-        PRIMARY KEY(connection,run_id)
-      );
-      CREATE INDEX IF NOT EXISTS worker_app_usage_recent ON worker_app_usage(connection,started DESC);
-      CREATE TABLE IF NOT EXISTS document_sync (
-        connection TEXT NOT NULL REFERENCES app_connection(id), workspace TEXT NOT NULL,
-        interval_minutes INTEGER NOT NULL, due INTEGER NOT NULL, cursor TEXT NOT NULL DEFAULT '',
-        lease_token TEXT, lease_expires INTEGER, PRIMARY KEY(connection,workspace)
-      );
-      CREATE INDEX IF NOT EXISTS document_sync_due ON document_sync(due);
-      CREATE TABLE IF NOT EXISTS memory (
-        id TEXT PRIMARY KEY, owner TEXT NOT NULL, workspace TEXT NOT NULL,
-        body TEXT NOT NULL, connection TEXT REFERENCES app_connection(id),
-        resource TEXT, revision TEXT, created INTEGER NOT NULL, expires INTEGER
-      );
-      CREATE TABLE IF NOT EXISTS memory_state (
-        id TEXT PRIMARY KEY REFERENCES memory(id) ON DELETE CASCADE,
-        version INTEGER NOT NULL, pinned INTEGER NOT NULL, disabled INTEGER NOT NULL DEFAULT 0
-      );
-      CREATE TABLE IF NOT EXISTS memory_revision (
-        id TEXT NOT NULL REFERENCES memory(id) ON DELETE CASCADE,
-        version INTEGER NOT NULL, body TEXT NOT NULL, changed INTEGER NOT NULL,
-        PRIMARY KEY(id,version)
-      );
-      CREATE TABLE IF NOT EXISTS document_import (
-        id TEXT PRIMARY KEY REFERENCES memory(id) ON DELETE CASCADE
-      );
-      CREATE TABLE IF NOT EXISTS memory_task_origin (
-        id TEXT PRIMARY KEY REFERENCES memory(id) ON DELETE CASCADE,
-        task_id TEXT NOT NULL, task_version INTEGER NOT NULL, UNIQUE(task_id,task_version)
-      );
-      CREATE TABLE IF NOT EXISTS document_head (
-        owner TEXT NOT NULL, workspace TEXT NOT NULL, connection TEXT NOT NULL REFERENCES app_connection(id),
-        resource TEXT NOT NULL, memory_id TEXT NOT NULL, request_id INTEGER,
-        PRIMARY KEY(owner,workspace,connection,resource)
-      );
-      CREATE INDEX IF NOT EXISTS memory_scope ON memory(owner,workspace,created);
-      CREATE INDEX IF NOT EXISTS memory_connection ON memory(connection);
-      CREATE INDEX IF NOT EXISTS memory_expiry ON memory(expires) WHERE expires IS NOT NULL;
-    `);
-    if (!this.db.prepare("SELECT 1 FROM pragma_table_info('memory_state') WHERE name='disabled'").get()) {
-      this.db.exec('ALTER TABLE memory_state ADD COLUMN disabled INTEGER NOT NULL DEFAULT 0');
-    }
-    if (!this.db.prepare("SELECT 1 FROM pragma_table_info('app_connection') WHERE name='workspace'").get()) {
-      this.db.exec('ALTER TABLE app_connection ADD COLUMN workspace TEXT');
-    }
-    const option = this.db.prepare("SELECT sqlite_compileoption_used('ENABLE_FTS5') AS enabled").get();
-    this.fullText = option?.enabled === 1;
-    const dropTriggers = `
-      DROP TRIGGER IF EXISTS memory_insert;
-      DROP TRIGGER IF EXISTS memory_delete;
-      DROP TRIGGER IF EXISTS memory_update;
-      DROP TRIGGER IF EXISTS memory_connection_scope;
-      DROP TRIGGER IF EXISTS memory_document_access_insert;
-      DROP TRIGGER IF EXISTS memory_document_access_update;
-    `;
-    if (!this.fullText) {
-      this.db.exec(dropTriggers);
-      return;
-    }
-    this.db.exec('BEGIN IMMEDIATE');
     try {
-      const initialized = this.db.prepare("SELECT 1 FROM sqlite_schema WHERE name='memory_document_access_update'").get();
-      if (!initialized) {
-        this.db.exec(dropTriggers);
-        this.db.exec('DROP TABLE IF EXISTS memory_search');
-        this.db.exec('DROP VIEW IF EXISTS memory_indexable');
-      }
-      this.db.exec(`
-        CREATE VIEW IF NOT EXISTS memory_connection_visible AS
-          SELECT m.rowid,m.body,m.connection,m.resource FROM memory m LEFT JOIN app_connection a ON a.id=m.connection
-          WHERE m.connection IS NULL OR (
-            a.owner=m.owner AND a.active=1 AND (a.workspace IS NULL OR a.workspace=m.workspace)
-          );
-        CREATE VIEW IF NOT EXISTS memory_indexable AS
-          SELECT m.rowid,m.body FROM memory_connection_visible m
-          WHERE NOT EXISTS(SELECT 1 FROM document_access x WHERE x.connection=m.connection AND x.resource=m.resource AND x.allowed=0);
-        CREATE VIRTUAL TABLE IF NOT EXISTS memory_search USING fts5(
-          body, content='memory_indexable', content_rowid='rowid', tokenize='trigram'
-        );
-        CREATE TRIGGER IF NOT EXISTS memory_insert AFTER INSERT ON memory
-        WHEN EXISTS(SELECT 1 FROM memory_indexable WHERE rowid=new.rowid) BEGIN
-          INSERT INTO memory_search(rowid,body) VALUES(new.rowid,new.body);
-        END;
-        CREATE TRIGGER IF NOT EXISTS memory_update AFTER UPDATE OF body ON memory
-        WHEN EXISTS(SELECT 1 FROM memory_indexable WHERE rowid=new.rowid) BEGIN
-          INSERT INTO memory_search(memory_search,rowid,body) VALUES('delete',old.rowid,old.body);
-          INSERT INTO memory_search(rowid,body) VALUES(new.rowid,new.body);
-        END;
-        CREATE TRIGGER IF NOT EXISTS memory_delete BEFORE DELETE ON memory
-        WHEN EXISTS(SELECT 1 FROM memory_indexable WHERE rowid=old.rowid) BEGIN
-          INSERT INTO memory_search(memory_search,rowid,body) VALUES('delete',old.rowid,old.body);
-        END;
-        CREATE TRIGGER IF NOT EXISTS memory_connection_scope AFTER UPDATE OF active,workspace ON app_connection BEGIN
-          INSERT INTO memory_search(memory_search,rowid,body)
-            SELECT 'delete',m.rowid,m.body FROM memory m WHERE m.connection=old.id AND m.owner=old.owner
-              AND old.active=1 AND (old.workspace IS NULL OR old.workspace=m.workspace)
-              AND NOT EXISTS(SELECT 1 FROM document_access x WHERE x.connection=m.connection AND x.resource=m.resource AND x.allowed=0)
-              AND (new.active=0 OR (new.workspace IS NOT NULL AND new.workspace<>m.workspace));
-          INSERT INTO memory_search(rowid,body)
-            SELECT m.rowid,m.body FROM memory m WHERE m.connection=new.id AND m.owner=new.owner
-              AND new.active=1 AND (new.workspace IS NULL OR new.workspace=m.workspace)
-              AND NOT EXISTS(SELECT 1 FROM document_access x WHERE x.connection=m.connection AND x.resource=m.resource AND x.allowed=0)
-              AND (old.active=0 OR (old.workspace IS NOT NULL AND old.workspace<>m.workspace));
-        END;
-        CREATE TRIGGER IF NOT EXISTS memory_document_access_insert AFTER INSERT ON document_access
-        WHEN new.allowed=0 BEGIN
-          INSERT INTO memory_search(memory_search,rowid,body)
-            SELECT 'delete',m.rowid,m.body FROM memory_connection_visible m
-              WHERE m.connection=new.connection AND m.resource=new.resource;
-        END;
-        CREATE TRIGGER IF NOT EXISTS memory_document_access_update AFTER UPDATE OF allowed ON document_access
-        WHEN old.allowed<>new.allowed BEGIN
-          INSERT INTO memory_search(memory_search,rowid,body)
-            SELECT 'delete',m.rowid,m.body FROM memory_connection_visible m
-              WHERE new.allowed=0 AND m.connection=new.connection AND m.resource=new.resource;
-          INSERT INTO memory_search(rowid,body)
-            SELECT m.rowid,m.body FROM memory_connection_visible m
-              WHERE new.allowed=1 AND m.connection=new.connection AND m.resource=new.resource;
-        END;
-      `);
-      if (!initialized) this.db.exec("INSERT INTO memory_search(memory_search) VALUES('rebuild')");
-      this.db.exec('COMMIT');
+      this.fullText = initializeMemorySchema(this.db);
     } catch (error) {
-      this.db.exec('ROLLBACK');
       this.db.close();
       throw error;
     }
@@ -290,8 +145,7 @@ export class MemoryStore {
 
   importDocument(owner: string, workspace: string, body: string, source: ResourceRef,
                  requestId?: number | bigint): string | undefined {
-    this.db.exec('BEGIN IMMEDIATE');
-    try {
+    return sqliteTransaction(this.db, () => {
       let id: string | undefined;
       const available = this.connection(owner, source.connection, workspace) && !this.resourceRevoked(source.connection, source.resource);
       if (available && requestId !== undefined) this.recordDocumentAccess(source.connection, source.resource, requestId, true);
@@ -313,12 +167,8 @@ export class MemoryStore {
             .run(owner, workspace, source.connection, source.resource, id, requestId ?? null);
         }
       }
-      this.db.exec('COMMIT');
       return id;
-    } catch (error) {
-      this.db.exec('ROLLBACK');
-      throw error;
-    }
+    });
   }
 
   disconnect(owner: string, connection: string): boolean {
@@ -346,18 +196,13 @@ export class MemoryStore {
   }
 
   rememberTaskResult(owner: string, workspace: string, taskId: string, version: number, body: string) {
-    this.db.exec('BEGIN IMMEDIATE');
-    try {
+    return sqliteTransaction(this.db, () => {
       const existing = this.db.prepare(`SELECT m.id FROM memory_task_origin o JOIN memory m ON m.id=o.id
         WHERE m.owner=? AND o.task_id=? AND o.task_version=?`).get(owner, taskId, version);
       const id = existing ? String(existing.id) : this.remember(owner, workspace, body)!;
       if (!existing) this.db.prepare('INSERT INTO memory_task_origin VALUES(?,?,?)').run(id, taskId, version);
-      this.db.exec('COMMIT');
       return id;
-    } catch (error) {
-      this.db.exec('ROLLBACK');
-      throw error;
-    }
+    });
   }
 
   recall(owner: string, workspace: string, query: string, allowedSources: readonly string[],
@@ -475,8 +320,7 @@ export class MemoryStore {
   }
 
   revise(owner: string, id: string, expectedVersion: number, change: { body?: string; pinned?: boolean; disabled?: boolean }) {
-    this.db.exec('BEGIN IMMEDIATE');
-    try {
+    return sqliteTransaction(this.db, () => {
       const row = this.db.prepare(`SELECT m.body,COALESCE(s.version,1) AS version,COALESCE(s.pinned,0) AS pinned,COALESCE(s.disabled,0) AS disabled
         FROM memory m LEFT JOIN memory_state s ON s.id=m.id
         WHERE m.id=? AND m.owner=? AND (m.expires IS NULL OR m.expires>?)
@@ -504,12 +348,8 @@ export class MemoryStore {
           }
         }
       }
-      this.db.exec('COMMIT');
       return result;
-    } catch (error) {
-      this.db.exec('ROLLBACK');
-      throw error;
-    }
+    });
   }
 
   pruneExpired(now: number, limit: number) {
@@ -533,19 +373,14 @@ export class MemoryStore {
   }
 
   revokeResource(owner: string, connection: string, resource: string) {
-    this.db.exec('BEGIN IMMEDIATE');
-    try {
+    return sqliteTransaction(this.db, () => {
       let removed: number | undefined;
       if (this.connection(owner, connection)) {
         this.db.prepare('INSERT OR IGNORE INTO revoked_resource VALUES(?,?)').run(connection, resource);
         removed = this.removeResource(owner, connection, resource);
       }
-      this.db.exec('COMMIT');
       return removed;
-    } catch (error) {
-      this.db.exec('ROLLBACK');
-      throw error;
-    }
+    });
   }
 
   removeResource(owner: string, connection: string, resource: string): number {
