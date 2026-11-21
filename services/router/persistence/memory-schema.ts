@@ -65,7 +65,7 @@ export function initializeMemorySchema(db: DatabaseSync): boolean {
     );
     CREATE TABLE IF NOT EXISTS document_head (
       owner TEXT NOT NULL, workspace TEXT NOT NULL, connection TEXT NOT NULL REFERENCES app_connection(id),
-      resource TEXT NOT NULL, memory_id TEXT NOT NULL, request_id INTEGER,
+      resource TEXT NOT NULL, memory_id TEXT NOT NULL, request_id INTEGER, primary_verified INTEGER NOT NULL DEFAULT 0,
       PRIMARY KEY(owner,workspace,connection,resource)
     );
     CREATE INDEX IF NOT EXISTS memory_scope ON memory(owner,workspace,created);
@@ -86,6 +86,12 @@ export function initializeMemorySchema(db: DatabaseSync): boolean {
   }
   if (!db.prepare("SELECT 1 FROM pragma_table_info('document_import') WHERE name='read_backend'").get()) {
     db.exec('ALTER TABLE document_import ADD COLUMN read_backend TEXT');
+  }
+  if (!db.prepare("SELECT 1 FROM pragma_table_info('document_head') WHERE name='primary_verified'").get()) {
+    db.exec(`ALTER TABLE document_head ADD COLUMN primary_verified INTEGER NOT NULL DEFAULT 0;
+      UPDATE document_head SET primary_verified=1 WHERE EXISTS(
+        SELECT 1 FROM document_import i WHERE i.id=document_head.memory_id AND json_extract(i.read_backend,'$.fallback')=0
+      );`);
   }
   db.exec(`CREATE INDEX IF NOT EXISTS app_usage_connection_health ON app_usage(connection,scope_version,id)
     WHERE operation='health' AND status<>'started'`);

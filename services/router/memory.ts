@@ -10,6 +10,8 @@ export interface ResourceRef {
   revision: string;
 }
 
+export class DocumentRevisionConflict extends Error {}
+
 const memoryWords = new Intl.Segmenter(undefined, { granularity: 'word' });
 const eastAsianWord = /[\p{Script=Han}\p{Script=Hiragana}\p{Script=Katakana}\p{Script=Hangul}]/u;
 
@@ -96,7 +98,7 @@ export class MemoryStore {
       .run(connection, workspace, operation, Date.now(), connection).lastInsertRowid;
   }
 
-  finishAppUsage(id: number | bigint, status: 'succeeded' | 'failed' | 'access_changed' | 'access_denied',
+  finishAppUsage(id: number | bigint, status: 'succeeded' | 'failed' | 'access_changed' | 'access_denied' | 'source_conflict',
                  backend?: DocumentReadBackend) {
     this.db.prepare('UPDATE app_usage SET status=?,read_backend=? WHERE id=?')
       .run(status, backend ? JSON.stringify(backend) : null, id);
@@ -187,6 +189,13 @@ export class MemoryStore {
       const available = this.connection(owner, source.connection, workspace) && !this.resourceRevoked(source.connection, source.resource);
       if (available && requestId !== undefined) this.recordDocumentAccess(source.connection, source.resource, requestId, true);
       if (available && !this.documentAccessDenied(source.connection, source.resource)) {
+        if (backend?.fallback && this.db.prepare(`SELECT 1 FROM document_head h
+          JOIN memory m ON m.id=h.memory_id
+          WHERE h.owner=? AND h.workspace=? AND h.connection=? AND h.resource=?
+          AND h.primary_verified=1 AND m.revision IS NOT ?`)
+          .get(owner, workspace, source.connection, source.resource, source.revision)) {
+          throw new DocumentRevisionConflict();
+        }
         const identical = this.db.prepare(`SELECT id FROM memory WHERE owner=? AND workspace=?
           AND connection=? AND resource=? AND revision=? AND expires IS NULL
           AND (body=? OR EXISTS(SELECT 1 FROM memory_revision r WHERE r.id=memory.id AND r.body=?))
@@ -197,12 +206,14 @@ export class MemoryStore {
         if (id) {
           this.db.prepare('INSERT OR IGNORE INTO document_import(id,read_backend) VALUES(?,?)')
             .run(id, backend ? JSON.stringify(backend) : null);
-          this.db.prepare(`INSERT INTO document_head(owner,workspace,connection,resource,memory_id,request_id)
-            VALUES(?,?,?,?,?,?) ON CONFLICT(owner,workspace,connection,resource) DO UPDATE
-            SET memory_id=excluded.memory_id,request_id=excluded.request_id
+          this.db.prepare(`INSERT INTO document_head(owner,workspace,connection,resource,memory_id,request_id,primary_verified)
+            VALUES(?,?,?,?,?,?,?) ON CONFLICT(owner,workspace,connection,resource) DO UPDATE
+            SET memory_id=excluded.memory_id,request_id=excluded.request_id,
+              primary_verified=CASE WHEN memory_id=excluded.memory_id
+                THEN max(primary_verified,excluded.primary_verified) ELSE excluded.primary_verified END
             WHERE document_head.request_id IS NULL OR excluded.request_id IS NULL
               OR excluded.request_id>=document_head.request_id`)
-            .run(owner, workspace, source.connection, source.resource, id, requestId ?? null);
+            .run(owner, workspace, source.connection, source.resource, id, requestId ?? null, Number(backend?.fallback === false));
         }
       }
       return id;

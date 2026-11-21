@@ -149,5 +149,12 @@ test('a configured MCP account reads allowlisted text resources without invoking
     [primaryImport.id, { kind: 'github', fallback: false }],
     [fallbackImport.id, { kind: 'mcp', fallback: true }],
   ]);
+  githubStatus = 503;
+  await assert.rejects(invokeDocumentCapability(store, 'owner', repositoryId, [repository], 'document.import', input),
+    /fallback returned a different revision/);
+  assert.deepEqual(store.recall('owner', 'project', 'review', [repositoryId]).map(item => item.id), [primaryImport.id]);
+  const usage = store.appUsage('owner', repositoryId)?.[0];
+  assert.equal(usage?.status, 'source_conflict');
+  assert.deepEqual(usage?.backend, { kind: 'mcp', fallback: true });
 
 });

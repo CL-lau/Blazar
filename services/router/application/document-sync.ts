@@ -1,5 +1,5 @@
 import { DocumentAccessDenied, DocumentUnavailable, type DocumentConnector, type DocumentCapabilityId } from '../../../packages/apps/documents.ts';
-import type { MemoryStore } from '../memory.ts';
+import { DocumentRevisionConflict, type MemoryStore } from '../memory.ts';
 import { RequestError, requiredText } from '../protocol/request.ts';
 
 type DocumentMemory = Pick<MemoryStore, 'connection' | 'documentSyncActive' | 'documentsToRefresh' |
@@ -48,9 +48,16 @@ export async function accessDocument(store: DocumentMemory, owner: string, works
       ...(content.backend && { backend: content.backend }),
       text: content.text.slice(0, 4_000).toWellFormed(), truncated: content.text.length > 4_000 };
   }
-  const id = store.importDocument(owner, workspace, content.text, {
-    connection, resource: document, revision: content.revision,
-  }, usageId, content.backend);
+  let id: string | undefined;
+  try {
+    id = store.importDocument(owner, workspace, content.text, {
+      connection, resource: document, revision: content.revision,
+    }, usageId, content.backend);
+  } catch (error) {
+    if (!(error instanceof DocumentRevisionConflict)) throw error;
+    store.finishAppUsage(usageId, 'source_conflict', content.backend);
+    throw new RequestError(409, 'The fallback returned a different revision. Preview it or retry when the primary source is available.');
+  }
   store.finishAppUsage(usageId, id ? 'succeeded' : 'access_changed', id ? content.backend : undefined);
   if (!id) throw new RequestError(409, 'Source access changed during import');
   return { id, revision: content.revision };
