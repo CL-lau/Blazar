@@ -491,3 +491,48 @@ test('Router authenticates, deduplicates commands and replays task changes over 
   assert.equal(decisions, priorDecisions);
 
 });
+
+test('admin progress retention expires replay cursors and preserves durable task events', async t => {
+  const store = new TaskStore(':memory:');
+  const server = routerServer(store, { owner: 'test', token: 'local' });
+  server.listen(0, '127.0.0.1');
+  await once(server, 'listening');
+  t.after(async () => {
+    await new Promise<void>(resolve => server.close(() => resolve()));
+    store.close();
+  });
+  const address = server.address();
+  assert.ok(address && typeof address !== 'string');
+  const base = 'http://127.0.0.1:' + address.port;
+  const admin = { Authorization: 'Bearer local' };
+  const phone = store.redeemPairing(store.createPairing('test', Date.now()).code, 'Phone', Date.now())!;
+  const task = store.create('test', 'fixture', 'retention', 'project', 'Summarize notes');
+  const now = Date.now();
+  const { run } = store.claim('test', 'project', 'device', now, 10_000)!;
+  const beforeProgress = store.eventCursor();
+  assert.equal(store.progress(run.id, 'device', now, 1, 'Reading'), true);
+  const progressCursor = store.eventCursor();
+  const reportedAt = Date.now();
+  while (Date.now() <= reportedAt) await new Promise(resolve => setTimeout(resolve, 2));
+  const prune = (auth: string, before: number) => fetch(base + '/v1/admin/event-retention', {
+    method: 'POST',
+    headers: { Authorization: 'Bearer ' + auth, 'Content-Type': 'application/json' },
+    body: JSON.stringify({ before }),
+  });
+  const cutoff = Date.now();
+  assert.equal((await prune(phone.token, cutoff)).status, 403);
+  assert.equal((await prune('local', cutoff + 60_000)).status, 400);
+  assert.deepEqual(await (await prune('local', cutoff)).json(), { removed: 1 });
+  assert.deepEqual(await (await prune('local', cutoff)).json(), { removed: 0 });
+  assert.equal(store.eventCursor(), progressCursor);
+  assert.equal((await fetch(base + '/v1/stream?after=' + beforeProgress, { headers: admin })).status, 409);
+  const state = await (await fetch(base + '/v1/state', { headers: admin })).json();
+  assert.equal(state.cursor, progressCursor);
+  assert.equal(state.progress[0].message, 'Reading');
+
+  assert.equal(store.finish(run.id, 'device', Date.now(), { status: 'succeeded', result: 'Done' }), true);
+  const feed = await fetch(base + '/v1/stream?once=1&after=' + state.cursor, { headers: admin });
+  assert.match(await feed.text(), /run\.finished/);
+  const timeline = store.timeline('test', task.id)!;
+  assert.deepEqual(timeline.events.map(event => event.type), ['run.finished', 'run.started', 'task.created']);
+});

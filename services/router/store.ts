@@ -175,6 +175,18 @@ export class TaskStore {
         seq INTEGER PRIMARY KEY AUTOINCREMENT, taskId TEXT NOT NULL REFERENCES task(id),
         type TEXT NOT NULL, data TEXT NOT NULL
       );
+      CREATE TABLE IF NOT EXISTS progress_event_time (
+        seq INTEGER PRIMARY KEY REFERENCES event(seq) ON DELETE CASCADE, created_at INTEGER NOT NULL
+      );
+      CREATE INDEX IF NOT EXISTS progress_event_age ON progress_event_time(created_at);
+      CREATE TRIGGER IF NOT EXISTS event_record_progress_time AFTER INSERT ON event
+        WHEN NEW.type='run.progress'
+        BEGIN
+          INSERT INTO progress_event_time VALUES(NEW.seq, CAST(unixepoch('subsec') * 1000 AS INTEGER));
+        END;
+      CREATE TABLE IF NOT EXISTS event_retention (
+        id INTEGER PRIMARY KEY CHECK(id=1), replay_floor INTEGER NOT NULL
+      );
       CREATE TABLE IF NOT EXISTS device_claim (
         device TEXT NOT NULL, key TEXT NOT NULL, fingerprint TEXT NOT NULL,
         response TEXT, expires INTEGER NOT NULL, PRIMARY KEY(device,key)
@@ -228,6 +240,10 @@ export class TaskStore {
       CREATE INDEX IF NOT EXISTS event_task ON event(taskId,seq);
     `);
     this.transaction(() => {
+      if (this.db.prepare('INSERT OR IGNORE INTO event_retention VALUES(1,0)').run().changes) {
+        this.db.prepare(`INSERT OR IGNORE INTO progress_event_time
+          SELECT seq,? FROM event WHERE type='run.progress'`).run(Date.now());
+      }
       this.db.prepare('INSERT OR IGNORE INTO run_deadline SELECT id,expires+? FROM run').run(runLimitMs);
       this.updateWorkflowReadiness();
     });
@@ -316,8 +332,24 @@ export class TaskStore {
   }
 
   eventCursor(): number {
-    const row = this.db.prepare('SELECT COALESCE(MAX(seq),0) AS cursor FROM event').get();
+    const row = this.db.prepare("SELECT COALESCE((SELECT seq FROM sqlite_sequence WHERE name='event'),0) AS cursor").get();
     return Number(row?.cursor);
+  }
+
+  eventReplayFloor(): number {
+    return Number(this.db.prepare('SELECT replay_floor FROM event_retention WHERE id=1').get()?.replay_floor ?? 0);
+  }
+
+  pruneProgressEvents(before: number) {
+    return this.transaction(() => {
+      const latestRemoved = this.db.prepare('SELECT MAX(seq) AS last FROM progress_event_time WHERE created_at<?').get(before);
+      if (latestRemoved?.last == null) return 0;
+      const { changes } = this.db.prepare('DELETE FROM event WHERE seq IN (SELECT seq FROM progress_event_time WHERE created_at<?)')
+        .run(before);
+      this.db.prepare(`INSERT INTO event_retention VALUES(1,?) ON CONFLICT(id)
+        DO UPDATE SET replay_floor=MAX(replay_floor,excluded.replay_floor)`).run(latestRemoved.last);
+      return Number(changes);
+    });
   }
 
   snapshot(owner: string) {

@@ -76,6 +76,7 @@ async function stream(store: TaskStore, owner: string, cursor: number, response:
   const deadline = Date.now() + 25_000;
   try {
     while (!controller.signal.aborted && Date.now() < deadline && authorized()) {
+      if (cursor < store.eventReplayFloor()) return;
       const events = store.events(owner, cursor);
       for (const event of events) {
         const frame = JSON.stringify({ ...event, data: canReadTask(event.taskId) ? JSON.parse(event.data) : {} });
@@ -680,6 +681,15 @@ export function routerServer(store: TaskStore, config: { owner: string; token: s
         reply(response, 201, link);
         return;
       }
+      if (url.pathname === '/v1/admin/event-retention' && request.method === 'POST') {
+        const data = await jsonObject(request);
+        const before = data.before;
+        if (typeof before !== 'number' || !Number.isSafeInteger(before) || before <= 0 || before > Date.now()) {
+          throw new RequestError(400, 'Invalid progress retention cutoff');
+        }
+        reply(response, 200, { removed: store.pruneProgressEvents(before) });
+        return;
+      }
       if (url.pathname === '/v1/admin/metrics' && request.method === 'GET') {
         reply(response, 200, { ...metrics.snapshot(), ...store.metrics(owner, Date.now()) });
         return;
@@ -831,7 +841,9 @@ export function routerServer(store: TaskStore, config: { owner: string; token: s
         if (!/^\d+$/.test(String(raw)) || !Number.isSafeInteger(cursor)) {
           throw new RequestError(400, 'Invalid event cursor');
         }
-        if (cursor > store.eventCursor()) throw new RequestError(409, 'Event cursor requires a new snapshot');
+        if (cursor < store.eventReplayFloor() || cursor > store.eventCursor()) {
+          throw new RequestError(409, 'Event cursor requires a new snapshot');
+        }
         await stream(store, owner, cursor, response, () => admin || store.mobileOwner(mobileToken) === owner,
           url.searchParams.get('once') === '1', canReadTask);
         return;
