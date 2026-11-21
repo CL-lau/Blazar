@@ -158,9 +158,10 @@ export function Knowledge({ token }) {
         ))}</ul>
         {usage && <section aria-label="Application connection usage">
           <h3>{usage.account}</h3>
-          {usage.items.length === 0 ? <p>No document activity yet.</p> : <ul>{usage.items.map(item => (
+          {usage.items.length === 0 ? <p>No connection activity yet.</p> : <ul>{usage.items.map(item => (
             <li key={item.id}>
-              {{ import: 'Document import', test: 'Access test', refresh: 'Document refresh' }[item.operation]} · {item.workspace} ·{' '}
+              {{ import: 'Document import', test: 'Access test', refresh: 'Document refresh', worker_memory: 'Worker memory access' }[item.operation]} · {item.workspace} ·{' '}
+              {item.taskId && <><code>{item.taskId}</code> · </>}
               {item.status.replaceAll('_', ' ')} · {new Date(item.started).toLocaleString()}
             </li>
           ))}</ul>}

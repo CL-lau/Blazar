@@ -41,6 +41,12 @@ export class MemoryStore {
         workspace TEXT NOT NULL, operation TEXT NOT NULL, status TEXT NOT NULL, started INTEGER NOT NULL
       );
       CREATE INDEX IF NOT EXISTS app_usage_connection ON app_usage(connection,id);
+      CREATE TABLE IF NOT EXISTS worker_app_usage (
+        connection TEXT NOT NULL REFERENCES app_connection(id), run_id TEXT NOT NULL,
+        task_id TEXT NOT NULL, workspace TEXT NOT NULL, started INTEGER NOT NULL,
+        PRIMARY KEY(connection,run_id)
+      );
+      CREATE INDEX IF NOT EXISTS worker_app_usage_recent ON worker_app_usage(connection,started DESC);
       CREATE TABLE IF NOT EXISTS document_sync (
         connection TEXT NOT NULL REFERENCES app_connection(id), workspace TEXT NOT NULL,
         interval_minutes INTEGER NOT NULL, due INTEGER NOT NULL, cursor TEXT NOT NULL DEFAULT '',
@@ -197,10 +203,19 @@ export class MemoryStore {
     this.db.prepare('UPDATE app_usage SET status=? WHERE id=?').run(status, id);
   }
 
+  recordWorkerAppUsage(workspace: string, taskId: string, runId: string, connections: string[]) {
+    this.db.prepare(`INSERT OR IGNORE INTO worker_app_usage
+      SELECT value,?,?,?,? FROM json_each(?)`)
+      .run(runId, taskId, workspace, Date.now(), JSON.stringify(connections));
+  }
+
   appUsage(owner: string, connection: string) {
     if (!this.db.prepare('SELECT 1 FROM app_connection WHERE owner=? AND id=?').get(owner, connection)) return undefined;
-    return this.db.prepare('SELECT id,workspace,operation,status,started FROM app_usage WHERE connection=? ORDER BY id DESC LIMIT 50')
-      .all(connection);
+    return this.db.prepare(`SELECT * FROM (
+      SELECT id,workspace,operation,status,started,NULL AS taskId FROM app_usage WHERE connection=?
+      UNION ALL
+      SELECT run_id,workspace,'worker_memory','authorized',started,task_id FROM worker_app_usage WHERE connection=?
+    ) ORDER BY started DESC,id DESC LIMIT 50`).all(connection, connection);
   }
 
   documentsToRefresh(owner: string, workspace: string, connection: string, after: string) {
@@ -378,7 +393,7 @@ export class MemoryStore {
   }
 
   resolveAppEvidence(owner: string, workspace: string, references: { id: string; version: number }[]) {
-    const rows = this.db.prepare(`SELECT m.id,substr(m.body,1,1200) AS body,COALESCE(s.version,1) AS version
+    const rows = this.db.prepare(`SELECT m.id,m.connection,substr(m.body,1,1200) AS body,COALESCE(s.version,1) AS version
       FROM memory m JOIN app_connection a ON a.id=m.connection AND a.owner=m.owner
       LEFT JOIN memory_state s ON s.id=m.id
       JOIN json_each(?) ref ON json_extract(ref.value,'$.id')=m.id
@@ -392,7 +407,9 @@ export class MemoryStore {
             AND h.connection=m.connection AND h.resource=m.resource AND h.memory_id=m.id))
       ORDER BY CAST(ref.key AS INTEGER)`).all(JSON.stringify(references), owner, workspace, Date.now());
     if (rows.length !== references.length) return undefined;
-    return rows.map(row => ({ id: String(row.id), body: String(row.body).toWellFormed(), version: Number(row.version) }));
+    return rows.map(row => ({
+      connection: String(row.connection), id: String(row.id), body: String(row.body).toWellFormed(), version: Number(row.version),
+    }));
   }
 
   revise(owner: string, id: string, expectedVersion: number, change: { body?: string; pinned?: boolean; disabled?: boolean }) {

@@ -249,13 +249,29 @@ test('a registered JSONL extension executes a real subprocess through Router and
     method: 'POST', headers: { Authorization: 'Bearer ' + device.token, 'Content-Type': 'application/json' },
     body: JSON.stringify(body),
   });
-  const claimed = await (await devicePost('claim', { capability: 'agent.acp' })).json();
+  const claimInput = { capability: 'agent.acp', requestId: '31415926-5358-4979-8238-462643383279' };
+  const claimed = await (await devicePost('claim', claimInput)).json();
+  const replayed = await (await devicePost('claim', claimInput)).json();
+  assert.equal(replayed.assignment.run.id, claimed.assignment.run.id);
   assert.equal(claimed.assignment.task.id, activeTask.id);
   assert.equal(claimed.assignment.memoryInputs[0].body, 'Private review template');
+  assert.equal(claimed.assignment.memoryInputs[0].connection, undefined);
+  const usageUrl = base + '/v1/app-connections/' + connection + '/usage';
+  const readUsage = () => fetch(usageUrl, { headers: { Authorization: 'Bearer local' } });
+  assert.equal((await fetch(usageUrl, { headers: { Authorization: 'Bearer ' + phone.token } })).status, 403);
+  const usage = (await (await readUsage()).json()).usage;
+  const workerUsage = usage.filter((entry: { operation: string }) => entry.operation === 'worker_memory');
+  assert.equal(workerUsage.length, 2);
+  assert.deepEqual(new Set(workerUsage.map((entry: { taskId: string }) => entry.taskId)),
+    new Set([protectedTask.id, activeTask.id]));
+  assert.ok(workerUsage.every((entry: { status: string }) => entry.status === 'authorized'));
+  assert.doesNotMatch(JSON.stringify(usage), /Private review template|guide\.md/);
   const pendingResponse = await createWithEvidence('queued-app-evidence');
   assert.equal(pendingResponse.status, 202);
   const pending = await pendingResponse.json();
   assert.equal(memory.disconnect('owner', connection), true);
+  assert.equal((await (await readUsage()).json()).usage.filter((entry: { operation: string }) =>
+    entry.operation === 'worker_memory').length, 2);
   assert.equal((await devicePost('runs/' + claimed.assignment.run.id + '/finish', {
     status: 'succeeded', result: 'Private review template',
   })).status, 409);

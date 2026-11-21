@@ -461,12 +461,14 @@ function deviceOperation(store: TaskStore, bearer: string, pathname: string, dat
       const refs = store.appEvidence(assignment.task.id);
       if (refs) {
         if (store.runEvidenceStopping(assignment.run.id)) return { status: 200, body: { assignment: null } };
-        const evidence = data.capability === 'agent.acp' ? memory?.resolveAppEvidence(device.owner, device.workspace, refs) : undefined;
-        if (!evidence) {
+        const evidence = memory?.resolveAppEvidence(device.owner, device.workspace, refs);
+        if (data.capability !== 'agent.acp' || !memory || !evidence) {
           store.rejectRunEvidence(assignment.run.id, device.id);
           return { status: 200, body: { assignment: null } };
         }
-        assignment.memoryInputs = [...(assignment.memoryInputs || []), ...evidence];
+        memory.recordWorkerAppUsage(device.workspace, assignment.task.id, assignment.run.id,
+          [...new Set(evidence.map(input => input.connection))]);
+        assignment.memoryInputs = [...(assignment.memoryInputs || []), ...evidence.map(({ id, body, version }) => ({ id, body, version }))];
       }
     }
     store.clearInterruption(device.id);
