@@ -8,7 +8,7 @@ export function initializeMemorySchema(db: DatabaseSync): boolean {
     PRAGMA busy_timeout=5000;
     CREATE TABLE IF NOT EXISTS app_connection (
       id TEXT PRIMARY KEY, owner TEXT NOT NULL, app TEXT NOT NULL,
-      account TEXT NOT NULL, active INTEGER NOT NULL DEFAULT 1, workspace TEXT
+      account TEXT NOT NULL, active INTEGER NOT NULL DEFAULT 1, workspace TEXT, scope_version INTEGER NOT NULL DEFAULT 1
     );
     CREATE TABLE IF NOT EXISTS revoked_resource (
       connection TEXT NOT NULL REFERENCES app_connection(id), resource TEXT NOT NULL,
@@ -73,6 +73,9 @@ export function initializeMemorySchema(db: DatabaseSync): boolean {
   `);
   if (!db.prepare("SELECT 1 FROM pragma_table_info('memory_state') WHERE name='disabled'").get()) {
     db.exec('ALTER TABLE memory_state ADD COLUMN disabled INTEGER NOT NULL DEFAULT 0');
+  }
+  if (!db.prepare("SELECT 1 FROM pragma_table_info('app_connection') WHERE name='scope_version'").get()) {
+    db.exec('ALTER TABLE app_connection ADD COLUMN scope_version INTEGER NOT NULL DEFAULT 1');
   }
   if (!db.prepare("SELECT 1 FROM pragma_table_info('app_connection') WHERE name='workspace'").get()) {
     db.exec('ALTER TABLE app_connection ADD COLUMN workspace TEXT');

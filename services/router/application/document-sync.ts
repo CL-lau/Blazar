@@ -9,7 +9,11 @@ type DocumentMemory = Pick<MemoryStore, 'connection' | 'documentSyncActive' | 'd
 export async function accessDocument(store: DocumentMemory, owner: string, workspace: string, connection: string,
                               reader: DocumentConnector, document: string, operation: 'test' | 'import' | 'refresh',
                               signal?: AbortSignal, permitted = () => true) {
-  if (!permitted()) throw new RequestError(409, 'Document refresh was cancelled');
+  const source = store.connection(owner, connection, workspace);
+  if (!source || !permitted()) throw new RequestError(409, 'Source access changed before the document read');
+  const canUseResult = () => permitted() &&
+    store.connection(owner, connection, workspace)?.scopeVersion === source.scopeVersion &&
+    !store.resourceRevoked(connection, document);
   if (store.resourceRevoked(connection, document)) throw new RequestError(409, 'Document access was revoked');
   if (!reader.accepts(document)) throw new RequestError(400, 'Invalid document reference');
   const usageId = store.startAppUsage(connection, workspace, operation);
@@ -18,20 +22,19 @@ export async function accessDocument(store: DocumentMemory, owner: string, works
     const timeout = AbortSignal.timeout(10_000);
     content = await reader.read(document, signal ? AbortSignal.any([timeout, signal]) : timeout);
   } catch (error) {
-    if (error instanceof DocumentAccessDenied && permitted()) store.recordDocumentAccess(connection, document, usageId, false);
-    store.finishAppUsage(usageId, !permitted() ? 'access_changed' :
-      error instanceof DocumentAccessDenied ? 'access_denied' : 'failed');
+    if (!canUseResult()) {
+      store.finishAppUsage(usageId, 'access_changed');
+      throw new RequestError(409, 'Source access changed during the document read');
+    }
+    if (error instanceof DocumentAccessDenied) store.recordDocumentAccess(connection, document, usageId, false);
+    store.finishAppUsage(usageId, error instanceof DocumentAccessDenied ? 'access_denied' : 'failed');
     throw new RequestError(502, error instanceof DocumentUnavailable ? error.message : 'Document read failed');
   }
-  if (!permitted()) {
+  if (!canUseResult()) {
     store.finishAppUsage(usageId, 'access_changed');
-    throw new RequestError(409, 'Document refresh was cancelled');
+    throw new RequestError(409, 'Source access changed during the document read');
   }
   if (operation === 'test') {
-    if (!store.connection(owner, connection, workspace) || store.resourceRevoked(connection, document)) {
-      store.finishAppUsage(usageId, 'access_changed');
-      throw new RequestError(409, 'Source access changed during the test');
-    }
     store.finishAppUsage(usageId, 'succeeded');
     return { readable: true };
   }
@@ -71,7 +74,7 @@ export async function invokeDocumentCapability(store: DocumentMemory, owner: str
       store.finishAppUsage(usage, error instanceof DocumentAccessDenied ? 'access_denied' : 'failed');
       throw new RequestError(502, error instanceof DocumentUnavailable ? error.message : 'Document discovery failed');
     }
-    if (!store.connection(owner, connectionId, workspace)) {
+    if (store.connection(owner, connectionId, workspace)?.scopeVersion !== connection.scopeVersion) {
       store.finishAppUsage(usage, 'access_changed');
       throw new RequestError(409, 'Source access changed during discovery');
     }

@@ -75,9 +75,9 @@ export class MemoryStore {
   }
 
   connection(owner: string, id: string, workspace?: string) {
-    return this.db.prepare(`SELECT app,account FROM app_connection WHERE owner=? AND id=? AND active=1
+    return this.db.prepare(`SELECT app,account,scope_version AS scopeVersion FROM app_connection WHERE owner=? AND id=? AND active=1
       AND (? IS NULL OR workspace IS NULL OR workspace=?)`)
-      .get(owner, id, workspace ?? null, workspace ?? null) as { app: string; account: string } | undefined;
+      .get(owner, id, workspace ?? null, workspace ?? null) as { app: string; account: string; scopeVersion: number } | undefined;
   }
 
   startAppUsage(connection: string, workspace: string, operation: 'import' | 'test' | 'refresh' | 'search' | 'discover') {
@@ -193,8 +193,9 @@ export class MemoryStore {
   }
 
   setConnectionWorkspace(owner: string, connection: string, workspace: string | null): boolean {
-    return this.db.prepare('UPDATE app_connection SET workspace=? WHERE id=? AND owner=? AND active=1')
-      .run(workspace, connection, owner).changes === 1;
+    return this.db.prepare(`UPDATE app_connection SET scope_version=scope_version+CASE WHEN workspace IS ? THEN 0 ELSE 1 END, workspace=?
+      WHERE id=? AND owner=? AND active=1`)
+      .run(workspace, workspace, connection, owner).changes === 1;
   }
 
   remember(owner: string, workspace: string, body: string, source?: ResourceRef, expires?: number): string | undefined {

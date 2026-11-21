@@ -250,3 +250,23 @@ test('memory drafting discards output if the connection is revoked during genera
   }, 'owner', 'project', { id, version: 1 }), /Source memory changed while drafting/);
   assert.deepEqual(store.recall('owner', 'project', 'proposed memory', [connection]), []);
 });
+
+test('moving a connection away and back invalidates document reads already in flight', async t => {
+  const { invokeDocumentCapability } = await import('./application/document-sync.ts');
+  const store = new MemoryStore(':memory:');
+  t.after(() => store.close());
+  const connection = store.connect('owner', 'github', 'handbook', 'project');
+  const read = Promise.withResolvers<{ text: string; revision: string }>();
+  const reader = { app: 'github', account: 'handbook', accepts: () => true, read: () => read.promise };
+
+  const importing = invokeDocumentCapability(store, 'owner', connection, [reader], 'document.import',
+    { workspace: 'project', document: 'review.md' });
+  assert.equal(store.setConnectionWorkspace('owner', connection, 'other'), true);
+  assert.equal(store.setConnectionWorkspace('owner', connection, 'project'), true);
+  read.resolve({ text: 'Draft review template', revision: 'v1' });
+  await assert.rejects(importing, /Source access changed during the document read/);
+  assert.deepEqual(store.recall('owner', 'project', 'review', [connection]), []);
+  await invokeDocumentCapability(store, 'owner', connection, [reader], 'document.import',
+    { workspace: 'project', document: 'review.md' });
+  assert.equal(store.recall('owner', 'project', 'review', [connection]).length, 1);
+});
