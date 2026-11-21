@@ -190,12 +190,13 @@ export function Knowledge({ token }) {
             })}>Disconnect</button> : <small>Disconnected</small>}
             <button type="button" onClick={() => perform(async () => {
               const data = await request('/app-connections/' + connection.id + '/usage');
-              setUsage({ account: accountName(connection), items: data.usage });
+              setUsage({ id: connection.id, account: accountName(connection), items: data.usage });
             })}>View usage</button>
           </li>
         ))}</ul>
         {usage && <section aria-label="Application connection usage">
           <h3>{usage.account}</h3>
+          <p>Connection ID <code>{usage.id}</code></p>
           {usage.items.length === 0 ? <p>No connection activity yet.</p> : <ul>{usage.items.map(item => (
             <li key={item.id}>
               {{ import: 'Document import', test: 'Access test', refresh: 'Document refresh', search: 'Document search', discover: 'Document discovery', worker_memory: 'Worker memory access' }[item.operation]} · {item.workspace} ·{' '}

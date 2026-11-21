@@ -6,6 +6,7 @@ import type { MemoryStore } from '../memory.ts';
 import type { RouterMetrics } from '../metrics.ts';
 import { IdempotencyConflict } from '../domain/idempotency.ts';
 import type { TaskStore } from '../store.ts';
+import { invokeDocumentCapability } from './document-sync.ts';
 
 export class ConversationError extends Error {
   readonly status: number;
@@ -21,7 +22,7 @@ type ConversationTasks = Pick<TaskStore, 'findRouterTasks' | 'routingDecision' |
 
 interface ConversationDependencies {
   harness?: RouterHarness;
-  memory?: Pick<MemoryStore, 'personalContext' | 'connections'>;
+  memory?: MemoryStore;
   documents?: readonly DocumentConnector[];
 }
 
@@ -53,6 +54,19 @@ export function createConversationRouter(store: ConversationTasks, config: Conve
       ).join('\n') : status[1] === '状态' ? '没有找到匹配的任务。' : 'No matching tasks.';
       metrics.route('deterministic');
       return { status: 200, body: { kind: 'reply', text } };
+    }
+    if (/^\/documents(?:\s|$)/.test(input.text)) {
+      if (!admin || !authorized()) throw new ConversationError(403, 'Administrator required for document search');
+      if (!config.memory) throw new ConversationError(503, 'Document search is unavailable');
+      const command = /^\/documents ([a-f0-9-]{36}) ([^\r\n]+)$/.exec(input.text);
+      if (!command) throw new ConversationError(400, 'Use /documents CONNECTION_ID SEARCH_TERMS');
+      const result = await invokeDocumentCapability(config.memory, owner, command[1],
+        config.documents ?? [], 'document.search', { workspace: input.workspace, query: command[2] });
+      if (!authorized()) throw new ConversationError(401, 'Authentication required');
+      const items = 'items' in result ? result.items ?? [] : [];
+      const text = items.slice(0, 5).map(item => `${item.resource} · ${item.revision}\n${item.excerpt}`).join('\n\n');
+      metrics.route('deterministic');
+      return { status: 200, body: { kind: 'reply', text: text || 'No matching imported documents.' } };
     }
     let decision = store.routingDecision(owner, key, input, undefined, caller);
     if (decision) metrics.route('replayed');

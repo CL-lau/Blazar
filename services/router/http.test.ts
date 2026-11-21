@@ -157,6 +157,15 @@ test('Router authenticates, deduplicates commands and replays task changes over 
   assert.equal(matches[0].resource, 'doc123');
   assert.match(matches[0].excerpt, /Design review findings/);
   assert.equal((await post(scopedSearch, 'search-wrong-scope', { workspace: 'demo', query: 'findings' })).status, 404);
+  const searchCommand = '/documents ' + scopedConnection + ' findings';
+  const conversationSearch = await post('/v1/conversation', 'conversation-document-search', {
+    workspace: 'private', text: searchCommand,
+  });
+  assert.equal(conversationSearch.status, 200);
+  assert.match((await conversationSearch.json()).text, /doc123 · .*\n.*Design review findings/);
+  assert.equal((await post('/v1/conversation', 'conversation-document-wrong-scope', {
+    workspace: 'demo', text: searchCommand,
+  })).status, 404);
   memory.removeResource('test', scopedConnection, 'manual');
   const { id: connection } = await registered.json();
   const entry = await post('/v1/memory', 'memory', {
@@ -236,6 +245,9 @@ test('Router authenticates, deduplicates commands and replays task changes over 
     body: JSON.stringify({ workspace: 'archive' }),
   });
   assert.equal(changedScope.status, 200);
+  assert.equal((await post('/v1/conversation', 'conversation-document-search', {
+    workspace: 'private', text: searchCommand,
+  })).status, 404);
   githubStatus = 403;
   assert.equal((await post('/v1/app-connections/' + github + '/test-document', 'github-test-denied',
     { workspace: 'demo', document: 'docs/other.md' })).status, 502);
@@ -572,7 +584,7 @@ test('Router authenticates, deduplicates commands and replays task changes over 
   const metrics = await fetch(url + '/v1/admin/metrics', { headers });
   assert.equal(metrics.status, 200);
   const measurement = await metrics.json();
-  assert.deepEqual(measurement.routing, { deterministic: 1, model: 4, replayed: 1, modelErrors: 0 });
+  assert.deepEqual(measurement.routing, { deterministic: 2, model: 4, replayed: 1, modelErrors: 0 });
   assert.equal(measurement.latencyMs.model.count, 4);
   assert.deepEqual(measurement.modelTokens, {
     samples: 4, input: 40, output: 16, cacheRead: 8, cacheWrite: 0, totalTokens: 64,
