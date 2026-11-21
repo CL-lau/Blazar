@@ -1,6 +1,29 @@
 import { setTimeout as delay } from 'node:timers/promises';
-import { parseWeixin, weixinTransport, type WeixinConfig } from '../../packages/channels/weixin.ts';
+import { parseWeixin, parseWeixinAttachment, weixinTransport, type WeixinConfig } from '../../packages/channels/weixin.ts';
 import type { TaskStore } from './store.ts';
+
+export async function receiveWeixinEvent(store: TaskStore, owner: string, channel: string, config: WeixinConfig,
+                                         raw: unknown, download: ReturnType<typeof weixinTransport>['downloadAttachment'],
+                                         signal: AbortSignal) {
+  const event = parseWeixin(raw, config);
+  if (event) {
+    if ('taskId' in event.message && event.message.text === '/attach') {
+      const message = event.message;
+      if (message.taskId) store.expectChannelAttachment(owner, channel, config.workspace,
+        { ...message, taskId: message.taskId, sender: message.chat }, Date.now());
+    } else {
+      store.receiveChannelMessage(owner, channel, config.workspace, event.message, event.context);
+    }
+    return true;
+  }
+  const file = parseWeixinAttachment(raw, config);
+  if (!file) return false;
+  const intent = store.bindChannelAttachment(owner, channel, config.workspace, file, Date.now());
+  if (!intent) return false;
+  const text = await download(file, signal);
+  return !signal.aborted && text !== undefined && store.addChannelAttachment(owner, channel, config.workspace, intent.taskId,
+    { ...file, taskId: intent.taskId }, { name: file.name, text }, { sender: file.sender, commandId: intent.commandId });
+}
 
 export function startWeixin(store: TaskStore, owner: string, config: WeixinConfig, onMessage?: () => void) {
   const stop = new AbortController();
@@ -13,10 +36,10 @@ export function startWeixin(store: TaskStore, owner: string, config: WeixinConfi
         const batch = await transport.poll(current, stop.signal);
         if (stop.signal.aborted) return;
         for (const raw of batch.messages) {
-          const event = parseWeixin(raw, config);
-          if (!event) continue;
-          store.receiveChannelMessage(owner, channel, config.workspace, event.message, event.context);
-          onMessage?.();
+          if (await receiveWeixinEvent(store, owner, channel, config, raw, transport.downloadAttachment, stop.signal)) {
+            onMessage?.();
+          }
+          if (stop.signal.aborted) return;
         }
         if (batch.cursor !== current) store.saveChannelCursor(channel, batch.cursor);
         if (batch.messages.length) continue;

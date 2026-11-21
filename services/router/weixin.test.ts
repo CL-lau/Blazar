@@ -1,5 +1,8 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
+import { createCipheriv } from 'node:crypto';
+import { receiveWeixinEvent } from './weixin.ts';
+import { TaskStore } from './store.ts';
 import { parseWeixin, weixinConfig, weixinTransport } from '../../packages/channels/weixin.ts';
 
 test('Weixin preserves large message IDs and uses the authorized conversation context for replies', async () => {
@@ -60,4 +63,51 @@ test('WeChat keeps its reply context across Router restart without retrying unkn
   } finally {
     after.close();
   }
+});
+
+test('Weixin imports bounded encrypted text from the official CDN for a selected private task', async t => {
+  const store = new TaskStore(':memory:');
+  t.after(() => store.close());
+  const config = { token: 'fixture', botId: 'bot', base: 'https://ilinkai.weixin.qq.com',
+    workspace: 'work', senders: new Set(['person', 'other']) };
+  const key = Buffer.alloc(16, 42);
+  const cipher = createCipheriv('aes-128-ecb', key, null);
+  const encrypted = Buffer.concat([cipher.update('Weixin fixture text'), cipher.final()]);
+  const requests: string[] = [];
+  const transport = weixinTransport(config, async (url, init) => {
+    requests.push(String(url));
+    assert.equal(init?.redirect, 'error');
+    assert.equal(new Headers(init?.headers).has('Authorization'), false);
+    return new Response(Uint8Array.from(encrypted));
+  });
+  const signal = AbortSignal.timeout(4_000);
+  const receive = (id: string, item: object, extra: object = {}) => receiveWeixinEvent(store, 'owner', 'weixin', config, {
+    from_user_id: 'person', message_type: 1, message_id: id, item_list: [item], ...extra,
+  }, transport.downloadAttachment, signal);
+  const sendText = (id: string, text: string) => receive(id, { type: 1, text_item: { text } });
+  const file = (media: object, len = '19') => ({ type: 4, file_item: { file_name: 'notes.txt', len, media } });
+  const media = { encrypt_query_param: 'fixture+param', aes_key: Buffer.from(key.toString('hex')).toString('base64') };
+  await sendText('root', '/blazar Review the file');
+  const [task] = store.snapshot('owner').tasks;
+  await receive('unrequested', file(media));
+  const select = (id: string) => sendText(id, '/blazar follow ' + task.id + ' /attach');
+  await select('select');
+  await receive('unrequested', file(media));
+  await receive('different-sender', file(media), { from_user_id: 'other' });
+  await receive('group', file(media), { group_id: 'team' });
+  await receive('wrong-host', file({ full_url: 'https://other.example/download', aes_key: media.aes_key }));
+  await receive('large', file(media, '8193'));
+  assert.deepEqual(requests, []);
+  assert.equal(await receive('accepted', file(media)), true);
+  assert.equal(await receive('accepted', file(media)), false);
+  assert.deepEqual(requests, ['https://novac2c.cdn.weixin.qq.com/c2c/download?encrypted_query_param=fixture%2Bparam']);
+  assert.deepEqual({ ...store.taskAttachment('owner', task.id, 0) }, { name: 'notes.txt', text: 'Weixin fixture text' });
+
+  await select('select-raw-key');
+  assert.equal(await receive('raw-key', file({
+    full_url: 'https://novac2c.cdn.weixin.qq.com/c2c/download?encrypted_query_param=direct',
+    aes_key: key.toString('base64'),
+  })), true);
+  assert.equal(requests.length, 2);
+  assert.equal(store.taskAttachment('owner', task.id, 1)?.text, 'Weixin fixture text');
 });

@@ -171,3 +171,5 @@ For QQ attachments, set `BLAZAR_QQ_MEDIA_HOSTS` to the exact QQ media hostnames 
 For DingTalk bot direct messages, set `BLAZAR_DINGTALK_MEDIA_HOSTS` to the exact HTTPS hostnames returned by the [message-file API](https://opensource.dingtalk.com/developerpedia/docs/learn/bot/message/). In the linked chat, send `/blazar follow TASK_ID /attach`, then send one UTF-8 file within five minutes. Each command accepts one file from the same sender and chat.
 
 For WeCom smart-bot file messages, set `BLAZAR_WECOM_MEDIA_HOSTS` to the exact HTTPS media hostnames under `qq.com` used by the bot. In the linked chat, send `/blazar follow TASK_ID /attach`, then send one UTF-8 file within five minutes from the same account. Blazar decrypts the downloaded file using the [official WeCom SDK](https://github.com/WecomTeam/aibot-node-sdk).
+
+Weixin bot direct messages support the same two-step attachment flow. Send `/blazar follow TASK_ID /attach` in the linked chat, then send one UTF-8 file within five minutes. Blazar downloads the bounded encrypted file through the [Tencent iLink CDN protocol](https://github.com/Tencent/openclaw-weixin/blob/main/docs/protocol.md).
