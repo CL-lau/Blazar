@@ -323,3 +323,19 @@ test('a delayed document preview cannot return text after a newer source denial'
   await assert.rejects(preview, /Source access changed during the document read/);
   assert.deepEqual(store.recall('owner', 'project', 'review', [connection]), []);
 });
+
+test('an answer from selected documents is discarded if source scope changes during generation', async t => {
+  const { answerFromDocuments } = await import('./application/document-answer.ts');
+  const store = new MemoryStore(':memory:');
+  t.after(() => store.close());
+  const connection = store.connect('owner', 'github', 'handbook', 'project');
+  const reader = { app: 'github', account: 'handbook', accepts: () => true,
+    async read() { return { text: 'Private project review', revision: 'v1' }; } };
+  await assert.rejects(answerFromDocuments(store, [reader], async (_question, evidence) => {
+    assert.equal(evidence[0].body, 'Private project review');
+    assert.equal(store.setConnectionWorkspace('owner', connection, 'other'), true);
+    assert.equal(store.setConnectionWorkspace('owner', connection, 'project'), true);
+    return 'Private answer';
+  }, 'owner', 'project', 'What changed?', [{ connection, resource: 'review.md', revision: 'v1' }]),
+  /Document access changed while preparing the answer/);
+});

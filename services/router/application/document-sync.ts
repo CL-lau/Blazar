@@ -14,7 +14,8 @@ class DocumentRefreshConflict extends RequestError {
 
 export async function accessDocument(store: DocumentMemory, owner: string, workspace: string, connection: string,
                               reader: DocumentConnector, document: string, operation: 'test' | 'import' | 'refresh' | 'read',
-                              signal?: AbortSignal, permitted = () => true) {
+                              signal?: AbortSignal, permitted = () => true,
+                              captureReadCheck?: (check: () => boolean) => void) {
   const source = store.connection(owner, connection, workspace);
   if (!source || !permitted()) throw new RequestError(409, 'Source access changed before the document read');
   const canUseResult = () => permitted() &&
@@ -45,10 +46,12 @@ export async function accessDocument(store: DocumentMemory, owner: string, works
     return { readable: true };
   }
   if (operation === 'read') {
-    if (store.hasNewerDocumentDenial(connection, document, usageId)) {
+    const stillAvailable = () => canUseResult() && !store.hasNewerDocumentDenial(connection, document, usageId);
+    if (!stillAvailable()) {
       store.finishAppUsage(usageId, 'access_changed');
       throw new RequestError(409, 'Source access changed during the document read');
     }
+    captureReadCheck?.(stillAvailable);
     store.finishAppUsage(usageId, 'succeeded', content.backend);
     return { connection, resource: document, revision: content.revision,
       ...(content.backend && { backend: content.backend }),

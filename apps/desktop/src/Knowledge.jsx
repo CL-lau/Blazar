@@ -10,6 +10,7 @@ export function Knowledge({ token }) {
   const [searchQuery, setSearchQuery] = useState('');
   const [documentMatches, setDocumentMatches] = useState(null);
   const [documentPreview, setDocumentPreview] = useState(null);
+  const [answerDocuments, setAnswerDocuments] = useState([]);
   const [refreshConflicts, setRefreshConflicts] = useState([]);
   const [discovered, setDiscovered] = useState(null);
   const [deriving, setDeriving] = useState(null);
@@ -250,9 +251,10 @@ export function Knowledge({ token }) {
             void perform(async () => {
               setUsage(null);
               if (preview) {
-                setDocumentPreview(await request('/app-connections/' + connection + '/capabilities/document.read', {
+                const preview = await request('/app-connections/' + connection + '/capabilities/document.read', {
                   method: 'POST', body: { workspace, document },
-                }));
+                });
+                setDocumentPreview({ ...preview, workspace });
                 return;
               }
               try {
@@ -360,7 +362,33 @@ export function Knowledge({ token }) {
             </p>}
             <pre>{documentPreview.text}</pre>
             {documentPreview.truncated && <p>Preview truncated.</p>}
+            <button type="button" disabled={answerDocuments.length >= 4 ||
+              answerDocuments.some(item => item.workspace !== documentPreview.workspace ||
+                (item.connection === documentPreview.connection && item.resource === documentPreview.resource))}
+            onClick={() => setAnswerDocuments(documents => [...documents, {
+              connection: documentPreview.connection, resource: documentPreview.resource,
+              revision: documentPreview.revision, workspace: documentPreview.workspace,
+            }])}>Select for answer</button>
           </section>}
+          {answerDocuments.length > 0 && <form onSubmit={event => {
+            event.preventDefault();
+            const question = new FormData(event.currentTarget).get('question');
+            void perform(async () => {
+              const response = await request('/memory/answer', { method: 'POST', body: {
+                workspace: answerDocuments[0].workspace, question,
+                documents: answerDocuments.map(({ connection, resource, revision }) => ({ connection, resource, revision })),
+              } });
+              setAnswer(response);
+            });
+          }}>
+            <ul aria-label="Selected documents">{answerDocuments.map((item, index) => <li key={item.connection + '/' + item.resource}>
+              {item.resource} · {connections.find(connection => connection.id === item.connection)?.account ?? item.connection}{' '}
+              <button type="button" onClick={() => setAnswerDocuments(documents => documents.filter((_, i) => i !== index))}>Remove</button>
+            </li>)}</ul>
+            <label>Question about selected documents<textarea name="question" required maxLength={4000} /></label>
+            <small>This sends excerpts from the selected document revisions to the configured model.</small>
+            <button>Ask Blazar about selected documents</button>
+          </form>}
           {refreshConflicts.length > 0 && <section aria-label="Refresh conflicts">
             <p>Kept the primary revision for these documents because the fallback returned different content.</p>
             <ul>{refreshConflicts.map(resource => <li key={resource}>{resource}</li>)}</ul>

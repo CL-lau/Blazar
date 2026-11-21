@@ -45,6 +45,11 @@ test('Router authenticates, deduplicates commands and replays task changes over 
       return 'Keep one review summary.';
     },
     async answerMemory(question, evidence) {
+      if (question === 'Compare selected documents') {
+        assert.deepEqual(evidence.map(item => item.resource), ['doc123', 'docs/review.md']);
+        assert.deepEqual(evidence.map(item => item.body), ['Design review findings', 'Engineering review findings']);
+        return 'Both documents contain review findings.';
+      }
       memoryAnswers++;
       assert.equal(evidence[0].resource, 'doc123');
       assert.equal(evidence[0].body, 'Design review findings');
@@ -244,6 +249,22 @@ test('Router authenticates, deduplicates commands and replays task changes over 
   assert.match(previewed.revision, /^sha256:/);
   assert.equal(previewed.truncated, false);
   assert.deepEqual(memory.recall('test', 'demo', 'findings', [github]), []);
+  const liveAnswer = await post('/v1/memory/answer', 'selected-documents-answer', {
+    workspace: 'demo', question: 'Compare selected documents', documents: [
+      { connection, resource: 'doc123' },
+      { connection: github, resource: 'docs/review.md', revision: previewed.revision },
+    ],
+  });
+  assert.equal(liveAnswer.status, 200);
+  const live = await liveAnswer.json();
+  assert.equal(live.answer, 'Both documents contain review findings.');
+  assert.deepEqual(live.sources.map(item => item.connection), [connection, github]);
+  assert.deepEqual(memory.recall('test', 'demo', 'findings', [github]), []);
+  const changedLive = await post('/v1/memory/answer', 'changed-selected-document', {
+    workspace: 'demo', question: 'Compare selected documents',
+    documents: [{ connection: github, resource: 'docs/review.md', revision: 'stale' }],
+  });
+  assert.equal(changedLive.status, 409);
   const repoHealth = '/v1/app-connections/' + github + '/capabilities/connection.health';
   assert.deepEqual(await (await post(repoHealth, 'github-health', { workspace: 'demo' })).json(), { status: 'succeeded' });
   assert.equal((await post(repoImport, 'bad-path', { workspace: 'demo', document: '../review.md' })).status, 400);

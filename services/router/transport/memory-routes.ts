@@ -1,6 +1,7 @@
 import type { IncomingMessage, ServerResponse } from 'node:http';
 import { documentAppCatalog, documentCapabilityState, isDocumentCapability, type DocumentConnector } from '../../../packages/apps/documents.ts';
 import { invokeDocumentCapability } from '../application/document-sync.ts';
+import { answerFromDocuments } from '../application/document-answer.ts';
 import { requestMemoryDraft } from '../application/memory-draft.ts';
 import type { MemoryAnswer, MemoryDraft } from '../harness.ts';
 import type { MemoryStore, ResourceRef } from '../memory.ts';
@@ -122,8 +123,12 @@ export async function handleMemory(
   if (pathname === '/v1/memory/answer' && method === 'POST') {
     const data = await jsonObject(request);
     const workspace = requiredText(data.workspace, 'workspace', 128);
-    const query = requiredText(data.query, 'search terms', 256);
     const question = requiredText(data.question, 'question', 4_000);
+    if (data.documents !== undefined) {
+      reply(response, 200, await answerFromDocuments(store, documents ?? [], answerMemory, owner, workspace, question, data.documents));
+      return true;
+    }
+    const query = requiredText(data.query, 'search terms', 256);
     if (!Array.isArray(data.sources) || data.sources.length > 25 ||
         data.sources.some(source => typeof source !== 'string' || !/^[a-f0-9-]{36}$/.test(source))) {
       throw new RequestError(400, 'Invalid source filter');

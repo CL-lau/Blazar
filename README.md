@@ -186,6 +186,8 @@ To search across apps, specify up to five comma-separated connection IDs in the 
 
 Use `/document CONNECTION_ID DOCUMENT_REFERENCE` in the same workspace for a fresh source preview. Blazar reads through the configured connector and returns the revision and a text excerpt. The source stays out of model context and the Router's saved conversation turns.
 
+In desktop **Apps and memory**, preview and select up to four documents from one workspace, then ask Blazar a question. Blazar re-reads the selected revisions and sends only their excerpts to the configured model. The answer includes the connection, resource, and revision for each source.
+
 In **Apps and memory**, choose a source account and workspace to refresh previously imported documents. You can also save an automatic refresh interval for that account and workspace.
 
 In the desktop task view, **Create task with selected apps** lets a Worker use matching knowledge from source accounts you select. Access is rechecked when the task is assigned and when the Worker submits a result. Administrators can share a completed result version with an individual paired phone while each referenced version remains authorized.
