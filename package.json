@@ -17,6 +17,7 @@
     "router:db": "node --experimental-strip-types services/router/maintenance.ts",
     "device:reconcile": "node --experimental-strip-types services/device/reconcile.ts",
     "router:benchmark": "node --experimental-strip-types services/router/benchmark.ts",
+    "router:benchmark:topology": "node --experimental-strip-types services/router/benchmark-topology.ts",
     "macos:launch-agent": "node deploy/macos/launch-agent.mjs",
     "device:probe": "node --experimental-strip-types services/device/probe.ts",
     "ios:project": "cd apps/ios && xcodegen generate",
