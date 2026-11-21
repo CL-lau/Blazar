@@ -125,6 +125,11 @@ export function initializeTaskSchema(db: DatabaseSync, runLimitMs: number) {
       task_id TEXT NOT NULL REFERENCES task(id), predecessor TEXT NOT NULL REFERENCES task(id),
       PRIMARY KEY(task_id,predecessor)
     );
+    CREATE TABLE IF NOT EXISTS workflow_artifact_input (
+      task_id TEXT NOT NULL, predecessor TEXT NOT NULL, name TEXT NOT NULL,
+      PRIMARY KEY(task_id,predecessor),
+      FOREIGN KEY(task_id,predecessor) REFERENCES workflow_dependency(task_id,predecessor) ON DELETE CASCADE
+    );
     CREATE INDEX IF NOT EXISTS workflow_predecessor ON workflow_dependency(predecessor,task_id);
     CREATE TABLE IF NOT EXISTS mobile_pairing (
       code_hash TEXT PRIMARY KEY, owner TEXT NOT NULL, expires INTEGER NOT NULL

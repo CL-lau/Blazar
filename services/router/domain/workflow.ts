@@ -1,3 +1,4 @@
+import { artifactName } from '../../../packages/protocol/artifact.ts';
 import { workerCapabilities, type DesktopWindowReference, type WorkflowAction, type WorkflowStep } from '../../../packages/protocol/task.ts';
 
 export class InvalidWorkflow extends Error {}
@@ -35,6 +36,22 @@ export function workflowSteps(input: unknown): WorkflowStep[] {
     if (capability === 'git-patch-inputs' && !value.needs.length) {
       throw new InvalidWorkflow('Git patch inputs require predecessor steps');
     }
+    const selected = value.inputArtifacts;
+    let inputArtifacts: Record<string, string> | undefined;
+    if (selected !== undefined) {
+      if (action || /^\/(observe|click|preview) /.test(value.goal) || !selected ||
+          typeof selected !== 'object' || Array.isArray(selected)) throw new InvalidWorkflow('Invalid workflow input artifacts');
+      const names: [string, string][] = [];
+      for (const [predecessor, input] of Object.entries(selected)) {
+        const name = artifactName(input);
+        if (!value.needs.includes(predecessor) || !name ||
+            (capability === 'git-patch-inputs' && name !== 'git-changes.json')) {
+          throw new InvalidWorkflow('A named input must reference an artifact of a direct predecessor');
+        }
+        names.push([predecessor, name]);
+      }
+      if (names.length) inputArtifacts = Object.fromEntries(names.sort(([a], [b]) => a < b ? -1 : a > b ? 1 : 0));
+    }
     const runLimitSeconds = value.runLimitSeconds;
     if (runLimitSeconds !== undefined && (typeof runLimitSeconds !== 'number' ||
         !Number.isSafeInteger(runLimitSeconds) || runLimitSeconds < 30 || runLimitSeconds > 600)) {
@@ -46,6 +63,7 @@ export function workflowSteps(input: unknown): WorkflowStep[] {
       ...(action && { action }),
       ...(runLimitSeconds !== undefined && { runLimitSeconds }),
       ...(capability && { workerCapability: capability }),
+      ...(inputArtifacts && { inputArtifacts }),
       ...(protocols && { workerProtocols: [...new Set<string>(protocols)].sort() }),
       ...(acceptanceCriteria.length && { acceptanceCriteria }), ...(value.requireReview === true && { requireReview: true }) };
   });

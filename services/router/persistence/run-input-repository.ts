@@ -25,18 +25,21 @@ export class RunInputRepository {
     return target ? workflowActionGoal(action, target) : undefined;
   }
 
-  predecessorInputs(taskId: string): PredecessorInput[] {
-    const rows = this.db.prepare(`SELECT p.id AS taskId,p.version,p.result,a.id AS artifactId,a.name,a.sha256,a.size,a.content
+  predecessorInputs(taskId: string) {
+    const rows = this.db.prepare(`SELECT p.id AS taskId,p.version,p.result,named.name AS required_name,a.id AS artifactId,a.name,a.sha256,a.size,a.content
       FROM workflow_dependency d JOIN task p ON p.id=d.predecessor
+      LEFT JOIN workflow_artifact_input named ON named.task_id=d.task_id AND named.predecessor=p.id
       LEFT JOIN artifact a ON a.rowid=(
         SELECT a.rowid FROM artifact a JOIN artifact_version v ON v.artifact_id=a.id
-        WHERE a.taskId=p.id AND v.task_version=p.version
+        WHERE a.taskId=p.id AND v.task_version=p.version AND (named.name IS NULL OR a.name=named.name)
           AND NOT EXISTS(SELECT 1 FROM artifact_image image WHERE image.artifact_id=a.id)
           ORDER BY a.rowid DESC LIMIT 1
       )
       WHERE d.task_id=? ORDER BY p.rowid`).all(taskId);
+    const missing = rows.find(row => row.required_name && !row.artifactId);
+    const missingArtifact = typeof missing?.required_name === 'string' ? missing.required_name : undefined;
     let budget = 16_000;
-    return rows.map(row => {
+    const inputs = rows.map(row => {
       const input: PredecessorInput = {
         taskId: String(row.taskId), version: Number(row.version), result: row.result === null ? null : String(row.result),
       };
@@ -50,6 +53,7 @@ export class RunInputRepository {
       };
       return input;
     });
+    return { inputs, missingArtifact };
   }
 
   private runHistory(taskId: string): RunHistoryEntry[] {
@@ -109,6 +113,8 @@ export class RunInputRepository {
       JOIN run_dependency d ON d.run_id=r.id JOIN artifact a ON a.taskId=d.predecessor
       JOIN artifact_version v ON v.artifact_id=a.id AND v.task_version=d.version
       WHERE a.id=? AND NOT EXISTS(SELECT 1 FROM artifact_image image WHERE image.artifact_id=a.id)
+      AND NOT EXISTS(SELECT 1 FROM workflow_artifact_input named
+        WHERE named.task_id=t.id AND named.predecessor=d.predecessor AND named.name<>a.name)
       AND r.id=? AND r.device=? AND r.expires>? AND t.status='running' AND r.version=t.version
       AND NOT EXISTS(SELECT 1 FROM invalid_workflow_run i WHERE i.id=r.id)`)
       .get(artifactId, runId, device, now) as

@@ -853,6 +853,9 @@ export class TaskStore {
         for (const predecessor of predecessors) {
           this.db.prepare('INSERT INTO workflow_dependency VALUES(?,?)').run(taskId, predecessor);
         }
+        for (const [dependency, filename] of Object.entries(step.inputArtifacts ?? {})) {
+          this.db.prepare('INSERT INTO workflow_artifact_input VALUES(?,?,?)').run(taskId, tasks.get(dependency)!, filename);
+        }
         if (appEvidence) {
           this.db.prepare('INSERT INTO task_app_evidence VALUES(?,?)').run(taskId, JSON.stringify(appEvidence.refs));
         }
@@ -861,6 +864,7 @@ export class TaskStore {
           ...(step.runLimitSeconds !== undefined && { runLimitSeconds: step.runLimitSeconds }),
           ...(step.workerCapability && { workerCapability: step.workerCapability }),
           ...(step.workerProtocols && { workerProtocols: step.workerProtocols }),
+          ...(step.inputArtifacts && { inputArtifacts: step.inputArtifacts }),
           ...(appEvidence && { appEvidence: appEvidence.refs }),
         });
       }
@@ -1131,6 +1135,14 @@ export class TaskStore {
         if (requestId) this.dispatch.saveReceipt(device, requestId, fingerprint, null, now);
         return undefined;
       }
+      const { inputs: predecessors, missingArtifact } = this.runInputs.predecessorInputs(task.id);
+      if (missingArtifact) {
+        this.db.prepare("UPDATE task SET status='waiting_user',result=? WHERE id=?")
+          .run(`A predecessor did not publish the required artifact "${missingArtifact}".`, task.id);
+        this.event(task.id, 'workflow.artifact_missing', { status: 'waiting_user', name: missingArtifact });
+        if (requestId) this.dispatch.saveReceipt(device, requestId, fingerprint, null, now);
+        return undefined;
+      }
       const workerTask = !/^\/(observe|click|preview) /.test(task.goal);
       const workspaceLimitMs = workerTask && workerLimitSeconds !== undefined ? workerLimitSeconds * 1_000 : runLimitMs;
       const stepLimit = this.db.prepare('SELECT seconds FROM task_run_budget WHERE task_id=?').get(task.id);
@@ -1140,7 +1152,6 @@ export class TaskStore {
       this.db.prepare('INSERT INTO run_deadline VALUES(?,?)').run(run.id, now + limitMs);
       this.db.prepare('INSERT INTO run_activity(run_id,last_output) VALUES(?,?)').run(run.id, now);
       this.db.prepare("UPDATE task SET status='running' WHERE id=?").run(task.id);
-      const predecessors = this.runInputs.predecessorInputs(task.id);
       if (predecessors.length) {
         this.db.prepare(`INSERT INTO run_dependency(run_id,predecessor,version)
           SELECT ?,p.id,p.version FROM workflow_dependency d JOIN task p ON p.id=d.predecessor

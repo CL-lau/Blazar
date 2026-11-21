@@ -234,6 +234,11 @@ private struct TaskScreen: View {
                                     if let limit = step.runLimitSeconds {
                                         Text("Time limit: \(limit) seconds").font(.caption)
                                     }
+                                    if let inputs = step.inputArtifacts {
+                                        ForEach(inputs.keys.sorted(), id: \.self) { source in
+                                            if let file = inputs[source] { Text("\(file) from \(source)").font(.caption) }
+                                        }
+                                    }
                                     if let capability = step.workerCapability {
                                         Text([
                                             "steer": "Requires live instructions",

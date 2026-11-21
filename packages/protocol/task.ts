@@ -67,6 +67,7 @@ export interface WorkflowStep {
   action?: WorkflowAction;
   workerProtocols?: string[];
   workerCapability?: WorkerCapability;
+  inputArtifacts?: Record<string, string>;
   runLimitSeconds?: number;
 }
 

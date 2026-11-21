@@ -126,6 +126,8 @@ test('isolated Worker runs keep their changes in independent retained worktrees'
     { key: 'review', goal: 'Review changes', needs: ['a', 'b'] },
     { key: 'apply', goal: 'Read patched A', needs: ['a'], workerCapability: 'git-patch-inputs' },
     { key: 'conflict', goal: 'Conflicting patch inputs', needs: ['a', 'b'], workerCapability: 'git-patch-inputs' },
+    { key: 'named', goal: 'Review only the report', needs: ['a'], inputArtifacts: { a: 'report.md' } },
+    { key: 'missing', goal: 'Read missing report', needs: ['a'], inputArtifacts: { a: 'missing.md' } },
     { key: 'blocked', goal: 'Read merged changes', needs: ['conflict'] },
   ]);
   assert.deepEqual(await Promise.all(clients.map(client => client.runOnce(AbortSignal.timeout(5_000)))), [true, true]);
@@ -155,6 +157,18 @@ test('isolated Worker runs keep their changes in independent retained worktrees'
   const conflict = afterApply.find(item => item.goal === 'Conflicting patch inputs');
   assert.equal(conflict?.status, 'waiting_user');
   assert.match(conflict?.result ?? '', /Git patch inputs conflict/);
+  const named = store.claim('owner', 'project', 'reviewer', Date.now(), 45_000)!;
+  assert.equal(named.task.goal, 'Review only the report');
+  assert.equal(named.predecessors[0].artifact?.name, 'report.md');
+  assert.equal(named.predecessors[0].artifact?.excerpt, '# Parallel A');
+  assert(store.runInputArtifact(named.run.id, 'reviewer', named.predecessors[0].artifact!.id, Date.now()));
+  assert.equal(store.runInputArtifact(named.run.id, 'reviewer', receiver.predecessors[0].artifact!.id, Date.now()), undefined);
+  assert(store.finish(named.run.id, 'reviewer', Date.now(), { status: 'succeeded', result: 'Report reviewed' }));
+  assert.equal(store.claim('owner', 'project', 'reviewer', Date.now(), 45_000), undefined);
+  const absent = store.snapshot('owner').tasks.find(task => task.goal === 'Read missing report');
+  assert.equal(absent?.status, 'waiting_user');
+  assert.match(absent?.result ?? '', /missing\.md/);
+
   const event = store.timeline('owner', conflict!.id)?.events.find(event => event.type === 'run.finished');
   assert.equal(event?.data.waitingReason, 'git_patch_inputs');
   assert.equal(afterApply.find(item => item.goal === 'Read merged changes')?.status, 'waiting_dependency');
