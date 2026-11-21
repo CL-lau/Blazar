@@ -25,7 +25,8 @@ function runPath(storage: string, runId: string) {
   return join(storage, runId);
 }
 
-export async function gitRunWorktrees(workspace: string, stateDirectory: string, includePatch = false, applyInputs = false) {
+export async function gitRunWorktrees(workspace: string, stateDirectory: string,
+  { includePatch = false, applyInputs = false, allowCodexWrite = false } = {}) {
   const git = gitAt(workspace);
   const repository = await realpath(await git('rev-parse', '--show-toplevel'));
   if (repository !== workspace) throw new Error('Git worktree execution requires the repository root as the workspace');
@@ -96,7 +97,7 @@ export async function gitRunWorktrees(workspace: string, stateDirectory: string,
     if (Buffer.byteLength(text) > maxTextArtifactBytes) throw new Error('Run checkout evidence exceeds the artifact limit');
     return { name: 'git-changes.json', text };
   };
-  return { prepare, artifact, includePatch, applyInputs };
+  return { prepare, artifact, includePatch, applyInputs, allowCodexWrite };
 }
 
 export class GitPatchInputError extends Error {}

@@ -1501,6 +1501,8 @@ export class TaskStore {
             EXISTS(SELECT 1 FROM task_worker_protocol wp WHERE wp.task_id=t.id AND wp.protocol=worker.protocol))
           AND NOT EXISTS(SELECT 1 FROM task_question_worker q WHERE q.task_id=t.id
             AND (q.device_id<>d.id OR worker.protocol IS NOT 'jsonl' OR q.revision IS NOT worker.revision))
+          AND (COALESCE(policy.require_read_only,0)=0 OR NOT EXISTS(
+            SELECT 1 FROM task_worker_capability wc WHERE wc.task_id=t.id AND wc.capability='writable-worktree'))
           AND NOT EXISTS(SELECT 1 FROM task_worker_capability wc WHERE wc.task_id=t.id
             AND NOT EXISTS(SELECT 1 FROM json_each(worker.capabilities) WHERE value=wc.capability))
           AND (p.capability='agent.acp' OR (

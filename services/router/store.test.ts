@@ -1115,3 +1115,23 @@ test('a read-only workspace requires the advertised sandbox capability for Worke
   const preview = store.create(owner, 'fixture', 'preview', workspace, '/preview notes.md');
   assert.equal(store.claim(owner, workspace, 'preview-device', now, 45_000, '/preview ')?.task.id, preview.id);
 });
+
+test('a Codex worktree write step requires the matching capability and permits no read-only-policy bypass', t => {
+  const store = new TaskStore(':memory:');
+  t.after(() => store.close());
+  const now = Date.now();
+  const writable = { label: 'Codex', protocol: 'codex', capabilities: ['read-only', 'git-worktree', 'writable-worktree'] as const };
+  const worker = { ...writable, capabilities: [...writable.capabilities] };
+  const onlyRead = { ...worker, capabilities: ['read-only' as const, 'git-worktree' as const] };
+  const { steps: [step] } = store.createWorkflow('owner', 'edit-worktree', 'project', [
+    { key: 'edit', goal: 'Edit the isolated checkout', needs: [], workerCapability: 'writable-worktree' },
+  ]);
+  const claim = (metadata: typeof worker) => store.claim('owner', 'project', 'device', now, 45_000, '', '/preview ', undefined, metadata);
+  assert.equal(claim(onlyRead), undefined);
+  store.setWorkspaceWorkerPolicy('owner', 'project', ['codex'], undefined, undefined, true);
+  assert.equal(claim(worker), undefined);
+  store.setWorkspaceWorkerPolicy('owner', 'project', ['codex']);
+  const assignment = claim(worker);
+  assert.equal(assignment?.task.id, step.taskId);
+  assert.equal(assignment?.writableWorktreeRequired, true);
+});

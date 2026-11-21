@@ -14,6 +14,7 @@ export type JobContext = {
   previousQuestion?: string;
   expectedArtifact?: string;
   offlineToolsRequired?: boolean;
+  writableWorktreeRequired?: boolean;
 };
 
 export function jobPrompt(job: JobContext) {

@@ -16,7 +16,7 @@ import { completeInputArtifacts } from './execution/input-artifacts.ts';
 import { WorkerQuestion } from '../../packages/workers/custom-jsonl.ts';
 import { executeWorker } from './execution/worker.ts';
 
-type Assignment = { clickExpectedText?: string; observationExpectedText?: string; observationWaitSeconds?: number; fullInputRequired?: boolean; readOnlyRequired?: boolean; offlineToolsRequired?: boolean; gitPatchInputsRequired?: boolean; run: Run; task: Task; instructions: string[]; predecessors: PredecessorInput[]; runHistory?: RunHistoryEntry[]; previousQuestion?: string; expectedArtifact?: string; acceptanceCriteria?: string[]; memoryInputs?: TaskMemoryInput[]; attachments?: TaskAttachment[] };
+type Assignment = { clickExpectedText?: string; observationExpectedText?: string; observationWaitSeconds?: number; fullInputRequired?: boolean; readOnlyRequired?: boolean; offlineToolsRequired?: boolean; writableWorktreeRequired?: boolean; gitPatchInputsRequired?: boolean; run: Run; task: Task; instructions: string[]; predecessors: PredecessorInput[]; runHistory?: RunHistoryEntry[]; previousQuestion?: string; expectedArtifact?: string; acceptanceCriteria?: string[]; memoryInputs?: TaskMemoryInput[]; attachments?: TaskAttachment[] };
 
 export class DeviceClient {
   private socket: DeviceSocket;
@@ -50,12 +50,15 @@ export class DeviceClient {
       const revision = createHmac('sha256', token).update(JSON.stringify([
         adapterVersion, worker.label, protocol, worker.executable, worker.args, worker.env ?? [],
         worker.protocol === 'jsonl' && worker.includeFullInputArtifacts === true,
-        ...(worktrees ? ['git-worktree', worktrees.includePatch, worktrees.applyInputs] : []),
+        ...(worktrees ? ['git-worktree', worktrees.includePatch, worktrees.applyInputs, worktrees.allowCodexWrite] : []),
       ])).digest('hex');
       const capabilities: WorkerCapability[] = [];
       if (worktrees) capabilities.push('git-worktree');
       if (worktrees?.applyInputs) capabilities.push('git-patch-inputs');
-      if (protocol === 'codex') capabilities.push('read-only', 'offline-tools');
+      if (protocol === 'codex') {
+        capabilities.push('read-only', 'offline-tools');
+        if (worktrees?.allowCodexWrite) capabilities.push('writable-worktree');
+      }
       if (protocol === 'codex' || protocol === 'pi') capabilities.push('steer');
       if (worker.protocol === 'jsonl' && worker.includeFullInputArtifacts) capabilities.push('full-input-artifacts');
       this.workerConfiguration = { label: worker.label, protocol, adapterVersion, revision,
@@ -187,6 +190,10 @@ export class DeviceClient {
         if ((assignment.readOnlyRequired || assignment.offlineToolsRequired) && this.worker?.protocol !== 'codex') {
           throw new Error('This device cannot enforce the required Worker sandbox');
         }
+        if (assignment.writableWorktreeRequired &&
+            (assignment.readOnlyRequired || this.worker?.protocol !== 'codex' || !this.worktrees?.allowCodexWrite)) {
+          throw new Error('This device cannot enforce the required worktree write sandbox');
+        }
         if (assignment.gitPatchInputsRequired && (!this.worker || !this.worktrees?.applyInputs)) {
           throw new Error('This device cannot apply Git patch inputs');
         }
@@ -213,7 +220,8 @@ export class DeviceClient {
             consumeApproval: (path, id, signal) => this.consumeApproval(path, id, signal),
           }, this.worker, prefix, assignment.task.id, {
             goal: assignment.task.goal, instructions: assignment.instructions, predecessors: assignment.predecessors,
-            offlineToolsRequired: assignment.offlineToolsRequired, runHistory: assignment.runHistory, previousQuestion: assignment.previousQuestion, expectedArtifact: assignment.expectedArtifact,
+            offlineToolsRequired: assignment.offlineToolsRequired, writableWorktreeRequired: assignment.writableWorktreeRequired,
+            runHistory: assignment.runHistory, previousQuestion: assignment.previousQuestion, expectedArtifact: assignment.expectedArtifact,
             acceptanceCriteria: assignment.acceptanceCriteria, memoryInputs: assignment.memoryInputs, attachments: assignment.attachments,
           }, stop, active, assignment.fullInputRequired);
           checkpoint = this.worktrees ? undefined : session;

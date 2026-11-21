@@ -161,3 +161,40 @@ test('Router delivers an appended instruction to an active Codex turn and accept
   assert.equal(events().filter(event => event.type === 'run.started').length, 1);
   assert.equal(events().find(event => event.type === 'run.instruction_applied')?.data.version, 2);
 });
+
+test('Codex verifies worktree write mode and rejects an expanded writable scope', async () => {
+  const job = { goal: 'Edit the isolated checkout', instructions: [], predecessors: [], writableWorktreeRequired: true };
+  function worker(expanded: boolean) {
+    return {
+      executable: process.execPath, label: 'Codex worktree fixture',
+      args: ['-e', String.raw`
+        const assert = require('node:assert/strict');
+        const expanded = process.argv[1] === 'true';
+        function emit(value) { console.log(JSON.stringify(value)); }
+        require('node:readline').createInterface({ input: process.stdin }).on('line', line => {
+          const { id, method, params } = JSON.parse(line);
+          if (method === 'initialize') emit({ id, result: {} });
+          if (method === 'thread/start') {
+            assert.equal(params.sandbox, 'workspace-write');
+            assert.equal(params.approvalPolicy, 'never');
+            assert.deepEqual(params.config.sandbox_workspace_write, {
+              writable_roots: [], network_access: false, exclude_tmpdir_env_var: true, exclude_slash_tmp: true,
+            });
+            emit({ id, result: { thread: { id: 'thread' }, cwd: params.cwd, approvalPolicy: 'never',
+              sandbox: { type: 'workspaceWrite', writableRoots: expanded ? ['/elsewhere'] : [], networkAccess: false,
+                excludeTmpdirEnvVar: true, excludeSlashTmp: true } } });
+          }
+          if (method === 'turn/start') {
+            assert(!expanded);
+            emit({ id, result: { turn: { id: 'turn' } } });
+            emit({ method: 'item/agentMessage/delta', params: { threadId: 'thread', turnId: 'turn', delta: 'Scoped result' } });
+            emit({ method: 'turn/completed', params: { threadId: 'thread', turn: { id: 'turn', status: 'completed' } } });
+          }
+        });
+      `, String(expanded)],
+    };
+  }
+  assert.equal(await runCodex(worker(false), process.cwd(), job, AbortSignal.timeout(3_000)), 'Scoped result');
+  await assert.rejects(runCodex(worker(true), process.cwd(), job, AbortSignal.timeout(3_000)),
+    /did not confirm the isolated worktree write restriction/);
+});

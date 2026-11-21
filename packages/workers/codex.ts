@@ -80,9 +80,20 @@ export async function runCodex(worker: WorkerCommand, root: string, job: JobCont
     await request('initialize', { clientInfo: { name: 'blazar', title: 'Blazar', version: '0.1.0' } });
     send({ method: 'initialized' });
     const started = await request('thread/start', {
-      cwd: root, sandbox: 'read-only', approvalPolicy: 'never', ephemeral: true,
+      cwd: root, sandbox: job.writableWorktreeRequired ? 'workspace-write' : 'read-only',
+      approvalPolicy: 'never', ephemeral: true,
+      ...(job.writableWorktreeRequired && { config: { sandbox_workspace_write: {
+        writable_roots: [], network_access: false, exclude_tmpdir_env_var: true, exclude_slash_tmp: true,
+      } } }),
     });
-    if (started.sandbox?.type !== 'readOnly' || started.approvalPolicy !== 'never') {
+    if (job.writableWorktreeRequired) {
+      const sandbox = started.sandbox;
+      if (started.cwd !== root || started.approvalPolicy !== 'never' || sandbox?.type !== 'workspaceWrite' ||
+          !Array.isArray(sandbox.writableRoots) || sandbox.writableRoots.length !== 0 || sandbox.networkAccess !== false ||
+          sandbox.excludeTmpdirEnvVar !== true || sandbox.excludeSlashTmp !== true) {
+        throw new Error('Codex did not confirm the isolated worktree write restriction');
+      }
+    } else if (started.sandbox?.type !== 'readOnly' || started.approvalPolicy !== 'never') {
       throw new Error('Codex did not confirm the read-only sandbox and approval policy');
     }
     if (job.offlineToolsRequired && started.sandbox.networkAccess !== false) {

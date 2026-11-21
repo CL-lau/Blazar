@@ -48,11 +48,12 @@ export function deviceOperation(store: DeviceTasks, bearer: string, pathname: st
       if (reported.capabilities !== undefined) {
         const supported = ['git-worktree', 'git-patch-inputs'];
         if (protocol === 'codex' || protocol === 'pi') supported.push('steer');
-        if (protocol === 'codex') supported.push('read-only', 'offline-tools');
+        if (protocol === 'codex') supported.push('read-only', 'offline-tools', 'writable-worktree');
         if (protocol === 'jsonl') supported.push('full-input-artifacts');
         if (!Array.isArray(reported.capabilities) || new Set(reported.capabilities).size !== reported.capabilities.length ||
             reported.capabilities.some(capability => !supported.includes(capability)) ||
-            (reported.capabilities.includes('git-patch-inputs') && !reported.capabilities.includes('git-worktree'))) {
+            ((reported.capabilities.includes('git-patch-inputs') || reported.capabilities.includes('writable-worktree')) &&
+              !reported.capabilities.includes('git-worktree'))) {
           throw new RequestError(400, 'Invalid Worker capabilities');
         }
         if (reported.capabilities.length) worker.capabilities = reported.capabilities as WorkerCapability[];

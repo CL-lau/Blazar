@@ -107,7 +107,7 @@ test('isolated Worker runs keep their changes in independent retained worktrees'
   await once(server, 'listening');
   const address = server.address();
   assert(address && typeof address !== 'string');
-  const patchedWorktrees = await gitRunWorktrees(repository, state, true, true);
+  const patchedWorktrees = await gitRunWorktrees(repository, state, { includePatch: true, applyInputs: true });
   const base = new URL('http://127.0.0.1:' + address.port);
   const clients = devices.map(({ device, ledger, lock }) =>
     new DeviceClient(base, device.token, lock.root, ledger, worker, undefined, lock.identity, patchedWorktrees));

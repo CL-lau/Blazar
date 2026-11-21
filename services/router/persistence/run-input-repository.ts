@@ -109,6 +109,7 @@ export class RunInputRepository {
       ...(required === 'git-patch-inputs' && { gitPatchInputsRequired: true }),
       ...((required === 'read-only' || requireReadOnly) && { readOnlyRequired: true }),
       ...(required === 'offline-tools' && { offlineToolsRequired: true }),
+      ...(required === 'writable-worktree' && { writableWorktreeRequired: true }),
       ...(typeof expected === 'string' && (task.goal.startsWith('/click ')
         ? { clickExpectedText: expected } : { observationExpectedText: expected })),
       ...(observationWaitSeconds !== undefined && { observationWaitSeconds }),

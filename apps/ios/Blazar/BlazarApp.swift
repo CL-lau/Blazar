@@ -245,6 +245,7 @@ private struct TaskScreen: View {
                                             "steer": "Requires live instructions",
                                             "full-input-artifacts": "Requires full input artifacts",
                                             "git-worktree": "Requires an isolated Git checkout",
+                                            "writable-worktree": "Requires an isolated writable Git checkout",
                                             "git-patch-inputs": "Applies predecessor Git patches in an isolated checkout",
                                             "read-only": "Requires a read-only Worker",
                                             "offline-tools": "Requires disabled tool network access"

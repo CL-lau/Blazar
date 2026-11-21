@@ -23,8 +23,11 @@ const isolated = Boolean(worker && process.env.BLAZAR_WORKER_GIT_WORKTREE === '1
 const workspaceLock = lockWorkspace(workspace, stateDirectory, isolated ? token : undefined);
 try {
   const worktrees = isolated
-    ? await gitRunWorktrees(workspaceLock.root, stateDirectory, process.env.BLAZAR_WORKER_GIT_PATCH === '1',
-      process.env.BLAZAR_WORKER_GIT_APPLY_INPUTS === '1') : undefined;
+    ? await gitRunWorktrees(workspaceLock.root, stateDirectory, {
+      includePatch: process.env.BLAZAR_WORKER_GIT_PATCH === '1',
+      applyInputs: process.env.BLAZAR_WORKER_GIT_APPLY_INPUTS === '1',
+      allowCodexWrite: process.env.BLAZAR_CODEX_WORKTREE_WRITE === '1',
+    }) : undefined;
   if (worker && !worktrees && (worker.protocol ?? 'acp') === 'acp') {
     try {
       await probeAcp(worker, workspaceLock.root, acpStartupSignal(worker));
