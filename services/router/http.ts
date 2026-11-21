@@ -14,7 +14,7 @@ import { timingSafeEqual } from 'node:crypto';
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http';
 import { setTimeout as delay } from 'node:timers/promises';
 import type { MemoryStore, ResourceRef } from './memory.ts';
-import { IdempotencyConflict, TaskStore } from './store.ts';
+import { IdempotencyConflict, TaskStore, type AppEvidence } from './store.ts';
 
 class RequestError extends Error {
   readonly status: number;
@@ -91,6 +91,24 @@ async function stream(store: TaskStore, owner: string, cursor: number, response:
   } finally {
     response.end();
   }
+}
+
+function selectAppEvidence(memory: MemoryStore | undefined, owner: string, workspace: string, value: unknown): AppEvidence {
+  if (!memory) throw new RequestError(503, 'Memory is unavailable');
+  if (!value || typeof value !== 'object' || Array.isArray(value)) {
+    throw new RequestError(400, 'Invalid application memory option');
+  }
+  const { query: rawQuery, sources: rawSources } = value as Record<string, unknown>;
+  const query = requiredText(rawQuery, 'search terms', 256);
+  if (!Array.isArray(rawSources) || !rawSources.length || rawSources.length > 25 ||
+      rawSources.some(item => typeof item !== 'string' || !/^[a-f0-9-]{36}$/.test(item))) {
+    throw new RequestError(400, 'Invalid source filter');
+  }
+  const sources = [...new Set(rawSources as string[])].sort();
+  const refs = memory.recall(owner, workspace, query, sources, false, false).slice(0, 4)
+    .map(item => ({ id: String(item.id), version: Number(item.version) }));
+  if (!refs.length) throw new RequestError(409, 'No authorized application evidence was found');
+  return { query, sources, refs };
 }
 
 async function accessDocument(store: MemoryStore, owner: string, workspace: string, connection: string,
@@ -899,7 +917,12 @@ export function routerServer(store: TaskStore, config: { owner: string; token: s
         if (steps.some(step => step.goal.startsWith('/observe ') || step.goal.startsWith('/click '))) {
           throw new RequestError(400, 'Desktop operations require a direct task request');
         }
-        reply(response, 202, store.createWorkflow(owner, key, workspace, steps));
+        if (data.appMemory !== undefined && (!admin || steps.some(step => step.goal.startsWith('/preview ')))) {
+          throw new RequestError(403, 'Application memory requires an administrator Worker workflow');
+        }
+        const appEvidence = data.appMemory === undefined ? undefined :
+          selectAppEvidence(config.memory, owner, workspace, data.appMemory);
+        reply(response, 202, store.createWorkflow(owner, key, workspace, steps, appEvidence));
         return;
       }
       if (request.method === 'POST' && url.pathname === '/v1/conversation') {
@@ -1016,21 +1039,7 @@ export function routerServer(store: TaskStore, config: { owner: string; token: s
             if (!admin || desktopDevice || /^\/(observe|click|preview) /.test(goal)) {
               throw new RequestError(403, 'Application memory is only available for administrator Worker tasks');
             }
-            if (!config.memory) throw new RequestError(503, 'Memory is unavailable');
-            if (!data.appMemory || typeof data.appMemory !== 'object' || Array.isArray(data.appMemory)) {
-              throw new RequestError(400, 'Invalid application memory option');
-            }
-            const { query: rawQuery, sources: rawSources } = data.appMemory as Record<string, unknown>;
-            const query = requiredText(rawQuery, 'search terms', 256);
-            if (!Array.isArray(rawSources) || !rawSources.length || rawSources.length > 25 ||
-                rawSources.some(item => typeof item !== 'string' || !/^[a-f0-9-]{36}$/.test(item))) {
-              throw new RequestError(400, 'Invalid source filter');
-            }
-            const sources = [...new Set(rawSources as string[])].sort();
-            const refs = config.memory.recall(owner, workspace, query, sources, false, false).slice(0, 4)
-              .map(item => ({ id: String(item.id), version: Number(item.version) }));
-            if (!refs.length) throw new RequestError(409, 'No authorized application evidence was found');
-            appEvidence = { query, sources, refs };
+            appEvidence = selectAppEvidence(config.memory, owner, workspace, data.appMemory);
           }
           const task = store.create(owner, 'desktop-api', key, workspace, goal, desktopDevice, memoryInputs, appEvidence);
           metrics.observe('event', performance.now() - started);

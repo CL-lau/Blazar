@@ -30,7 +30,9 @@ test('a registered JSONL extension executes a real subprocess through Router and
       console.log(JSON.stringify({version:1,type:'completed',result:request.input.instructions.join(' ')}));
       return;
     }
-    if (['Use the review template', 'Wait with the review template'].includes(request.input.goal)) {
+    if (['Use the review template', 'Wait with the review template', 'Review the preceding draft'].includes(request.input.goal)) {
+      if (request.input.goal === 'Review the preceding draft' &&
+          request.input.predecessorResults?.[0]?.result !== 'Private review template') process.exit(6);
       const evidence = request.input.backgroundMemory;
       if (evidence?.length !== 1 || evidence[0].body !== 'Private review template') process.exit(5);
       if (request.input.goal === 'Wait with the review template') {
@@ -290,6 +292,38 @@ test('a registered JSONL extension executes a real subprocess through Router and
   assert.equal(evidenceEvents?.length, 1);
   assert.equal(typeof evidenceEvents[0].data.runId, 'string');
   assert.equal(store.runTaskId(String(evidenceEvents[0].data.runId), device.id), undefined);
+
+  const workflowConnection = memory.connect('owner', 'github', 'Workflow handbook', 'project');
+  memory.importDocument('owner', 'project', 'Private review template', { ...source, connection: workflowConnection });
+  const workflowRequest = (token: string) => fetch(base + '/v1/workflows', {
+    method: 'POST', headers: {
+      Authorization: 'Bearer ' + token, 'Content-Type': 'application/json', 'Idempotency-Key': 'app-workflow',
+    },
+    body: JSON.stringify({
+      workspace: 'project', appMemory: { query: 'review', sources: [workflowConnection] },
+      steps: [
+        { key: 'draft', goal: 'Use the review template', needs: [] },
+        { key: 'review', goal: 'Review the preceding draft', needs: ['draft'] },
+        { key: 'finalize', goal: 'Review the preceding draft', needs: ['review'] },
+      ],
+    }),
+  });
+  assert.equal((await workflowRequest(phone.token)).status, 403);
+  const workflowResponse = await workflowRequest('local');
+  assert.equal(workflowResponse.status, 202);
+  const appWorkflow = await workflowResponse.json();
+  assert.deepEqual(await (await workflowRequest('local')).json(), appWorkflow);
+  const workflowTasks = appWorkflow.steps.map((step: { taskId: string }) => step.taskId);
+  assert.equal(await client.runOnce(AbortSignal.timeout(5_000)), true);
+  assert.equal(await client.runOnce(AbortSignal.timeout(5_000)), true);
+  const workflowArtifacts = store.snapshot('owner').artifacts.filter(item => workflowTasks.includes(item.taskId));
+  assert.equal(workflowArtifacts.length, 2);
+  const workflowDownload = (id: string) => fetch(base + '/v1/artifacts/' + id, { headers: { Authorization: 'Bearer local' } });
+  for (const artifact of workflowArtifacts) assert.equal(await (await workflowDownload(String(artifact.id))).text(), 'Private review template');
+  assert.equal(memory.disconnect('owner', workflowConnection), true);
+  for (const artifact of workflowArtifacts) assert.equal((await workflowDownload(String(artifact.id))).status, 404);
+  assert.equal(await client.runOnce(AbortSignal.timeout(5_000)), false);
+  assert.equal(store.get('owner', workflowTasks[2])?.status, 'waiting_user');
 });
 
 test('JSONL rejects duplicate terminal events and stops a cancelled subprocess', async () => {

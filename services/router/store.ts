@@ -8,6 +8,8 @@ import { displayTaskStatus, windowImageLifetimeMs } from '../../packages/protoco
 
 const runLimitMs = 10 * 60_000;
 
+export type AppEvidence = { query: string; sources: string[]; refs: { id: string; version: number }[] };
+
 export class IdempotencyConflict extends Error {
   constructor() { super('Idempotency key already used'); }
 }
@@ -702,7 +704,7 @@ export class TaskStore {
   }
 
   create(owner: string, source: string, key: string, workspace: string, goal: string, desktopDevice?: string,
-         memoryInputs?: TaskMemoryInput[], appEvidence?: { query: string; sources: string[]; refs: { id: string; version: number }[] }): Task {
+         memoryInputs?: TaskMemoryInput[], appEvidence?: AppEvidence): Task {
     return this.transaction(() => {
       const fingerprint = JSON.stringify(appEvidence
         ? [workspace, goal, { query: appEvidence.query, sources: appEvidence.sources, usePersonalMemory: Boolean(memoryInputs) }]
@@ -797,11 +799,13 @@ export class TaskStore {
     if (!wasStopping) this.event(taskId, 'run.memory_access_changed', { runId, status: 'waiting_user' });
   }
 
-  createWorkflow(owner: string, key: string, workspace: string, steps: WorkflowStep[]) {
+  createWorkflow(owner: string, key: string, workspace: string, steps: WorkflowStep[], appEvidence?: AppEvidence) {
     const ordered = orderWorkflow(steps);
 
     return this.transaction(() => {
-      const fingerprint = JSON.stringify([workspace, steps]);
+      const fingerprint = JSON.stringify(appEvidence
+        ? [workspace, steps, { query: appEvidence.query, sources: appEvidence.sources }]
+        : [workspace, steps]);
       const existing = this.db.prepare('SELECT id,fingerprint FROM workflow WHERE owner=? AND request_key=?')
         .get(owner, key);
       if (existing) {
@@ -827,7 +831,12 @@ export class TaskStore {
         for (const predecessor of predecessors) {
           this.db.prepare('INSERT INTO workflow_dependency VALUES(?,?)').run(taskId, predecessor);
         }
-        this.event(taskId, 'task.created', { goal: step.goal, workspace, workflowId: id, stepKey: name, predecessors, status });
+        if (appEvidence) {
+          this.db.prepare('INSERT INTO task_app_evidence VALUES(?,?)').run(taskId, JSON.stringify(appEvidence.refs));
+        }
+        this.event(taskId, 'task.created', { goal: step.goal, workspace, workflowId: id, stepKey: name, predecessors, status,
+          ...(appEvidence && { appEvidence: appEvidence.refs }),
+        });
       }
       return { id, steps: this.workflowSteps(id) };
     });

@@ -123,6 +123,15 @@ function App() {
     account.active && (!account.workspace || account.workspace === workspace.trim()));
   const chosenSources = availableSources.filter(account => memorySources.includes(account.id));
   const api = (path, options) => callRouter(connected, path, options);
+  const createWorkflow = appMemory => submit(async () => {
+    const created = await api('/workflows', {
+      method: 'POST', key: plan.key, body: { workspace: plan.workspace, steps: plan.steps, appMemory },
+    });
+    setSelected(created.steps[0].taskId);
+    setPlan(null);
+    setAnswer('');
+    await reload();
+  });
   const reload = () => refreshSnapshot(connected);
   const command = (action, extra = {}) => submit(async () => {
     await api(`/tasks/${task.id}/commands`, {
@@ -424,15 +433,11 @@ function App() {
                     {step.requireReview && <p>Requires your acceptance</p>}
                     {step.needs.length > 0 && <p>After {step.needs.join(', ')}</p>}
                   </li>)}</ol>
-                  <button type="button" disabled={busy} onClick={() => submit(async () => {
-                    const created = await api('/workflows', {
-                      method: 'POST', key: plan.key, body: { workspace: plan.workspace, steps: plan.steps },
-                    });
-                    setSelected(created.steps[0].taskId);
-                    setPlan(null);
-                    setAnswer('');
-                    await reload();
-                  })}>Create workflow</button>
+                  <button type="button" disabled={busy} onClick={() => createWorkflow()}>Create workflow</button>
+                  {plan.workspace === workspace && chosenSources.length > 0 && chosenSources.length <= 25 && memoryQuery.trim() &&
+                    <button type="button" disabled={busy} onClick={() => createWorkflow({
+                      query: memoryQuery, sources: chosenSources.map(account => account.id),
+                    })}>Create workflow with selected apps</button>}
                   <button type="button" disabled={busy} onClick={() => { setPlan(null); setAnswer(''); }}>Discard plan</button>
                 </section>}
               </form>
