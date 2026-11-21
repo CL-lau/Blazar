@@ -1,3 +1,4 @@
+import { applicationWriteContract } from './action-contract.ts';
 import { browserFormBackend } from './browser-actions.ts';
 import { createHash } from 'node:crypto';
 import { mcpActionBackend } from './mcp-actions.ts';
@@ -168,6 +169,7 @@ export function configuredApplicationWrites(env: NodeJS.ProcessEnv, transport = 
         typeof capability !== 'string' || !/^action\.[a-z0-9.-]{1,120}$/.test(capability)) {
       throw new Error('Invalid MCP application write configuration');
     }
+    const contract = applicationWriteContract(entry);
     const key = JSON.stringify([app, account, capability]);
     if (keys.has(key)) throw new Error('Duplicate MCP application write capability');
     keys.add(key);
@@ -210,9 +212,25 @@ export function configuredApplicationWrites(env: NodeJS.ProcessEnv, transport = 
     const fingerprint = candidates.length === 1 && !candidates[0].backend.id.startsWith('browser-')
       ? [key, entry.endpoint, entry.tool, entry.tokenEnv, candidates[0].identity[4], ...(entry.statusTool ? [entry.statusTool] : [])]
       : [key, candidates.map(item => item.identity)];
+    if (contract) fingerprint.push(contract.definition);
     const revision = createHash('sha256').update(JSON.stringify(fingerprint)).digest('hex');
-    return { app, account, capability, revision, candidates: candidates.map(({ backend, lookup }) => ({ backend, lookup })) };
+    return { app, account, capability, revision, contract, candidates: candidates.map(({ backend, lookup }) => ({
+      lookup,
+      backend: contract ? {
+        ...backend,
+        async invoke(...args: Parameters<typeof backend.invoke>) {
+          const result = await backend.invoke(...args);
+          if (result.status === 'succeeded') {
+            const value = backend.id.startsWith('browser-') ? result.output
+              : (result.output as { structuredContent?: unknown } | undefined)?.structuredContent;
+            if (!contract.acceptsOutput(value)) throw new Error('Application write did not return valid output evidence');
+          }
+          return result;
+        },
+      } : backend,
+    })) };
   });
 }
 
-export type ConfiguredApplicationWrite = ReturnType<typeof configuredApplicationWrites>[number];
+type ConfiguredWrite = ReturnType<typeof configuredApplicationWrites>[number];
+export type ConfiguredApplicationWrite = Omit<ConfiguredWrite, 'contract'> & Partial<Pick<ConfiguredWrite, 'contract'>>;

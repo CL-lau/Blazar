@@ -168,6 +168,12 @@ Configure MCP write capabilities through `BLAZAR_MCP_ACTIONS`. Each entry binds 
 export BLAZAR_MCP_ACTIONS='[{"app":"mcp","account":"Handbook","capability":"action.document.update","endpoint":"http://127.0.0.1:4198/mcp","tool":"update_document","tokenEnv":"BLAZAR_MCP_TOKEN_HANDBOOK"}]'
 ```
 
+For a schema-checked capability, set `version: 1`, an object `inputSchema`, and an `outputSchema`
+using JSON Schema draft-07. Router rejects invalid input before creating a proposal. MCP write
+tools return their schema-checked output in `structuredContent`. Browser form adapters return
+`{ "status": 200 }` for a successful HTTP 200 response. A mismatched result after a write is treated
+as uncertain, so Router does not repeat the write.
+
 With the Router administrator token, POST `workspace`, `capability` and an `input` object to
 `/v1/app-connections/{connection}/write-proposals`. Review the stored input with GET
 `/v1/app-write-proposals/{id}`, then POST to `/v1/app-write-proposals/{id}/confirm` to dispatch it.

@@ -37,6 +37,9 @@ export async function handleApplicationWrites(
     const connectionId = create[1];
     const definition = definitionFor(connectionId, workspace, capability);
     if (!definition) throw new RequestError(404, 'Application write capability not found');
+    if (Object.hasOwn(input, 'blazarInvocationId') || (definition.contract && !definition.contract.acceptsInput(input))) {
+      throw new RequestError(400, 'Application write input does not match the configured capability');
+    }
     const expires = Date.now() + 300_000;
     const id = writes.propose(owner, workspace, { connectionId, capability, input: input as Record<string, unknown> },
       definition.revision, expires);

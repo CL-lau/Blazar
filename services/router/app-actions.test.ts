@@ -142,10 +142,15 @@ test('Router requires explicit confirmation for a configured application write',
   const calls: string[] = [];
   let loseToolResponse = false;
   let reportCorrectInvocation = false;
+  let invalidOutput = false;
   const dispatchedIds: string[] = [];
   const definitions = configuredApplicationWrites({
     BLAZAR_MCP_ACTIONS: JSON.stringify([{
-      app: 'mcp', account: 'Handbook', capability: 'action.document.update',
+      app: 'mcp', account: 'Handbook', capability: 'action.document.update', version: 1,
+      inputSchema: { type: 'object', properties: { title: { type: 'string', maxLength: 50 } },
+        required: ['title'], additionalProperties: false },
+      outputSchema: { type: 'object', properties: { saved: { const: true } },
+        required: ['saved'], additionalProperties: false },
       endpoint: 'http://127.0.0.1:4198/mcp', tool: 'update_document', statusTool: 'lookup_update',
       fallbacks: [{ endpoint: 'http://127.0.0.1:4198/backup', tool: 'update_document', statusTool: 'lookup_update' }],
     }]),
@@ -176,7 +181,7 @@ test('Router requires explicit confirmation for a configured application write',
       assert.equal(fallback, true);
       return new Response(null, { status: 503 });
     }
-    return Response.json({ jsonrpc: '2.0', id, result: { content: [] } });
+    return Response.json({ jsonrpc: '2.0', id, result: { content: [], structuredContent: { saved: !invalidOutput } } });
   });
   const router = routerServer(store, { memory, owner: 'owner', token: 'fixture', applicationWrites: definitions });
   router.listen(0, '127.0.0.1');
@@ -191,9 +196,12 @@ test('Router requires explicit confirmation for a configured application write',
   const request = (path: string, method: string, body?: object, token = 'fixture') =>
     fetch('http://127.0.0.1:' + address.port + path, { method, signal: AbortSignal.timeout(5_000),
       headers: { Authorization: 'Bearer ' + token, 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
-  const create = () => request('/v1/app-connections/' + connection + '/write-proposals', 'POST', {
-    workspace: 'project', capability: 'action.document.update', input: { title: 'Approved' },
+  const create = (input = { title: 'Approved' }) => request('/v1/app-connections/' + connection + '/write-proposals', 'POST', {
+    workspace: 'project', capability: 'action.document.update', input,
   });
+  assert.equal((await create({ title: 'x'.repeat(51) })).status, 400);
+  const activeCatalog = await (await request('/v1/app-connections', 'GET')).json();
+  assert.equal(activeCatalog.connections[0].writeCapabilityDetails[0].inputSchema.properties.title.maxLength, 50);
   const created = await create();
   assert.equal(created.status, 201);
   const { id } = await created.json();
@@ -254,10 +262,17 @@ test('Router requires explicit confirmation for a configured application write',
     [item.id, item.resolution]), [[uncertainId, 'applied'], [id, null]]);
   assert.ok(history.proposals.every((item: Record<string, unknown>) => !('input' in item) && !('evidence' in item)));
   assert.equal((await request(collection, 'GET', undefined, iphone.token)).status, 403);
+  invalidOutput = true;
+  loseToolResponse = false;
+  const invalid = (await (await create()).json()).id;
+  assert.deepEqual(await (await request('/v1/app-write-proposals/' + invalid + '/confirm', 'POST')).json(),
+    { status: 'outcome_unknown' });
+  const refreshed = await (await request(collection, 'GET')).json();
+  assert.equal(refreshed.proposals[0].id, invalid);
   assert.equal(memory.disconnect('owner', connection), true);
   const catalog = await (await request('/v1/app-connections', 'GET')).json();
   assert.equal(catalog.connections[0].hasWriteHistory, true);
-  assert.deepEqual((await (await request(collection, 'GET')).json()).proposals, history.proposals);
+  assert.deepEqual((await (await request(collection, 'GET')).json()).proposals, refreshed.proposals);
 });
 
 test('local browser fallback and a browser device submit only authorized form data', {
@@ -385,7 +400,12 @@ test('local browser fallback and a browser device submit only authorized form da
   assert.deepEqual(await invokeDevice('wrong'), { status: 'denied' });
   assert.equal((await invokeDevice(token)).status, 'succeeded');
   await closeDevice();
-  device = await startDevice(deviceAddress.port);
+  device = await startDevice(caddy ? deviceAddress.port : 0);
+  if (!caddy) {
+    const restarted = device.address();
+    assert(restarted && typeof restarted !== 'string');
+    binding.endpoint = 'http://127.0.0.1:' + restarted.port + '/mcp';
+  }
   const lookup = mcpActionBackend({ ...binding, effect: 'read', tool: 'update.status', token });
   const result = await lookup.invoke({ ...deviceAction, effect: 'read', input: { blazarInvocationId: invocationId } },
     AbortSignal.timeout(5_000), async () => true);

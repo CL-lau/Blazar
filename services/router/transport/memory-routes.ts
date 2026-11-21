@@ -41,14 +41,16 @@ export async function handleMemory(
         documentSync: store.documentSyncSettings(owner),
         connections: store.connections(owner).map(connection => {
           const reader = readerFor(connection);
+          const writes = connection.active
+            ? applicationWrites.filter(item => item.app === connection.app && item.account === connection.account) : [];
           return {
             ...connection,
             canImportDocument: Boolean(connection.active && reader),
             documentAliases: connection.active ? reader?.documentAliases : undefined,
             capabilities: documentCapabilityState(connection, reader),
-            writeCapabilities: connection.active ? applicationWrites
-              .filter(item => item.app === connection.app && item.account === connection.account)
-              .map(item => item.capability) : [],
+            writeCapabilities: writes.map(item => item.capability),
+            ...(writes.some(item => item.contract) && { writeCapabilityDetails: writes.flatMap(item => item.contract
+              ? [{ id: item.capability, ...item.contract.definition }] : []) }),
           };
         }),
       });
