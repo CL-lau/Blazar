@@ -168,6 +168,10 @@ export class TaskStore {
     return this.taskReads.artifact(...args);
   }
 
+  latestTaskText(...args: Parameters<TaskReadRepository['latestTaskText']>) {
+    return this.taskReads.latestTaskText(...args);
+  }
+
   timeline(...args: Parameters<TaskReadRepository['timeline']>) {
     return this.taskReads.timeline(...args);
   }

@@ -904,3 +904,43 @@ test('concurrent conversation retries share routing and reject in-flight key con
   assert.equal(calls, 5);
   assert.equal(store.snapshot('owner').tasks.length, 6);
 });
+
+test('Router decisions can consume versioned text results without crossing workspace boundaries', async t => {
+  const store = new TaskStore(':memory:');
+  const resultTask = store.create('owner', 'fixture', 'result', 'project', 'Inspect Notes');
+  const other = store.create('owner', 'fixture', 'external', 'outside', 'Private observation');
+  const now = Date.now();
+  const { run } = store.claim('owner', 'project', 'device', now, 45_000)!;
+  assert.ok(store.finish(run.id, run.device, now, {
+    status: 'succeeded', result: 'Notes inspected', artifact: { name: 'notes.txt', text: 'A draft is visible' },
+  }));
+  const server = routerServer(store, {
+    owner: 'owner', token: 'admin',
+    async harness(input) {
+      assert.equal(input.taskResult?.(other.id), undefined);
+      assert.deepEqual(input.taskResult?.('Inspect Notes'), {
+        taskId: resultTask.id, version: 1, result: 'Notes inspected',
+        artifact: { name: 'notes.txt', excerpt: 'A draft is visible', size: 18 },
+      });
+      if (input.text === 'Change during routing') {
+        assert.ok(store.command('owner', resultTask.id, 1, { action: 'append', text: 'Inspect again' }));
+      }
+      return { kind: 'reply', text: 'A draft is visible.' };
+    },
+  });
+  server.listen(0, '127.0.0.1');
+  t.after(async () => {
+    await new Promise<void>(resolve => server.close(() => resolve()));
+    store.close();
+  });
+  await once(server, 'listening');
+  const address = server.address();
+  assert.ok(address && typeof address !== 'string');
+  const ask = (text: string) => fetch('http://127.0.0.1:' + address.port + '/v1/conversation', {
+    method: 'POST',
+    headers: { Authorization: 'Bearer admin', 'Content-Type': 'application/json', 'Idempotency-Key': text },
+    body: JSON.stringify({ workspace: 'project', text }),
+  });
+  assert.deepEqual(await (await ask('What was visible?')).json(), { kind: 'reply', text: 'A draft is visible.' });
+  assert.equal((await ask('Change during routing')).status, 409);
+});

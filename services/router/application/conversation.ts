@@ -17,7 +17,7 @@ export class ConversationError extends Error {
 }
 
 type ConversationTasks = Pick<TaskStore, 'findRouterTasks' | 'routingDecision' | 'persistRoutingDecision' |
-  'recentConversation' | 'get' | 'recentTaskEventTypes' | 'desktopTargets' | 'devices' | 'create'>;
+  'recentConversation' | 'get' | 'recentTaskEventTypes' | 'desktopTargets' | 'devices' | 'create' | 'latestTaskText' | 'appEvidence' | 'personalEvidence'>;
 
 interface ConversationDependencies {
   harness?: RouterHarness;
@@ -73,6 +73,13 @@ export function createConversationRouter(store: ConversationTasks, config: Conve
           }
           else if (!config.harness) throw new ConversationError(503, 'Blazar has no Router model configured');
           else {
+            const evidenceVersions = new Map<string, number>();
+            const findOne = (query: string) => {
+              const exact = /^[a-f0-9-]{36}$/.test(query);
+              const candidates = exact ? [store.get(owner, query)].filter(task => task?.workspace === input.workspace)
+                : store.findRouterTasks(owner, input.workspace, query);
+              return candidates.length === 1 ? candidates[0] : undefined;
+            };
             const foundVersions = new Map<string, number>();
             const recall = () => input.usePersonalMemory
               ? config.memory?.personalContext(owner, input.workspace, input.text) ?? [] : [];
@@ -95,11 +102,18 @@ export function createConversationRouter(store: ConversationTasks, config: Conve
                   return tasks;
                 },
                 taskEvents: query => {
-                  const exactId = /^[a-f0-9-]{36}$/.test(query);
-                  const matches = exactId ? [store.get(owner, query)].filter(task => task?.workspace === input.workspace)
-                    : store.findRouterTasks(owner, input.workspace, query);
-                  if (matches.length !== 1 || !matches[0] || !canReadTask(matches[0].id)) return undefined;
-                  return store.recentTaskEventTypes(owner, input.workspace, matches[0].id);
+                  const task = findOne(query);
+                  if (!task || !canReadTask(task.id)) return undefined;
+                  return store.recentTaskEventTypes(owner, input.workspace, task.id);
+                },
+                taskResult: query => {
+                  const candidate = findOne(query);
+                  const task = candidate && store.get(owner, candidate.id);
+                  if (!task || task.status !== 'succeeded' || !canReadTask(task.id) ||
+                      store.appEvidence(task.id) || store.personalEvidence(task.id).length) return undefined;
+                  evidenceVersions.set(task.id, task.version);
+                  return { taskId: task.id, version: task.version, result: task.result?.slice(0, 1200).toWellFormed() ?? null,
+                    artifact: store.latestTaskText(task.id, task.version) };
                 },
                 ...(admin && { workspaceCapabilities: () => ({
                   desktopTargets: store.desktopTargets(owner).filter(target => target.workspace === input.workspace)
@@ -134,6 +148,12 @@ export function createConversationRouter(store: ConversationTasks, config: Conve
               const current = recall();
               if (evidence.some(item => !current.some(note => note.id === item.id && note.version === item.version))) {
                 throw new ConversationError(409, 'Personal memory changed while routing. Please retry.');
+              }
+            }
+            for (const [taskId, version] of evidenceVersions) {
+              const task = store.get(owner, taskId);
+              if (task?.version !== version || task.status !== 'succeeded' || !canReadTask(taskId)) {
+                throw new ConversationError(409, 'Task result changed while routing. Please retry.');
               }
             }
             if (decision.kind === 'append_task') {

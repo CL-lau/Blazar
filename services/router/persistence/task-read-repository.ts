@@ -79,6 +79,15 @@ export class TaskReadRepository {
       { taskId: string; name: string; sha256: string; content: Uint8Array; mime: 'image/png' | null; version: number | null } | undefined;
   }
 
+  latestTaskText(taskId: string, version: number) {
+    const row = this.db.prepare(`SELECT a.name,substr(CAST(a.content AS TEXT),1,1800) AS excerpt,a.size
+      FROM artifact a JOIN artifact_version v ON v.artifact_id=a.id
+      WHERE a.taskId=? AND v.task_version=? AND NOT EXISTS(
+        SELECT 1 FROM artifact_image i WHERE i.artifact_id=a.id
+      ) ORDER BY a.rowid DESC LIMIT 1`).get(taskId, version);
+    return row ? { name: String(row.name), excerpt: String(row.excerpt).toWellFormed(), size: Number(row.size) } : undefined;
+  }
+
   timeline(owner: string, taskId: string, before?: number) {
     if (!this.get(owner, taskId)) return undefined;
     const rows = this.db.prepare(`SELECT seq,type,data FROM event
