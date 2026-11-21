@@ -67,17 +67,21 @@ export async function invokeDocumentCapability(store: DocumentMemory, owner: str
   if (capability === 'document.discover') {
     if (!reader.discover) throw new RequestError(404, 'Document discovery is unavailable for this connection');
     const usage = store.startAppUsage(connectionId, workspace, 'discover');
+    const checkSource = () => {
+      if (store.connection(owner, connectionId, workspace)?.scopeVersion !== connection.scopeVersion) {
+        store.finishAppUsage(usage, 'access_changed');
+        throw new RequestError(409, 'Source access changed during discovery');
+      }
+    };
     let result: Awaited<ReturnType<NonNullable<DocumentConnector['discover']>>>;
     try {
       result = await reader.discover(AbortSignal.timeout(10_000));
     } catch (error) {
+      checkSource();
       store.finishAppUsage(usage, error instanceof DocumentAccessDenied ? 'access_denied' : 'failed');
       throw new RequestError(502, error instanceof DocumentUnavailable ? error.message : 'Document discovery failed');
     }
-    if (store.connection(owner, connectionId, workspace)?.scopeVersion !== connection.scopeVersion) {
-      store.finishAppUsage(usage, 'access_changed');
-      throw new RequestError(409, 'Source access changed during discovery');
-    }
+    checkSource();
     const aliases = result.aliases.filter(alias => reader.accepts(alias) && !store.resourceRevoked(connectionId, alias));
     store.finishAppUsage(usage, 'succeeded');
     return { aliases, complete: result.complete };

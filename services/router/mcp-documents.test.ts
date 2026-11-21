@@ -89,5 +89,15 @@ test('a configured MCP account reads allowlisted text resources without invoking
   assert.deepEqual(methods, ['primary', 'initialize', 'notifications/initialized', 'resources/list', 'resources/list', 'close']);
   store.revokeResource('owner', connection, 'review');
   assert.deepEqual(await discover('project'), { aliases: [], complete: true });
+  const changed = {
+    ...extension,
+    async discover() {
+      store.setConnectionWorkspace('owner', connection, 'other');
+      store.setConnectionWorkspace('owner', connection, 'project');
+      throw new Error('Stale backend response');
+    },
+  };
+  await assert.rejects(invokeDocumentCapability(store, 'owner', connection, [changed], 'document.discover',
+    { workspace: 'project' }), /Source access changed during discovery/);
 
 });
