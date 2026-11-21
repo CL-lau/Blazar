@@ -1,5 +1,14 @@
 export type TaskStatus = 'queued' | 'running' | 'cancelling' | 'cancelled' | 'succeeded' | 'failed' | 'waiting_user' | 'waiting_dependency' | 'waiting_device' | 'pausing' | 'paused' | 'waiting_review';
 
+const chineseTaskStates: Record<TaskStatus, string> = {
+  queued: '排队中', running: '运行中', cancelling: '正在取消', cancelled: '已取消',
+  succeeded: '已完成', failed: '失败', waiting_user: '等待用户', waiting_dependency: '等待依赖',
+  waiting_device: '等待设备', pausing: '正在暂停', paused: '已暂停', waiting_review: '等待验收',
+};
+
+export function displayTaskStatus(status: string, chinese: boolean) {
+  return (chinese && chineseTaskStates[status as TaskStatus]) || status.replaceAll('_', ' ');
+}
 export interface Task {
   id: string;
   owner: string;

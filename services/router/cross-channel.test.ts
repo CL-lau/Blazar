@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import { once } from 'node:events';
 import test from 'node:test';
 import { parseWeixin, type WeixinConfig } from '../../packages/channels/weixin.ts';
+import { feishuChannel } from '../../packages/channels/feishu.ts';
 import { DeviceSocket } from '../device/socket.ts';
 import { routerServer } from './http.ts';
 import { TaskStore } from './store.ts';
@@ -109,6 +110,12 @@ test('WeChat intake, paired-phone approval, desktop artifact and Feishu follow-u
     },
   });
   assert.equal((await feishuMessage('feishu-root', '/blazar /link ' + code)).status, 200);
+  assert.equal((await feishuMessage('feishu-status', '/blazar /状态', 'feishu-root')).status, 200);
+  const statusNotice = store.leaseChannelNotice(feishuChannel(feishu), Date.now())!;
+  assert.equal(statusNotice.messageId, 'feishu-root');
+  assert.match(statusNotice.text, /已完成/);
+  assert.doesNotMatch(statusNotice.text, /Private review content/);
+  assert.equal(store.get(owner, taskId)?.version, 1);
   assert.equal((await feishuMessage('feishu-follow', '/blazar Add recommendations', 'feishu-root')).status, 200);
   const latest = await snapshot(mobile);
   assert.equal(latest.tasks.length, 1);

@@ -57,6 +57,20 @@ test('authorized QQ messages deduplicate and can follow a task from their own ch
   assert.equal(store.get('owner', task.id)?.version, 1);
   message('follow', 'sender', '/blazar follow ' + task.id + ' Add examples');
   assert.equal(store.get('owner', task.id)?.version, 2);
+  message('bare-status', 'sender', '/blazar /status');
+  message('query-status', 'sender', '/blazar follow ' + task.id + ' /status');
+  message('query-status', 'sender', '/blazar follow ' + task.id + ' /status');
+  assert.equal(store.snapshot('owner').tasks.length, 1);
+  assert.equal(store.get('owner', task.id)?.version, 2);
+  const reply = store.leasePassiveNotice('qq', Date.now(), ['c2c:sender'])!;
+  assert.equal(reply.messageId, 'query-status');
+  assert.match(reply.text, /status: queued/);
+  assert.doesNotMatch(reply.text, /Review notes/);
+  assert.equal(store.leasePassiveNotice('qq', Date.now(), ['c2c:sender']), undefined);
+  message('status-before-unlink', 'sender', '/blazar follow ' + task.id + ' /status');
+  const [link] = store.taskChannels('owner', task.id);
+  assert.equal(store.unlinkTaskChannel('owner', task.id, link.id), true);
+  assert.equal(store.leasePassiveNotice('qq', Date.now(), ['c2c:sender']), undefined);
 });
 
 test('QQ sends only to the original reply window and reserves distinct passive reply sequences', async t => {

@@ -4,7 +4,7 @@ import type { ConversationTurn, Decision, RouteRequest } from './harness.ts';
 import { createHash, randomBytes, randomUUID } from 'node:crypto';
 import { DatabaseSync } from 'node:sqlite';
 import type { DesktopAppControls, PredecessorInput, Run, RunOutcome, Task, TaskEvent, TaskMemoryInput, WorkerConfiguration, WorkflowStep } from '../../packages/protocol/task.ts';
-import { windowImageLifetimeMs } from '../../packages/protocol/task.ts';
+import { displayTaskStatus, windowImageLifetimeMs } from '../../packages/protocol/task.ts';
 
 const runLimitMs = 10 * 60_000;
 
@@ -43,6 +43,10 @@ export class TaskStore {
       );
       CREATE INDEX IF NOT EXISTS channel_notice_thread ON channel_outbox(channel,chat,message_id,created);
       CREATE INDEX IF NOT EXISTS channel_outbox_pending ON channel_outbox(channel,delivered,retry);
+      CREATE TABLE IF NOT EXISTS channel_notice_binding (
+        notice TEXT PRIMARY KEY REFERENCES channel_outbox(id) ON DELETE CASCADE,
+        owner TEXT NOT NULL, channel TEXT NOT NULL, chat TEXT NOT NULL, thread TEXT NOT NULL
+      );
       CREATE TABLE IF NOT EXISTS weixin_reply_context (
         owner TEXT NOT NULL, channel TEXT NOT NULL, chat TEXT NOT NULL,
         token TEXT NOT NULL, expires INTEGER NOT NULL, PRIMARY KEY(owner,channel,chat)
@@ -500,6 +504,9 @@ export class TaskStore {
         .run(owner, taskId, link.channel, link.chat, link.thread);
       this.db.prepare('DELETE FROM channel_outbox WHERE channel=? AND chat=? AND message_id=? AND delivered=0')
         .run(link.channel, link.chat, link.thread);
+      this.db.prepare(`DELETE FROM channel_outbox WHERE delivered=0 AND id IN (
+        SELECT notice FROM channel_notice_binding WHERE owner=? AND channel=? AND chat=? AND thread=?
+      )`).run(owner, link.channel, link.chat, link.thread);
       this.event(taskId, 'task.channel_unlinked', { channel: link.channel });
       return true;
     });
@@ -518,7 +525,8 @@ export class TaskStore {
           .run(owner, channel, message.chat, weixinContext, Date.now() + 10 * 60_000);
       }
       const key = [owner, channel, message.chat, message.thread] as const;
-      if (message.text === '/cancel' && message.root) return;
+      const statusQuery = message.text === '/status' || message.text === '/状态';
+      if ((message.text === '/cancel' || statusQuery) && message.root) return;
       const linking = message.text === '/link' || message.text.startsWith('/link ');
       if (linking || message.root) {
         let taskId: string;
@@ -546,12 +554,33 @@ export class TaskStore {
         return;
       }
       const link = message.taskId
-        ? this.db.prepare(`SELECT t.id,t.status FROM channel_thread c JOIN task t ON t.id=c.task_id
+        ? this.db.prepare(`SELECT t.id,t.status,c.thread FROM channel_thread c JOIN task t ON t.id=c.task_id
             WHERE c.owner=? AND c.channel=? AND c.chat=? AND c.task_id=? AND t.workspace=?`)
           .get(owner, channel, message.chat, message.taskId, workspace)
-        : this.db.prepare(`SELECT t.id,t.status FROM channel_thread c JOIN task t ON t.id=c.task_id
+        : this.db.prepare(`SELECT t.id,t.status,c.thread FROM channel_thread c JOIN task t ON t.id=c.task_id
             WHERE c.owner=? AND c.channel=? AND c.chat=? AND c.thread=? AND t.workspace=?`).get(...key, workspace);
       if (!link) return;
+      if (statusQuery) {
+        const now = Date.now();
+        const thread = String(link.thread);
+        const replyId = message.replyExpires === undefined ? thread : message.id;
+        if (message.replyExpires !== undefined) {
+          if (message.replyExpires <= now) return;
+          this.db.prepare('INSERT OR IGNORE INTO channel_reply_window VALUES(?,?,?,?)')
+            .run(channel, message.chat, replyId, message.replyExpires);
+        }
+        const notice = randomUUID();
+        const chinese = message.text === '/状态';
+        const state = displayTaskStatus(String(link.status), chinese);
+        const text = chinese ? `Blazar 任务${state}。任务 ID ${link.id}` : `Blazar task status: ${state}. Task: ${link.id}`;
+        this.db.prepare('INSERT INTO channel_outbox VALUES(?,?,?,?,?,?,?,0)')
+          .run(notice, channel, message.chat, replyId, text, now, now);
+        if (replyId !== thread) {
+          this.db.prepare('INSERT INTO channel_notice_binding VALUES(?,?,?,?,?)')
+            .run(notice, owner, channel, message.chat, thread);
+        }
+        return;
+      }
       if (message.text === '/cancel') {
         this.cancelTask(String(link.id), String(link.status), { channel });
         return;
