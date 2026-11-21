@@ -1,6 +1,6 @@
 import type { IncomingMessage, ServerResponse } from 'node:http';
 import type { ConfiguredApplicationWrite } from '../../../packages/apps/config.ts';
-import { confirmApplicationWrite } from '../application/app-write.ts';
+import { checkApplicationWrite, confirmApplicationWrite } from '../application/app-write.ts';
 import type { MemoryStore } from '../memory.ts';
 import { applicationWriteTimeoutMs } from '../persistence/app-write-repository.ts';
 import { RequestError, requiredText } from '../protocol/request.ts';
@@ -38,7 +38,7 @@ export async function handleApplicationWrites(
     reply(response, 201, { id, expires, status: 'pending' });
     return true;
   }
-  const proposalPath = /^\/v1\/app-write-proposals\/([a-f0-9-]{36})(?:\/(confirm|reconcile|share))?$/.exec(url.pathname);
+  const proposalPath = /^\/v1\/app-write-proposals\/([a-f0-9-]{36})(?:\/(confirm|reconcile|share|check-result))?$/.exec(url.pathname);
   if (!proposalPath) return false;
   const [, id, operation] = proposalPath;
   if (request.method !== (operation ? 'POST' : 'GET')) return false;
@@ -55,7 +55,9 @@ export async function handleApplicationWrites(
         inputPreview: JSON.stringify(view.input, null, 2) });
       return true;
     }
-    reply(response, 200, { ...view, reconciliation: writes.reconciliation(owner, id) });
+    const lookup = definitionFor(proposal.connection, proposal.workspace, proposal.capability);
+    reply(response, 200, { ...view, reconciliation: writes.reconciliation(owner, id),
+      canCheckResult: Boolean(lookup?.lookup && writes.canCheck(owner, id, lookup.revision)) });
     return true;
   }
   if (operation === 'share' && access.kind === 'admin') {
@@ -81,6 +83,13 @@ export async function handleApplicationWrites(
     return true;
   }
   const definition = definitionFor(proposal.connection, proposal.workspace, proposal.capability);
+  if (operation === 'check-result') {
+    if (!definition?.lookup) throw new RequestError(404, 'Application outcome lookup not configured');
+    const reconciliation = await checkApplicationWrite(writes, owner, id, definition.revision, definition.lookup,
+      AbortSignal.timeout(applicationWriteTimeoutMs));
+    reply(response, 200, { reconciliation: reconciliation ?? null });
+    return true;
+  }
   const backends = definition ? [{ ...definition.backend, connectionId: proposal.connection }] : [];
   const result = await confirmApplicationWrite(writes, owner, id, definition?.revision ?? '', backends, AbortSignal.timeout(applicationWriteTimeoutMs), authorized);
   reply(response, 200, result);

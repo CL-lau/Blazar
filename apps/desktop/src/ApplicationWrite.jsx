@@ -54,6 +54,7 @@ export function ApplicationWrite({ connection, request }) {
         onClick={() => run(async () => {
           const result = await request(path + '/confirm', { method: 'POST' });
           setProposal({ ...proposal, status: result.status });
+          setProposal(await request(path));
         })}>Confirm write</button>}
       <button type="button" disabled={busy} onClick={() => run(async () => {
         setProposal(await request(path));
@@ -79,6 +80,12 @@ export function ApplicationWrite({ connection, request }) {
         </form>}
         {shareNotice && <p role="status">{shareNotice}</p>}
       </div>}
+      {!proposal.reconciliation && proposal.canCheckResult &&
+        <button type="button" disabled={busy} onClick={() => run(async () => {
+          const { reconciliation } = await request(path + '/check-result', { method: 'POST' });
+          if (!reconciliation) throw new Error('The application has not returned a verified result.');
+          setProposal({ ...proposal, reconciliation });
+        })}>Check external result</button>}
       {proposal.reconciliation ? <p>
         {proposal.reconciliation.resolution.replaceAll('_', ' ')} · {proposal.reconciliation.evidence}
       </p> : ['dispatching', 'outcome_unknown'].includes(proposal.status) && <form onSubmit={reconcile}>

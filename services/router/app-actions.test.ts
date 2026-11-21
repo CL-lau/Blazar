@@ -133,10 +133,12 @@ test('Router requires explicit confirmation for a configured application write',
   const connection = memory.connect('owner', 'mcp', 'Handbook', 'project');
   const calls: string[] = [];
   let loseToolResponse = false;
+  let reportCorrectInvocation = false;
+  const dispatchedIds: string[] = [];
   const definitions = configuredApplicationWrites({
     BLAZAR_MCP_ACTIONS: JSON.stringify([{
       app: 'mcp', account: 'Handbook', capability: 'action.document.update',
-      endpoint: 'http://127.0.0.1:4198/mcp', tool: 'update_document',
+      endpoint: 'http://127.0.0.1:4198/mcp', tool: 'update_document', statusTool: 'lookup_update',
     }]),
   }, async (_url, init) => {
     const { id, method, params } = JSON.parse(String(init?.body));
@@ -147,7 +149,17 @@ test('Router requires explicit confirmation for a configured application write',
     } });
     if (method === 'notifications/initialized') return new Response(null, { status: 202 });
     assert.equal(method, 'tools/call');
-    assert.deepEqual(params, { name: 'update_document', arguments: { title: 'Approved' } });
+    if (params.name === 'lookup_update') {
+      assert.deepEqual(Object.keys(params.arguments), ['blazarInvocationId']);
+      assert.ok(dispatchedIds.includes(params.arguments.blazarInvocationId));
+      return Response.json({ jsonrpc: '2.0', id, result: { content: [], structuredContent: {
+        resolution: 'applied', evidence: 'External revision 42 confirms the title',
+        blazarInvocationId: reportCorrectInvocation ? params.arguments.blazarInvocationId : 'different-write',
+      } } });
+    }
+    assert.equal(params.name, 'update_document');
+    assert.equal(params.arguments.title, 'Approved');
+    dispatchedIds.push(params.arguments.blazarInvocationId);
     if (loseToolResponse) return new Response(null, { status: 503 });
     return Response.json({ jsonrpc: '2.0', id, result: { content: [] } });
   });
@@ -204,12 +216,17 @@ test('Router requires explicit confirmation for a configured application write',
   assert.equal((await request(uncertain + '/confirm', 'POST', undefined, iphone.token)).status, 404);
   assert.equal((await request(uncertain + '/share', 'POST', { client: iphone.id })).status, 200);
   assert.deepEqual(await (await request(uncertain + '/confirm', 'POST', undefined, iphone.token)).json(), { status: 'outcome_unknown' });
-  const reconciled = await request(uncertain + '/reconcile', 'POST', evidence);
+  assert.deepEqual(dispatchedIds, [id, uncertainId]);
+  assert.equal((await request(uncertain + '/check-result', 'POST', {}, iphone.token)).status, 404);
+  assert.deepEqual(await (await request(uncertain + '/check-result', 'POST')).json(), { reconciliation: null });
+  reportCorrectInvocation = true;
+  const reconciled = await request(uncertain + '/check-result', 'POST');
   assert.equal(reconciled.status, 200);
-  const record = await reconciled.json();
+  const { reconciliation: record } = await reconciled.json();
   assert.equal(record.evidence, evidence.evidence);
   assert.deepEqual((await (await request(uncertain, 'GET')).json()).reconciliation, record);
   assert.equal((await request(uncertain + '/reconcile', 'POST', { ...evidence, resolution: 'not_applied' })).status, 409);
   assert.deepEqual(await (await request(uncertain + '/confirm', 'POST')).json(), { status: 'outcome_unknown' });
-  assert.equal(calls.filter(method => method === 'tools/call').length, 2);
+  assert.equal(calls.filter(method => method === 'tools/call').length, 4);
+  assert.equal(dispatchedIds.length, 2);
 });

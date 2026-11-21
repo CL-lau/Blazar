@@ -176,6 +176,12 @@ POST `resolution` (`applied` or `not_applied`) and `evidence` to
 `/v1/app-write-proposals/{id}/reconcile`. An interrupted `dispatching` write becomes eligible
 after the approval expiry plus the dispatch timeout. Reconciliation records evidence without replaying the write.
 
+An optional `statusTool` adds machine reconciliation. The write tool then receives a Router-generated
+`blazarInvocationId` and should record it with the external operation. The separate, read-only status
+tool receives that ID and returns `structuredContent` containing the same ID, a conclusive `resolution`
+and `evidence`. POST to `/v1/app-write-proposals/{id}/check-result` to run that lookup. Unknown or
+mismatched responses leave the proposal unresolved.
+
 
 Register the account in the desktop app with app type `mcp`, then use `review` as the document ID. For a server requiring bearer authentication, set `tokenEnv` to the name of a `BLAZAR_MCP_TOKEN_*` environment variable. The connector reads text resources by alias.
 

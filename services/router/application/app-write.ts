@@ -34,3 +34,33 @@ export async function confirmApplicationWrite(
     throw error;
   }
 }
+
+export async function checkApplicationWrite(
+  writes: AppWriteRepository,
+  owner: string,
+  id: string,
+  revision: string,
+  lookup: ActionBackend,
+  signal: AbortSignal,
+) {
+  const recorded = writes.reconciliation(owner, id);
+  if (recorded) return recorded;
+  const permitted = () => writes.canCheck(owner, id, revision);
+  if (!permitted()) return undefined;
+  try {
+    const result = await lookup.invoke({
+      connectionId: lookup.connectionId, capability: lookup.capability, invocationId: id,
+      effect: 'read', input: { blazarInvocationId: id },
+    }, signal, async () => permitted());
+    if (result.status !== 'succeeded' || !permitted()) return undefined;
+    const { structuredContent } = result.output as { structuredContent?: Record<string, unknown> };
+    const resolution = structuredContent?.resolution;
+    const evidence = structuredContent?.evidence;
+    if (structuredContent?.blazarInvocationId !== id || (resolution !== 'applied' && resolution !== 'not_applied') ||
+        typeof evidence !== 'string' || !evidence.trim() || evidence.length > 1_024) return undefined;
+    writes.reconcile(owner, id, resolution, evidence.trim());
+    return writes.reconciliation(owner, id);
+  } catch {
+    return undefined;
+  }
+}

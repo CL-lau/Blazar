@@ -161,11 +161,12 @@ function githubManifestReader(entry: Record<string, unknown>, env: NodeJS.Proces
 export function configuredApplicationWrites(env: NodeJS.ProcessEnv, transport = fetch) {
   const keys = new Set<string>();
   return entries(env, 'BLAZAR_MCP_ACTIONS').map(entry => {
-    const { app, capability, endpoint, tool } = entry;
+    const { app, capability, endpoint, tool, statusTool } = entry;
     const account = accountName(entry.account);
     if (typeof app !== 'string' || !/^(mcp|custom\.[a-z][a-z0-9-]{0,62})$/.test(app) ||
         typeof capability !== 'string' || !/^action\.[a-z0-9.-]{1,120}$/.test(capability) ||
-        typeof endpoint !== 'string' || typeof tool !== 'string') {
+        typeof endpoint !== 'string' || typeof tool !== 'string' ||
+        (statusTool !== undefined && (typeof statusTool !== 'string' || statusTool === tool))) {
       throw new Error('Invalid MCP application write configuration');
     }
     const key = JSON.stringify([app, account, capability]);
@@ -173,9 +174,14 @@ export function configuredApplicationWrites(env: NodeJS.ProcessEnv, transport = 
     keys.add(key);
     const token = entry.tokenEnv === undefined ? undefined
       : accessToken(env, entry.tokenEnv, /^BLAZAR_MCP_TOKEN_[A-Z0-9_]+$/);
-    const revision = createHash('sha256').update(JSON.stringify([key, endpoint, tool, entry.tokenEnv, token])).digest('hex');
-    const backend = mcpActionBackend({ id: 'mcp', connectionId: '', capability, effect: 'write', endpoint, tool, token }, transport);
-    return { app, account, capability, revision, backend };
+    const revision = createHash('sha256').update(JSON.stringify([key, endpoint, tool, entry.tokenEnv, token,
+      ...(statusTool ? [statusTool] : [])])).digest('hex');
+    const binding = { id: 'mcp', connectionId: '', capability, endpoint, token };
+    const backend = mcpActionBackend({ ...binding, effect: 'write', tool, includeInvocationId: Boolean(statusTool) }, transport);
+    const lookup = typeof statusTool === 'string'
+      ? mcpActionBackend({ ...binding, effect: 'read', tool: statusTool }, transport)
+      : undefined;
+    return { app, account, capability, revision, backend, lookup };
   });
 }
 

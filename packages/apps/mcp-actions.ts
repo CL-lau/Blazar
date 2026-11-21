@@ -6,6 +6,7 @@ type McpActionConfig = Pick<ActionBackend, 'id' | 'connectionId' | 'capability' 
   endpoint: string;
   tool: string;
   token?: string;
+  includeInvocationId?: boolean;
 };
 
 export function mcpActionBackend(config: McpActionConfig, fetcher = fetch): ActionBackend {
@@ -23,7 +24,9 @@ export function mcpActionBackend(config: McpActionConfig, fetcher = fetch): Acti
           if (!await authorizeDispatch()) return { status: 'denied' };
           signal.throwIfAborted();
           dispatched = true;
-          const result = await client.callTool({ name: tool, arguments: { ...action.input } }, undefined, { signal });
+          const result = await client.callTool({ name: tool, arguments: { ...action.input,
+            ...(config.includeInvocationId && { blazarInvocationId: action.invocationId }),
+          } }, undefined, { signal });
           if (result.isError) throw new Error('MCP tool reported a failure');
           return { status: 'succeeded', output: result };
         });
