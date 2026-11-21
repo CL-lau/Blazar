@@ -21,7 +21,7 @@ test('Codex correlates stream events with the started turn even before the RPC r
         if (method === 'initialize') reply({});
         if (method === 'thread/start') {
           if (params.sandbox !== 'read-only' || params.approvalPolicy !== 'never') process.exit(2);
-          reply({ thread: { id: 'thread' } });
+          reply({ thread: { id: 'thread' }, sandbox: { type: 'readOnly' }, approvalPolicy: 'never' });
         }
         if (method === 'turn/start') {
           notify('item/agentMessage/delta', { turnId: 'other', delta: 'Unrelated' });
@@ -38,6 +38,24 @@ test('Codex correlates stream events with the started turn even before the RPC r
   assert.equal(await runCodex(worker, process.cwd(), job, AbortSignal.timeout(3_000)), 'Early reply');
 });
 
+test('Codex refuses to start a turn when the server reports a writable sandbox', async () => {
+  const worker = {
+    executable: process.execPath, label: 'Writable Codex fixture',
+    args: ['-e', `
+      require('node:readline').createInterface({ input: process.stdin }).on('line', line => {
+        const { id, method } = JSON.parse(line);
+        if (method === 'initialize') console.log(JSON.stringify({ id, result: {} }));
+        if (method === 'thread/start') console.log(JSON.stringify({ id, result: {
+          thread: { id: 'thread' }, sandbox: { type: 'workspaceWrite' }, approvalPolicy: 'never',
+        } }));
+        if (method === 'turn/start') process.exit(3);
+      });
+    `],
+  };
+  await assert.rejects(runCodex(worker, process.cwd(), { goal: 'Read notes', instructions: [], predecessors: [] },
+    AbortSignal.timeout(3_000)), /did not confirm the read-only sandbox/);
+});
+
 const steeringWorker = {
   executable: process.execPath, label: 'Codex steering fixture', protocol: 'codex' as const,
   args: ['-e', String.raw`
@@ -50,7 +68,7 @@ const steeringWorker = {
       if (method === 'thread/start') {
         assert.equal(params.sandbox, 'read-only');
         assert.equal(params.approvalPolicy, 'never');
-        reply({ thread: { id: 'thread' } });
+        reply({ thread: { id: 'thread' }, sandbox: { type: 'readOnly' }, approvalPolicy: 'never' });
       }
       if (method === 'turn/start') reply({ turn: { id: 'active' } });
       if (method === 'turn/steer') {
