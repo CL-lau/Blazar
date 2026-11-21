@@ -153,6 +153,8 @@ private struct TaskScreen: View {
                         if let answer { Text(answer).textSelection(.enabled) }
 
                     }
+                    DesktopControl(client: client, workspace: $workspace, sending: $sending, reload: reload,
+                                   showError: { self.error = $0.localizedDescription })
                     if let plan {
                         Section("Proposed workflow") {
                             Text(plan.workspace)
