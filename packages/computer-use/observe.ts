@@ -241,6 +241,11 @@ function buttonIn(tree: unknown, label: string) {
   return matches[0];
 }
 
+function reviewFingerprint(tree: unknown) {
+  const snapshot = JSON.stringify(tree, (key, value) => key === 'ref_id' ? undefined : value);
+  return createHash('sha256').update(snapshot).digest('hex');
+}
+
 export class DesktopResultUnverified extends Error {
   constructor() { super('The click may have been applied. Check the application before retrying.'); }
 }
@@ -254,11 +259,12 @@ export async function clickApp(config: ObservationConfig, root: string, goal: st
   const windowId = match[2];
   const identity = match[3];
   const label = match[4];
-  const { initialWindow, initial, button, summary } = await withDesktopLock(config, signal, async () => {
+  const { initialWindow, initial, button, summary, fingerprint } = await withDesktopLock(config, signal, async () => {
     const initialWindow = windowId ? await accessibleWindow(config, root, app, windowId, signal, identity) : undefined;
     if (initialWindow && !initialWindow.instance) throw new Error('The driver cannot identify the selected window process.');
     const initial = await readSnapshot(config, root, app, signal, windowId);
-    return { initialWindow, initial, button: buttonIn(initial.tree, label), summary: describeTree(initial.tree) };
+    return { initialWindow, initial, button: buttonIn(initial.tree, label), summary: describeTree(initial.tree),
+      fingerprint: reviewFingerprint(initial.tree) };
   });
   if (expectedText && summary.includes(expectedText)) {
     throw new Error('The expected text is already visible. Review the window before clicking.');
@@ -275,7 +281,7 @@ export async function clickApp(config: ObservationConfig, root: string, goal: st
     }
     const current = await readSnapshot(config, root, app, signal, windowId);
     const latest = buttonIn(current.tree, label);
-    if (describeTree(current.tree) !== summary || latest.path !== button.path ||
+    if (reviewFingerprint(current.tree) !== fingerprint || latest.path !== button.path ||
         initial.window_id !== current.window_id || initial.pid !== current.pid) {
       throw new Error('The application changed after review. Request a new action.');
     }

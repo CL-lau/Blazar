@@ -178,7 +178,8 @@ if (op === 'list-windows') {
   const ref = fs.existsSync('reviewed') ? '@s2:e1' : '@s1:e1';
   console.log(JSON.stringify({ok:true,command:op,data:{window_id:'window',pid:42,tree:{
     role:'window',name:fs.existsSync('changed')?'Changed':'Calculator',children:[
-      {role:'button',name:'Add',ref_id:ref,available_actions:['Click']},
+      {role:'button',name:'Add',ref_id:ref,available_actions:['Click'],
+        value:fs.existsSync('changed-value')?'Different':'Original'},
       {role:'label',name:clicked?'Done':'Ready'},
     ]}}}));
 } else if (op === 'click' && process.argv[3] === '@s2:e1' && fs.existsSync('consumed')) {
@@ -206,6 +207,11 @@ if (op === 'list-windows') {
     return async () => { assert.fail('Changed windows must not consume approval'); };
   }), /changed after review/);
   rmSync(join(directory, 'changed'));
+  await assert.rejects(clickApp(config, directory, '/click calc Add', signal, async () => {
+    writeFileSync(join(directory, 'changed-value'), '');
+    return async () => { assert.fail('A change outside the displayed summary must invalidate approval'); };
+  }), /changed after review/);
+  rmSync(join(directory, 'changed-value'));
   await assert.rejects(clickApp(config, directory, '/click calc --window w-10 Add', signal, async summary => {
     assert.match(summary, /window w-10/);
     writeFileSync(join(directory, 'replaced'), '');
