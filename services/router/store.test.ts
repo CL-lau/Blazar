@@ -3,6 +3,7 @@ import test from 'node:test';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { DatabaseSync } from 'node:sqlite';
 import { TaskStore } from './store.ts';
 
 test('deduplicates creation and fences results after a newer instruction', t => {
@@ -937,4 +938,33 @@ test('a click with no confirmed result holds dependent steps for reconciliation'
   const downstream = db.claim('owner', 'project', 'worker', now, 45_000)!;
   assert.equal(downstream.task.id, String(workflow.steps[1].taskId));
   assert.match(downstream.predecessors[0].result ?? '', /confirmed that the click took effect/);
+});
+
+test('opening a legacy database migrates Worker time limits before scheduling', t => {
+  const dir = mkdtempSync(join(tmpdir(), 'blazar-legacy-worker-policy-'));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  const file = join(dir, 'router.sqlite');
+  const legacy = new DatabaseSync(file);
+  try {
+    legacy.exec(`CREATE TABLE workspace_worker_policy (
+      owner TEXT NOT NULL, workspace TEXT NOT NULL, protocols TEXT NOT NULL, PRIMARY KEY(owner,workspace)
+    )`);
+    legacy.prepare('INSERT INTO workspace_worker_policy VALUES(?,?,?)')
+      .run('owner', 'project', JSON.stringify(['jsonl']));
+  } finally {
+    legacy.close();
+  }
+
+  const store = new TaskStore(file);
+  try {
+    assert.deepEqual(store.workspaceWorkerPolicies('owner'), [{ workspace: 'project', protocols: ['jsonl'] }]);
+    store.setWorkspaceWorkerPolicy('owner', 'project', ['jsonl'], 1, 30);
+    store.create('owner', 'fixture', 'legacy', 'project', 'Review notes');
+    const claim = store.claim('owner', 'project', 'device', 0, 45_000, '', '', undefined, {
+      label: 'Fixture', protocol: 'jsonl',
+    });
+    assert.equal(claim?.run.expires, 30_000);
+  } finally {
+    store.close();
+  }
 });
