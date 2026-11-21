@@ -8,6 +8,7 @@ export function Knowledge({ token }) {
   const [documentSync, setDocumentSync] = useState([]);
   const [results, setResults] = useState(null);
   const [searchQuery, setSearchQuery] = useState('');
+  const [documentMatches, setDocumentMatches] = useState(null);
   const [deriving, setDeriving] = useState(null);
   const [editing, setEditing] = useState(null);
   const [selected, setSelected] = useState('');
@@ -26,6 +27,7 @@ export function Knowledge({ token }) {
     setNotice('');
     setAnswer(null);
     setHistory(null);
+    setDocumentMatches(null);
     setBusy(true);
     try { await action(); }
     catch (failure) { setError(failure.message); }
@@ -33,6 +35,7 @@ export function Knowledge({ token }) {
   }
 
   useEffect(() => {
+    setDocumentMatches(null);
     let current = true;
     callRouter(token, '/app-connections')
       .then(data => {
@@ -198,7 +201,7 @@ export function Knowledge({ token }) {
 
       {importSource && (
         <fieldset disabled={busy}>
-          <legend>Import document</legend>
+          <legend>Documents</legend>
           <form onSubmit={event => {
             event.preventDefault();
             const form = event.currentTarget;
@@ -223,7 +226,10 @@ export function Knowledge({ token }) {
             });
           }}>
             <label>Source account<select name="connection" value={importSource.id}
-              onChange={event => setImportAccount(event.target.value)} required>
+              onChange={event => {
+                setImportAccount(event.target.value);
+                setDocumentMatches(null);
+              }} required>
               {importAccounts.map(item => (
                 <option key={item.id} value={item.id}>{accountName(item)}</option>
               ))}
@@ -278,6 +284,27 @@ export function Knowledge({ token }) {
               });
             }}>Save refresh schedule</button>
           </form>
+          <form key={importSource.id + (importSource.workspace ?? '')} onSubmit={event => {
+            event.preventDefault();
+            const { workspace, query } = Object.fromEntries(new FormData(event.currentTarget));
+            void perform(async () => {
+              const { items } = await request('/app-connections/' + importSource.id + '/capabilities/document.search', {
+                method: 'POST', body: { workspace, query },
+              });
+              setDocumentMatches(items);
+            });
+          }}>
+            <label>Search workspace<input name="workspace" defaultValue={importSource.workspace ?? ''}
+              readOnly={Boolean(importSource.workspace)} onChange={() => setDocumentMatches(null)} required maxLength={128} /></label>
+            <label>Search terms<input name="query" required maxLength={256} onChange={() => setDocumentMatches(null)} /></label>
+            <button>Search imported documents</button>
+          </form>
+          {documentMatches && <section aria-label="Document search results">
+            <p role="status">{documentMatches.length ? `${documentMatches.length} matching documents` : 'No matching documents.'}</p>
+            {documentMatches.length > 0 && <ul>{documentMatches.map(item => (
+              <li key={item.id}><strong>{item.resource}</strong><p>{item.excerpt}</p></li>
+            ))}</ul>}
+          </section>}
           {documentSync.filter(schedule => schedule.connection === importSource.id).map(schedule => (
             <p key={schedule.workspace}>{schedule.workspace} · Every {schedule.intervalMinutes} minutes</p>
           ))}

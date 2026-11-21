@@ -61,6 +61,8 @@ fn allowed(method: &Method, path: &str) -> bool {
         | ("GET", ["", "app-connections", id, "usage"]) => {
             identifier(id)
         }
+        ("POST", ["", "app-connections", id, "capabilities",
+            "document.test" | "document.import" | "document.refresh" | "document.search"]) => identifier(id),
         ("PATCH" | "DELETE", ["", "app-connections" | "memory", id]) => {
             identifier(id)
         }
@@ -189,6 +191,10 @@ mod tests {
             (Method::GET, "/app-connections/00000000-0000-0000-0000-000000000000/usage"),
             (Method::PATCH, "/app-connections/00000000-0000-0000-0000-000000000000"),
             (Method::POST, "/app-connections/00000000-0000-0000-0000-000000000000/test-document"),
+            (Method::POST, "/app-connections/00000000-0000-0000-0000-000000000000/capabilities/document.test"),
+            (Method::POST, "/app-connections/00000000-0000-0000-0000-000000000000/capabilities/document.import"),
+            (Method::POST, "/app-connections/00000000-0000-0000-0000-000000000000/capabilities/document.refresh"),
+            (Method::POST, "/app-connections/00000000-0000-0000-0000-000000000000/capabilities/document.search"),
             (Method::POST, "/tasks/00000000-0000-0000-0000-000000000000/remember-result"),
         ] {
             assert!(allowed(&method, path), "{method} {path}");
@@ -199,6 +205,10 @@ mod tests {
         assert!(!allowed(&Method::GET, "/stream?once=1&after=10&after=0"));
         assert!(!allowed(&Method::GET, "/state?redirect=1"));
         assert!(!allowed(&Method::POST, "/device/claim"));
+        assert!(!allowed(&Method::POST,
+            "/app-connections/00000000-0000-0000-0000-000000000000/capabilities/document.publish"));
+        assert!(!allowed(&Method::GET,
+            "/app-connections/00000000-0000-0000-0000-000000000000/capabilities/document.search"));
         assert!(!allowed(&Method::POST, "/admin/metrics"));
         assert!(!allowed(&Method::POST, "/admin/mobile-pairings/invalid"));
         assert!(!allowed(&Method::GET, "/tasks/00000000-0000-0000-0000-000000000000/attachments/4"));
