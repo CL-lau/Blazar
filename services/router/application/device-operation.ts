@@ -1,4 +1,4 @@
-import type { DesktopAppControls, RunOutcome, WorkerConfiguration } from '../../../packages/protocol/task.ts';
+import { type DesktopAppControls, type RunOutcome, type WorkerCapability, type WorkerConfiguration } from '../../../packages/protocol/task.ts';
 import type { TaskStore } from '../store.ts';
 import type { MemoryStore } from '../memory.ts';
 import { RequestError, requiredText } from '../protocol/request.ts';
@@ -44,6 +44,15 @@ export function deviceOperation(store: DeviceTasks, bearer: string, pathname: st
       const label = requiredText(reported.label, 'Worker label', 128);
       if (/[\x00-\x1f\x7f]/.test(label)) throw new RequestError(400, 'Invalid Worker label');
       worker = { label, protocol };
+      if (reported.capabilities !== undefined) {
+        const supported = protocol === 'codex' || protocol === 'pi' ? ['steer']
+          : protocol === 'jsonl' ? ['full-input-artifacts'] : [];
+        if (!Array.isArray(reported.capabilities) || reported.capabilities.length > supported.length ||
+            reported.capabilities.some(capability => !supported.includes(capability))) {
+          throw new RequestError(400, 'Invalid Worker capabilities');
+        }
+        if (reported.capabilities.length) worker.capabilities = reported.capabilities as WorkerCapability[];
+      }
       if (reported.adapterVersion !== undefined || reported.revision !== undefined) {
         if (reported.adapterVersion !== 1 || typeof reported.revision !== 'string' ||
             !/^[a-f0-9]{64}$/.test(reported.revision)) throw new RequestError(400, 'Invalid Worker revision');

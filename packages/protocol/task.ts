@@ -46,6 +46,9 @@ export type WorkflowAction =
   | { kind: 'desktop.observe'; alias: string; deviceId: string }
   | { kind: 'desktop.click'; alias: string; deviceId: string; windowId: string; windowIdentity: string; button: string; expectedText?: string };
 
+export const workerCapabilities = ['steer', 'full-input-artifacts'] as const;
+export type WorkerCapability = typeof workerCapabilities[number];
+
 export interface WorkflowStep {
   key: string;
   goal: string;
@@ -54,6 +57,7 @@ export interface WorkflowStep {
   requireReview?: boolean;
   action?: WorkflowAction;
   workerProtocols?: string[];
+  workerCapability?: WorkerCapability;
 }
 
 
@@ -78,6 +82,7 @@ export interface WorkerConfiguration {
   label: string;
   protocol: string;
   adapterVersion?: number;
+  capabilities?: WorkerCapability[];
   revision?: string;
 }
 

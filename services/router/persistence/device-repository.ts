@@ -119,12 +119,12 @@ export class DeviceRepository {
       this.db.prepare('DELETE FROM device_worker WHERE device_id=?').run(id);
       return;
     }
-    this.db.prepare(`INSERT INTO device_worker(device_id,label,protocol,revision,adapter_version) VALUES(?,?,?,?,?)
+    this.db.prepare(`INSERT INTO device_worker(device_id,label,protocol,revision,adapter_version,capabilities) VALUES(?,?,?,?,?,?)
       ON CONFLICT(device_id) DO UPDATE SET label=excluded.label,protocol=excluded.protocol,
-        revision=excluded.revision,adapter_version=excluded.adapter_version
+        revision=excluded.revision,adapter_version=excluded.adapter_version,capabilities=excluded.capabilities
       WHERE label<>excluded.label OR protocol<>excluded.protocol OR revision IS NOT excluded.revision
-        OR adapter_version IS NOT excluded.adapter_version`)
-      .run(id, worker.label, worker.protocol, worker.revision ?? null, worker.adapterVersion ?? null);
+        OR adapter_version IS NOT excluded.adapter_version OR capabilities<>excluded.capabilities`)
+      .run(id, worker.label, worker.protocol, worker.revision ?? null, worker.adapterVersion ?? null, JSON.stringify(worker.capabilities ?? []));
   }
 
   clearInterruption(device: string) {

@@ -5,7 +5,7 @@ import type { Worker } from '../../packages/workers/registry.ts';
 import { createHash, createHmac, randomUUID } from 'node:crypto';
 import { DeviceLedger, type SessionCheckpoint } from './ledger.ts';
 import { setTimeout as delay } from 'node:timers/promises';
-import type { PredecessorInput, Run, RunOutcome, Task, TaskAttachment, TaskMemoryInput, WorkerConfiguration } from '../../packages/protocol/task.ts';
+import type { PredecessorInput, Run, RunOutcome, Task, TaskAttachment, TaskMemoryInput, WorkerCapability, WorkerConfiguration } from '../../packages/protocol/task.ts';
 import { performance } from 'node:perf_hooks';
 import { maintainLease } from './lease.ts';
 import { platform } from 'node:os';
@@ -13,7 +13,7 @@ import { preview } from './preview.ts';
 import { executeDesktopAction } from './execution/desktop.ts';
 import { executeWorker } from './execution/worker.ts';
 
-type Assignment = { clickExpectedText?: string; run: Run; task: Task; instructions: string[]; predecessors: PredecessorInput[]; acceptanceCriteria?: string[]; memoryInputs?: TaskMemoryInput[]; attachments?: TaskAttachment[] };
+type Assignment = { clickExpectedText?: string; fullInputRequired?: boolean; run: Run; task: Task; instructions: string[]; predecessors: PredecessorInput[]; acceptanceCriteria?: string[]; memoryInputs?: TaskMemoryInput[]; attachments?: TaskAttachment[] };
 
 export class DeviceClient {
   private socket: DeviceSocket;
@@ -45,7 +45,11 @@ export class DeviceClient {
         adapterVersion, worker.label, protocol, worker.executable, worker.args, worker.env ?? [],
         worker.protocol === 'jsonl' && worker.includeFullInputArtifacts === true,
       ])).digest('hex');
-      this.workerConfiguration = { label: worker.label, protocol, adapterVersion, revision };
+      const capabilities: WorkerCapability[] = [];
+      if (protocol === 'codex' || protocol === 'pi') capabilities.push('steer');
+      if (worker.protocol === 'jsonl' && worker.includeFullInputArtifacts) capabilities.push('full-input-artifacts');
+      this.workerConfiguration = { label: worker.label, protocol, adapterVersion, revision,
+        ...(capabilities.length && { capabilities }) };
     }
     this.observation = observation;
     this.scope = createHash('sha256').update(JSON.stringify([base.origin, token])).digest('hex');
@@ -183,7 +187,7 @@ export class DeviceClient {
           }, this.worker, prefix, assignment.task.id, {
             goal: assignment.task.goal, instructions: assignment.instructions, predecessors: assignment.predecessors,
             acceptanceCriteria: assignment.acceptanceCriteria, memoryInputs: assignment.memoryInputs, attachments: assignment.attachments,
-          }, stop, active);
+          }, stop, active, assignment.fullInputRequired);
           checkpoint = session;
           outcome = { status: 'succeeded', result, artifact: { name: 'worker-result.txt', text: result } };
         } else {

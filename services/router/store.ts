@@ -760,6 +760,7 @@ export class TaskStore {
         }
         this.db.prepare('INSERT INTO workflow_step VALUES(?,?,?)').run(id, name, taskId);
         if (step.requireReview) this.db.prepare('INSERT INTO task_review VALUES(?)').run(taskId);
+        if (step.workerCapability) this.db.prepare('INSERT INTO task_worker_capability VALUES(?,?)').run(taskId, step.workerCapability);
         for (const protocol of step.workerProtocols ?? []) {
           this.db.prepare('INSERT INTO task_worker_protocol VALUES(?,?)').run(taskId, protocol);
         }
@@ -775,6 +776,7 @@ export class TaskStore {
         }
         this.event(taskId, 'task.created', { goal: step.goal, workspace, workflowId: id, stepKey: name, predecessors, status,
           ...(step.action && { action: step.action }),
+          ...(step.workerCapability && { workerCapability: step.workerCapability }),
           ...(step.workerProtocols && { workerProtocols: step.workerProtocols }),
           ...(appEvidence && { appEvidence: appEvidence.refs }),
         });
@@ -1107,7 +1109,9 @@ export class TaskStore {
     const task = this.get(owner, run.taskId)!;
     const expected = task.goal.startsWith('/click ') ? this.db.prepare(`SELECT json_extract(data,'$.action.expectedText') AS text
       FROM event WHERE taskId=? AND type='task.created' ORDER BY seq LIMIT 1`).get(run.taskId)?.text : undefined;
+    const required = this.db.prepare('SELECT capability FROM task_worker_capability WHERE task_id=?').get(run.taskId)?.capability;
     return { run, task, instructions, predecessors, acceptanceCriteria,
+      ...(required === 'full-input-artifacts' && { fullInputRequired: true }),
       ...(typeof expected === 'string' && { clickExpectedText: expected }),
       ...(attachments.length && { attachments }),
       ...(memoryInputs.length && { memoryInputs }),
@@ -1381,6 +1385,8 @@ export class TaskStore {
             OR (p.capability='agent.acp' AND EXISTS(SELECT 1 FROM json_each(policy.protocols) WHERE value=worker.protocol)))
           AND (NOT EXISTS(SELECT 1 FROM task_worker_protocol wp WHERE wp.task_id=t.id) OR
             EXISTS(SELECT 1 FROM task_worker_protocol wp WHERE wp.task_id=t.id AND wp.protocol=worker.protocol))
+          AND NOT EXISTS(SELECT 1 FROM task_worker_capability wc WHERE wc.task_id=t.id
+            AND NOT EXISTS(SELECT 1 FROM json_each(worker.capabilities) WHERE value=wc.capability))
           AND (p.capability='agent.acp' OR (
             NOT EXISTS(SELECT 1 FROM task_app_evidence e WHERE e.task_id=t.id)
             AND NOT EXISTS(SELECT 1 FROM task_memory_input m WHERE m.task_id=t.id)

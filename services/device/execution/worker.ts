@@ -25,7 +25,7 @@ interface WorkerExecution {
 
 export async function executeWorker(
   context: WorkerExecution, worker: Worker, prefix: string, taskId: string, job: JobContext,
-  stop: AbortController, active: AbortSignal,
+  stop: AbortController, active: AbortSignal, fullInputRequired = false,
 ): Promise<{ result: string; checkpoint?: SessionCheckpoint }> {
   let sequence = 1;
   const report = async (message: string, signal: AbortSignal) => {
@@ -35,7 +35,7 @@ export async function executeWorker(
   };
   switch (worker.protocol) {
     case 'jsonl':
-      if (worker.includeFullInputArtifacts) await completeInputArtifacts(context, job.predecessors, prefix, active);
+      if (worker.includeFullInputArtifacts) await completeInputArtifacts(context, job.predecessors, prefix, active, fullInputRequired);
       return { result: await runCustomJsonl(worker, context.root, job, active, report) };
     case 'pi':
     case 'codex':
@@ -127,11 +127,15 @@ async function runAcpWorker(execution: WorkerExecution, worker: Worker, prefix: 
   return { result, checkpoint };
 }
 
-async function completeInputArtifacts(context: WorkerExecution, inputs: PredecessorInput[], prefix: string, signal: AbortSignal) {
+async function completeInputArtifacts(context: WorkerExecution, inputs: PredecessorInput[], prefix: string, signal: AbortSignal, required: boolean) {
   let budget = 64_000;
   for (const input of inputs) {
     const artifact = input.artifact;
-    if (!artifact || !artifact.truncated || artifact.size > budget || artifact.size <= 0) continue;
+    if (!artifact || !artifact.truncated || artifact.size <= 0) continue;
+    if (artifact.size > budget) {
+      if (required) throw new Error('Required workflow input artifacts exceed the device input budget');
+      continue;
+    }
     const response = await context.post(prefix + 'input-artifact', { artifactId: artifact.id }, signal);
     if (!response.ok) {
       await response.body?.cancel();

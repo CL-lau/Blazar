@@ -83,6 +83,9 @@ export function initializeTaskSchema(db: DatabaseSync, runLimitMs: number) {
     CREATE TABLE IF NOT EXISTS desktop_reconciliation (
       task_id TEXT PRIMARY KEY REFERENCES task(id) ON DELETE CASCADE, inputs TEXT NOT NULL
     );
+    CREATE TABLE IF NOT EXISTS task_worker_capability (
+      task_id TEXT PRIMARY KEY REFERENCES task(id) ON DELETE CASCADE, capability TEXT NOT NULL
+    );
     CREATE TABLE IF NOT EXISTS task_worker_protocol (
       task_id TEXT NOT NULL REFERENCES task(id) ON DELETE CASCADE, protocol TEXT NOT NULL,
       PRIMARY KEY(task_id,protocol)
@@ -345,6 +348,7 @@ export function initializeTaskSchema(db: DatabaseSync, runLimitMs: number) {
   db.exec('CREATE INDEX IF NOT EXISTS expired_approval_stop_task ON expired_approval_stop(task_id,expires)');
   const workerColumns = new Set(db.prepare("SELECT name FROM pragma_table_info('device_worker')").all()
     .map(column => column.name));
+  if (!workerColumns.has('capabilities')) db.exec("ALTER TABLE device_worker ADD COLUMN capabilities TEXT NOT NULL DEFAULT '[]'");
   if (!workerColumns.has('revision')) db.exec('ALTER TABLE device_worker ADD COLUMN revision TEXT');
   if (!workerColumns.has('adapter_version')) db.exec('ALTER TABLE device_worker ADD COLUMN adapter_version INTEGER');
   sqliteTransaction(db, () => {

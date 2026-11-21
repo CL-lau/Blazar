@@ -1,4 +1,4 @@
-import type { WorkflowAction, WorkflowStep } from '../../../packages/protocol/task.ts';
+import { workerCapabilities, type WorkflowAction, type WorkflowStep } from '../../../packages/protocol/task.ts';
 
 export class InvalidWorkflow extends Error {}
 
@@ -28,10 +28,15 @@ export function workflowSteps(input: unknown): WorkflowStep[] {
         protocols.some(protocol => !['acp', 'codex', 'claude', 'pi', 'aider', 'jsonl'].includes(protocol)))) {
       throw new InvalidWorkflow('Invalid workflow Worker protocols');
     }
+    const capability = workerCapabilities.find(item => item === value.workerCapability);
+    if (value.workerCapability !== undefined && (!capability || action || /^\/(observe|click|preview) /.test(value.goal))) {
+      throw new InvalidWorkflow('Invalid workflow Worker capability');
+    }
     const acceptanceCriteria: string[] = Array.isArray(value.acceptanceCriteria)
       ? [...new Set<string>(value.acceptanceCriteria.map((criterion: string) => criterion.trim()))] : [];
     return { key: value.key as string, goal: value.goal as string, needs: [...new Set<string>(value.needs)],
       ...(action && { action }),
+      ...(capability && { workerCapability: capability }),
       ...(protocols && { workerProtocols: [...new Set<string>(protocols)].sort() }),
       ...(acceptanceCriteria.length && { acceptanceCriteria }), ...(value.requireReview === true && { requireReview: true }) };
   });

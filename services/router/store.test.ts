@@ -978,10 +978,10 @@ test('workflow steps dispatch only to allowed Worker protocols and pass results 
   const codex = { label: 'Codex fixture', protocol: 'codex' };
   const acp = { label: 'ACP fixture', protocol: 'acp' };
   const workflow = db.createWorkflow('owner', 'protocol-flow', 'project', [
-    { key: 'draft', goal: 'Draft notes', needs: [], workerProtocols: ['codex'] },
+    { key: 'draft', goal: 'Draft notes', needs: [], workerProtocols: ['codex'], workerCapability: 'steer' },
     { key: 'review', goal: 'Review notes', needs: ['draft'], workerProtocols: ['acp'] },
   ]);
-  const claim = (device: string, worker: typeof codex) =>
+  const claim = (device: string, worker: Parameters<TaskStore['claim']>[8]) =>
     db.claim('owner', 'project', device, now, 45_000, '', '/preview ', undefined, worker);
   db.recordDeviceWorker(reviewer.id, acp);
   db.recordDeviceActivity(reviewer.id, now, 'agent.acp');
@@ -991,7 +991,11 @@ test('workflow steps dispatch only to allowed Worker protocols and pass results 
   db.recordDeviceWorker(repo.id, codex);
   db.recordDeviceActivity(repo.id, now, 'agent.acp');
   db.updateDeviceReadiness(now);
-  const draft = claim(repo.id, codex)!;
+  assert.equal(claim(repo.id, codex), undefined);
+  const steerable = { ...codex, capabilities: ['steer'] as const };
+  const worker = { ...steerable, capabilities: [...steerable.capabilities] };
+  db.recordDeviceWorker(repo.id, worker);
+  const draft = claim(repo.id, worker)!;
   assert.equal(draft.task.id, workflow.steps[0].taskId);
   assert.ok(db.finish(draft.run.id, repo.id, now, { status: 'succeeded', result: 'Draft notes' }));
   assert.equal(claim(repo.id, codex), undefined);

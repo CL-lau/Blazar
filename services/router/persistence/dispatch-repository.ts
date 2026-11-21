@@ -28,6 +28,7 @@ export class DispatchRepository {
     const fingerprint = JSON.stringify(desktopApps ? [...identity, desktopApps] : worker ? [...identity, worker] : identity);
     const policy = this.db.prepare('SELECT protocols,max_concurrent,run_limit_seconds FROM workspace_worker_policy WHERE owner=? AND workspace=?')
       .get(owner, workspace);
+    const capabilities = JSON.stringify(worker?.capabilities ?? []);
     const workerPermitted = !policy || (worker && (JSON.parse(String(policy.protocols)) as string[]).includes(worker.protocol));
     if (requestId) {
       const receipt = this.db.prepare('SELECT fingerprint,response,expires FROM device_claim WHERE device=? AND key=?')
@@ -39,6 +40,8 @@ export class DispatchRepository {
         const current = this.db.prepare(`SELECT r.expires AS expires FROM run r JOIN task t ON r.taskId=t.id
           WHERE r.id=? AND r.device=? AND r.expires>? AND r.version=t.version AND t.status='running'
           AND NOT EXISTS(SELECT 1 FROM invalid_workflow_run i WHERE i.id=r.id)
+          AND NOT EXISTS(SELECT 1 FROM task_worker_capability wc WHERE wc.task_id=t.id
+            AND NOT EXISTS(SELECT 1 FROM json_each(?) WHERE value=wc.capability))
           AND NOT EXISTS(SELECT 1 FROM run_evidence_stop s WHERE s.run_id=r.id)
           AND (NOT EXISTS(SELECT 1 FROM task_worker_protocol wp WHERE wp.task_id=t.id) OR
             EXISTS(SELECT 1 FROM task_worker_protocol wp WHERE wp.task_id=t.id AND wp.protocol=?))
@@ -47,7 +50,7 @@ export class DispatchRepository {
             NOT EXISTS(SELECT 1 FROM task_app_evidence e WHERE e.task_id=t.id)
             AND NOT EXISTS(SELECT 1 FROM task_memory_input m WHERE m.task_id=t.id)
             AND NOT EXISTS(SELECT 1 FROM task_attachment a WHERE a.task_id=t.id)))`)
-          .get(assignment.run.id, device, now, worker?.protocol ?? null, Number(Boolean(workerPermitted)), Number(allowWorkerInputs));
+          .get(assignment.run.id, device, now, capabilities, worker?.protocol ?? null, Number(Boolean(workerPermitted)), Number(allowWorkerInputs));
         if (!current) return undefined;
         assignment.run.expires = Number(current.expires);
         return { kind: 'replay' as const, assignment: assignment as unknown };
@@ -78,6 +81,8 @@ export class DispatchRepository {
       AND status IN ('queued','waiting_device') AND (substr(goal,1,length(?))=? OR (?='/observe ' AND substr(goal,1,7)='/click '))
       AND (?='' OR (substr(goal,1,length(?))!=? AND substr(goal,1,9)!='/observe ' AND substr(goal,1,7)!='/click '))
       AND NOT EXISTS(SELECT 1 FROM expired_approval_stop s WHERE s.task_id=task.id AND s.expires>?)
+      AND NOT EXISTS(SELECT 1 FROM task_worker_capability wc WHERE wc.task_id=task.id
+        AND NOT EXISTS(SELECT 1 FROM json_each(?) WHERE value=wc.capability))
       AND (NOT EXISTS(SELECT 1 FROM task_worker_protocol wp WHERE wp.task_id=task.id) OR
         EXISTS(SELECT 1 FROM task_worker_protocol wp WHERE wp.task_id=task.id AND wp.protocol=?))
       AND NOT EXISTS(SELECT 1 FROM task_desktop_device target WHERE target.task_id=task.id AND target.device_id<>?)
@@ -98,7 +103,7 @@ export class DispatchRepository {
       ON d.owner=eligible.owner AND d.workspace=eligible.workspace AND d.channel=eligible.origin_channel
       AND d.goal_prefix=? AND d.excluding_prefix=?
     ORDER BY COALESCE(d.last_dispatch,0), eligible.queue_order LIMIT 1`).get(
-      owner, workspace, goalPrefix, goalPrefix, goalPrefix, excludingPrefix, excludingPrefix, excludingPrefix, now, worker?.protocol ?? null, device, Number(Boolean(workerPermitted) && workerHasCapacity), Number(allowWorkerInputs),
+      owner, workspace, goalPrefix, goalPrefix, goalPrefix, excludingPrefix, excludingPrefix, excludingPrefix, now, capabilities, worker?.protocol ?? null, device, Number(Boolean(workerPermitted) && workerHasCapacity), Number(allowWorkerInputs),
       desktopApps ? JSON.stringify(desktopApps) : null, desktopApps ? JSON.stringify(desktopApps) : null,
       goalPrefix, excludingPrefix) as unknown as (Task & { origin_channel: string }) | undefined;
     if (!task) {
