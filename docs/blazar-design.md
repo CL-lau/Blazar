@@ -346,3 +346,5 @@ packages/storage          事务、迁移、备份
 - Codex 增加 offline-tools 步骤能力。Router 仅派给声明该能力的 Worker，设备在启动轮次前确认原生沙箱的 networkAccess 为 false。使用真实 Codex App Server 和本机 HTTP 测试服务验证，宿主请求可以访问，沙箱内命令无法连接。该验证覆盖工具子进程，不涉及模型端点。
 
 - 使用官方 GitHub Copilot CLI 1.0.114 和本机 OpenAI 兼容模拟服务验证 ACP v1 握手、流式输出、进程重启后恢复会话，以及取消后关闭模型流。测试使用独立配置目录及模拟凭据。 [GitHub Copilot CLI ACP 参考](https://docs.github.com/en/copilot/reference/copilot-cli-reference/acp-server)
+
+- 使用官方 Kimi Code CLI 2.7.2 和本地 OpenAI 兼容模拟服务验证 ACP 握手、流式结果、跨进程恢复会话和取消后关闭模型流。测试在独立 `KIMI_CODE_HOME` 下运行。 [Kimi Code ACP 文档](https://github.com/MoonshotAI/kimi-code/blob/main/docs/en/reference/kimi-acp.md)

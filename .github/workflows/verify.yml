@@ -26,20 +26,21 @@ jobs:
       - run: npm ci
       - run: npm run typecheck
       - run: npm test
-      - name: Verify DeepSeek Harness, Pi, OpenCode, Qwen Code, and Gemini CLI with local model endpoints
+      - name: Verify DeepSeek Harness, Pi, OpenCode, Qwen Code, Gemini CLI, and Kimi Code with local model endpoints
         if: matrix.node == '24'
         shell: bash
         run: |
           tool_dir="$(mktemp -d)"
           npm install --prefix "$tool_dir" --ignore-scripts --no-audit --no-fund \
             @deepseek-ai/dsh@0.2.2-rc.5 @earendil-works/pi-coding-agent@1.6.0 opencode-linux-x64@1.19.6 \
-            @qwen-code/qwen-code@0.28.3 @google/gemini-cli@0.70.0
+            @qwen-code/qwen-code@0.28.3 @google/gemini-cli@0.70.0 @moonshot-ai/kimi-code@2.7.2
           BLAZAR_TEST_DEEPSEEK_EXECUTABLE="$tool_dir/node_modules/.bin/dsh" \
             BLAZAR_TEST_PI_EXECUTABLE="$tool_dir/node_modules/.bin/pi" \
             BLAZAR_TEST_OPENCODE_EXECUTABLE="$tool_dir/node_modules/opencode-linux-x64/bin/opencode" \
             BLAZAR_TEST_QWEN_EXECUTABLE="$tool_dir/node_modules/.bin/qwen" \
             BLAZAR_TEST_GEMINI_EXECUTABLE="$tool_dir/node_modules/.bin/gemini" \
-            node --test services/router/{deepseek,pi,opencode,qwen,gemini}-runtime.test.ts
+            BLAZAR_TEST_KIMI_EXECUTABLE="$tool_dir/node_modules/.bin/kimi" \
+            node --test services/router/{deepseek,pi,opencode,qwen,gemini,kimi}-runtime.test.ts
       - name: Verify Aider with a local model endpoint
         if: matrix.node == '24'
         shell: bash

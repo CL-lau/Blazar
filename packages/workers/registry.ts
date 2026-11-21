@@ -37,7 +37,7 @@ const builtInWorkers = new Map<string, Worker>([
       'BAILIAN_TOKEN_PLAN_API_KEY', 'OPENAI_API_KEY', 'OPENAI_BASE_URL', 'OPENAI_MODEL',
       'QWEN_MODEL', 'QWEN_HOME', 'QWEN_RUNTIME_DIR', 'QWEN_CODE_MODELS_DEV_REFRESH'] }],
   ['kimi', { executable: 'kimi', args: ['acp'], label: 'Kimi Code',
-    env: ['KIMI_API_KEY', 'MOONSHOT_API_KEY'] }],
+    env: ['KIMI_API_KEY', 'MOONSHOT_API_KEY', 'KIMI_CODE_HOME', 'KIMI_SHARE_DIR', 'KIMI_CLI_NO_AUTO_UPDATE'] }],
   ['kiro', { executable: 'kiro-cli', args: ['acp', '--agent-engine=v3'], label: 'Kiro CLI' }],
   ['auggie', { executable: 'auggie', args: ['--acp'], label: 'Auggie' }],
   ['gemini', { executable: 'gemini', args: ['--acp'], label: 'Gemini CLI',
