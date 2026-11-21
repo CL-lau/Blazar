@@ -50,9 +50,9 @@ export function Timeline({ taskId, token, cursor }) {
       {error && <p className="error" role="alert">{error}</p>}
       <ul>{events.map(event => {
         const { data } = event;
-        const detail = data?.message ?? data?.text ?? data?.summary ?? data?.decision ?? data?.name ?? data?.status;
+        const detail = data?.waitingReason === 'worker_question' ? data.result : data?.message ?? data?.text ?? data?.summary ?? data?.decision ?? data?.name ?? data?.status;
         return <li key={event.seq}>
-          <strong>{labels[event.type] ?? event.type}</strong>
+          <strong>{data?.waitingReason === 'worker_question' ? 'Worker asked a question' : labels[event.type] ?? event.type}</strong>
           {detail && <p>{detail}</p>}
           {data?.waitingReason === 'git_patch_inputs' && data.runId && <p>
             Inspect the retained Git checkout for run <code>{data.runId}</code>.

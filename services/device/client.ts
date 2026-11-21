@@ -13,9 +13,10 @@ import { preview } from './preview.ts';
 import { executeDesktopAction } from './execution/desktop.ts';
 import { applyGitPatchInputs, GitPatchInputError, type gitRunWorktrees } from './execution/git-worktree.ts';
 import { completeInputArtifacts } from './execution/input-artifacts.ts';
+import { WorkerQuestion } from '../../packages/workers/custom-jsonl.ts';
 import { executeWorker } from './execution/worker.ts';
 
-type Assignment = { clickExpectedText?: string; observationExpectedText?: string; observationWaitSeconds?: number; fullInputRequired?: boolean; readOnlyRequired?: boolean; gitPatchInputsRequired?: boolean; run: Run; task: Task; instructions: string[]; predecessors: PredecessorInput[]; runHistory?: RunHistoryEntry[]; acceptanceCriteria?: string[]; memoryInputs?: TaskMemoryInput[]; attachments?: TaskAttachment[] };
+type Assignment = { clickExpectedText?: string; observationExpectedText?: string; observationWaitSeconds?: number; fullInputRequired?: boolean; readOnlyRequired?: boolean; gitPatchInputsRequired?: boolean; run: Run; task: Task; instructions: string[]; predecessors: PredecessorInput[]; runHistory?: RunHistoryEntry[]; previousQuestion?: string; acceptanceCriteria?: string[]; memoryInputs?: TaskMemoryInput[]; attachments?: TaskAttachment[] };
 
 export class DeviceClient {
   private socket: DeviceSocket;
@@ -212,7 +213,7 @@ export class DeviceClient {
             consumeApproval: (path, id, signal) => this.consumeApproval(path, id, signal),
           }, this.worker, prefix, assignment.task.id, {
             goal: assignment.task.goal, instructions: assignment.instructions, predecessors: assignment.predecessors,
-            runHistory: assignment.runHistory,
+            runHistory: assignment.runHistory, previousQuestion: assignment.previousQuestion,
             acceptanceCriteria: assignment.acceptanceCriteria, memoryInputs: assignment.memoryInputs, attachments: assignment.attachments,
           }, stop, active, assignment.fullInputRequired);
           checkpoint = this.worktrees ? undefined : session;
@@ -239,8 +240,10 @@ export class DeviceClient {
           active.throwIfAborted();
         }
         outcome = {
-          status: error instanceof DesktopResultUnverified || error instanceof GitPatchInputError ? 'waiting_user' : 'failed',
+          status: error instanceof DesktopResultUnverified || error instanceof GitPatchInputError || error instanceof WorkerQuestion
+            ? 'waiting_user' : 'failed',
           ...(error instanceof GitPatchInputError && { waitingReason: 'git_patch_inputs' }),
+          ...(error instanceof WorkerQuestion && { waitingReason: 'worker_question' }),
           result: error instanceof Error ? error.message : 'Preview failed',
         };
       }

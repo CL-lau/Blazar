@@ -82,13 +82,14 @@ struct TimelinePage: Decodable {
             let status: String?
             let waitingReason: String?
             let runId: String?
-            var description: String? { message ?? text ?? summary ?? decision ?? name ?? status }
+            let result: String?
+            var description: String? { waitingReason == "worker_question" ? result : message ?? text ?? summary ?? decision ?? name ?? status }
         }
         let seq: Int
         let type: String
         let data: Details
         var id: Int { seq }
-        var title: String { type.replacingOccurrences(of: ".", with: " ").replacingOccurrences(of: "_", with: " ").capitalized }
+        var title: String { data.waitingReason == "worker_question" ? "Worker asked a question" : type.replacingOccurrences(of: ".", with: " ").replacingOccurrences(of: "_", with: " ").capitalized }
     }
     let events: [Entry]
     let before: Int?

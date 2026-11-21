@@ -61,7 +61,7 @@ export class RunInputRepository {
         WHEN 'run.deadline_exceeded' THEN 'deadline_exceeded'
         WHEN 'run.inputs_changed' THEN 'inputs_changed'
         WHEN 'run.finished' THEN CASE
-          WHEN json_extract(data,'$.waitingReason')='git_patch_inputs' THEN 'git_patch_inputs'
+          WHEN json_extract(data,'$.waitingReason') IN ('git_patch_inputs','worker_question') THEN json_extract(data,'$.waitingReason')
           WHEN json_extract(data,'$.status') IN ('succeeded','failed') THEN json_extract(data,'$.status')
           ELSE 'review_required'
         END
@@ -75,9 +75,11 @@ export class RunInputRepository {
   }
 
   assignment(task: Task, run: Run, predecessors: PredecessorInput[], requireReadOnly: boolean, action?: WorkflowAction) {
-    const instructions = this.db.prepare(`SELECT data FROM event WHERE taskId=?
+    const instructionEvents = this.db.prepare(`SELECT data FROM event WHERE taskId=?
       AND type='task.instruction_added' ORDER BY seq`).all(run.taskId)
-      .map(row => JSON.parse(String(row.data)).text as string);
+      .map(row => JSON.parse(String(row.data)) as { text: string; question?: string });
+    const instructions = instructionEvents.map(event => event.text);
+    const previousQuestion = instructionEvents.findLast(event => event.question)?.question;
     const acceptanceCriteria = this.db.prepare('SELECT criterion FROM task_criterion WHERE task_id=? ORDER BY position')
       .all(run.taskId).map(row => String(row.criterion));
     const memoryInputs = this.db.prepare(`SELECT memory_id AS id,version,'' AS body FROM task_memory_input WHERE task_id=? ORDER BY position`)
@@ -90,6 +92,7 @@ export class RunInputRepository {
     const runHistory = run.version > 1 ? this.runHistory(run.taskId) : [];
     return { run, task, instructions, predecessors, acceptanceCriteria,
       ...(runHistory.length && { runHistory }),
+      ...(previousQuestion && { previousQuestion }),
       ...(required === 'full-input-artifacts' && { fullInputRequired: true }),
       ...(required === 'git-patch-inputs' && { gitPatchInputsRequired: true }),
       ...((required === 'read-only' || requireReadOnly) && { readOnlyRequired: true }),

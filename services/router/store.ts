@@ -642,9 +642,16 @@ export class TaskStore {
 
   private appendInstruction(taskId: string, text: string, previousStatus: string, metadata: Record<string, string> = {}) {
     const run = this.db.prepare('SELECT id FROM run WHERE taskId=?').get(taskId);
+    const previous = !run && previousStatus === 'waiting_user' ? this.db.prepare(`SELECT
+      json_extract(data,'$.waitingReason') AS reason,json_extract(data,'$.result') AS question
+      FROM event WHERE taskId=? AND type='run.finished'
+      AND json_extract(data,'$.result')=(SELECT result FROM task WHERE id=?)
+      ORDER BY seq DESC LIMIT 1`).get(taskId, taskId) : undefined;
+    const question = previous?.reason === 'worker_question' && typeof previous.question === 'string'
+      ? previous.question : undefined;
     const updated = this.db.prepare('UPDATE task SET status=?,version=version+1,result=NULL WHERE id=? RETURNING version')
       .get(run ? 'running' : 'queued', taskId)!;
-    this.event(taskId, 'task.instruction_added', { text, ...metadata, version: updated.version });
+    this.event(taskId, 'task.instruction_added', { text, ...metadata, version: updated.version, ...(question && { question }) });
     if (previousStatus === 'succeeded') this.invalidateCompletedDescendants(taskId);
   }
 
@@ -1386,8 +1393,11 @@ export class TaskStore {
       const click = String(row.goal).startsWith('/click ');
       const patchInputWait = outcome.status === 'waiting_user' && outcome.waitingReason === 'git_patch_inputs' &&
         Boolean(this.db.prepare("SELECT 1 FROM task_worker_capability WHERE task_id=? AND capability='git-patch-inputs'").get(taskId));
-      if (outcome.waitingReason && !patchInputWait) return false;
-      if ((outcome.status === 'waiting_user' && !click && !patchInputWait) ||
+      const workerQuestion = outcome.status === 'waiting_user' && outcome.waitingReason === 'worker_question' &&
+        Boolean(this.db.prepare(`SELECT 1 FROM event WHERE taskId=? AND type='run.started'
+          AND json_extract(data,'$.runId')=? AND json_extract(data,'$.worker.protocol')='jsonl'`).get(taskId, runId));
+      if (outcome.waitingReason && !patchInputWait && !workerQuestion) return false;
+      if ((outcome.status === 'waiting_user' && !click && !patchInputWait && !workerQuestion) ||
           (click && outcome.status !== 'failed' && !this.db.prepare(`SELECT 1 FROM approval_use u
             JOIN approval a ON a.id=u.id WHERE a.runId=? AND a.version=?`).get(runId, row.runVersion!))) return false;
       if (outcome.status === 'succeeded' && visual && outcome.artifact?.mime !== 'image/png') {

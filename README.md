@@ -126,6 +126,8 @@ For a JSONL extension, set `"protocol": "jsonl"` in the same manifest. Blazar wr
 {"version":1,"type":"completed","result":"Task summary"}
 ```
 
+To wait for a clarification, send `{"version":1,"type":"question","message":"Which format should I use?"}` as the terminal line and exit with status zero. Blazar stores the question and releases the run lease. When the user adds an instruction, the next run receives the question as `previousQuestion` and the reply in `instructions`.
+
 For a failed run, send `{"version":1,"type":"failed","message":"Reason"}` as the terminal line. A successful Worker exits with status zero after writing its result. Configure local executable paths and environment names only for Workers you trust to run with your local account.
 
 Set `"includeFullInputArtifacts": true` in a JSONL manifest to fetch complete text for truncated predecessor artifacts where the run has access. Blazar verifies the content hash and limits full-text fetches to 64,000 bytes per run. Use `artifact.text` when available and `artifact.excerpt` for bounded context.

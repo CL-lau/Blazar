@@ -3,6 +3,8 @@ import { spawnWorker, type WorkerCommand } from './process.ts';
 import { jobPrompt, type JobContext } from './prompt.ts';
 
 export type CustomJsonlWorker = WorkerCommand & { protocol: 'jsonl'; includeFullInputArtifacts?: boolean };
+export class WorkerQuestion extends Error {}
+
 type Progress = (message: string, signal: AbortSignal) => Promise<void>;
 
 export async function runCustomJsonl(
@@ -27,13 +29,14 @@ export async function runCustomJsonl(
   async function readResult() {
     let result: string | undefined;
     let failure: string | undefined;
+    let question: string | undefined;
     for await (const line of lines) {
       active.throwIfAborted();
       if (line.length > 32_000) throw new Error('JSONL worker event exceeded the limit');
       let event;
       try { event = JSON.parse(line); }
       catch { throw new Error('Invalid JSONL worker event'); }
-      if (result !== undefined || failure !== undefined || event?.version !== 1) {
+      if (result !== undefined || failure !== undefined || question !== undefined || event?.version !== 1) {
         throw new Error('Invalid JSONL worker event sequence');
       }
       if (event.type === 'progress' && typeof event.message === 'string' &&
@@ -42,6 +45,9 @@ export async function runCustomJsonl(
       } else if (event.type === 'completed' && typeof event.result === 'string' &&
           event.result.trim() && event.result.length <= 4_000) {
         result = event.result.toWellFormed();
+      } else if (event.type === 'question' && typeof event.message === 'string' &&
+          event.message.trim() && event.message.length <= 1_000) {
+        question = event.message.trim().toWellFormed();
       } else if (event.type === 'failed' && typeof event.message === 'string' &&
           event.message.trim() && event.message.length <= 4_000) {
         failure = event.message.toWellFormed();
@@ -51,6 +57,7 @@ export async function runCustomJsonl(
     }
     await closed;
     if (failure) throw new Error(failure);
+    if (question && child.exitCode === 0) throw new WorkerQuestion(question);
     if (child.exitCode !== 0 || !result) throw new Error('JSONL worker exited without a successful result');
     return result;
   }

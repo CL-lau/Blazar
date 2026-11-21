@@ -19,6 +19,17 @@ test('a registered JSONL extension executes a real subprocess through Router and
   await writeFile(script, `
     const request = JSON.parse(require('node:fs').readFileSync(0, 'utf8'));
     if (request.version !== 1 || request.type !== 'run') process.exit(2);
+    if (request.input.goal === 'Prepare a formatted summary') {
+      const question = 'Which output format should I use?';
+      if (!request.input.instructions.length) {
+        console.log(JSON.stringify({version:1,type:'question',message:question}));
+        return;
+      }
+      if (request.input.previousQuestion !== question || request.input.instructions[0] !== 'Use Markdown' ||
+          request.input.previousRuns?.[0]?.outcome !== 'worker_question') process.exit(10);
+      console.log(JSON.stringify({version:1,type:'completed',result:'Formatted summary ready'}));
+      return;
+    }
     if (request.input.goal === 'Recover a failed attempt') {
       const history = request.input.previousRuns;
       if (!history) {
@@ -230,6 +241,15 @@ test('a registered JSONL extension executes a real subprocess through Router and
   assert.equal(store.command('owner', retryTask.id, 1, { action: 'retry' })?.version, 2);
   assert.equal(await client.runOnce(AbortSignal.timeout(5_000)), true);
   assert.equal(store.get('owner', retryTask.id)?.result, 'Previous attempt identified');
+
+  const questionTask = store.create('owner', 'fixture', 'worker-question', 'project', 'Prepare a formatted summary');
+  assert.equal(await client.runOnce(AbortSignal.timeout(5_000)), true);
+  assert.equal(store.get('owner', questionTask.id)?.status, 'waiting_user');
+  assert.equal(store.get('owner', questionTask.id)?.result, 'Which output format should I use?');
+  assert.equal(store.snapshot('owner').approvals.filter(item => item.taskId === questionTask.id).length, 0);
+  assert.equal(store.command('owner', questionTask.id, 1, { action: 'append', text: 'Use Markdown' })?.version, 2);
+  assert.equal(await client.runOnce(AbortSignal.timeout(5_000)), true);
+  assert.equal(store.get('owner', questionTask.id)?.result, 'Formatted summary ready');
 
   const connection = memory.connect('owner', 'github', 'Handbook', 'project');
   const source = { connection, resource: 'guide.md', revision: '1' };

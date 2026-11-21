@@ -11,6 +11,7 @@ export type JobContext = {
   memoryInputs?: TaskMemoryInput[];
   attachments?: TaskAttachment[];
   runHistory?: RunHistoryEntry[];
+  previousQuestion?: string;
 };
 
 export function jobPrompt(job: JobContext) {
@@ -20,6 +21,7 @@ export function jobPrompt(job: JobContext) {
     ...(job.acceptanceCriteria?.length && { acceptanceCriteria: job.acceptanceCriteria }),
     ...(job.memoryInputs?.length && { backgroundMemory: job.memoryInputs }),
     ...(job.attachments?.length && { attachments: job.attachments }),
+    ...(job.previousQuestion && { previousQuestion: job.previousQuestion }),
     ...(job.runHistory?.length && { previousRuns: job.runHistory }),
     predecessorResults: job.predecessors.map(value => ({ ...value, result: value.result?.slice(0, 4_000) })),
   });

@@ -38,7 +38,7 @@ export const windowImageLifetimeMs = 5 * 60_000;
 
 export interface RunOutcome {
   status: 'succeeded' | 'failed' | 'waiting_user';
-  waitingReason?: 'git_patch_inputs';
+  waitingReason?: 'git_patch_inputs' | 'worker_question';
   result: string;
   artifact?: { name: string; text: string; mime?: 'image/png' };
 }
@@ -97,7 +97,7 @@ export interface WorkerConfiguration {
 export interface RunHistoryEntry {
   eventSeq: number;
   runId: string;
-  outcome: 'succeeded' | 'failed' | 'review_required' | 'git_patch_inputs' |
+  outcome: 'succeeded' | 'failed' | 'review_required' | 'git_patch_inputs' | 'worker_question' |
     'interrupted' | 'device_revoked' | 'lease_expired' | 'deadline_exceeded' | 'inputs_changed';
 }
 
