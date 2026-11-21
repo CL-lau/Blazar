@@ -1,6 +1,8 @@
 import { DatabaseSync } from 'node:sqlite';
 import type { RunOutcome } from '../../packages/protocol/task.ts';
 
+export type SessionCheckpoint = { key: string; id: string; instructionCount: number };
+
 export class DeviceLedger {
   private db: DatabaseSync;
 
@@ -16,6 +18,13 @@ export class DeviceLedger {
       CREATE TABLE IF NOT EXISTS pending_result (
         scope TEXT NOT NULL, run_id TEXT NOT NULL, outcome TEXT NOT NULL,
         PRIMARY KEY(scope,run_id)
+      );
+      CREATE TABLE IF NOT EXISTS pending_session (
+        scope TEXT NOT NULL, run_id TEXT NOT NULL, checkpoint TEXT NOT NULL,
+        PRIMARY KEY(scope,run_id)
+      );
+      CREATE TABLE IF NOT EXISTS worker_session (
+        key TEXT PRIMARY KEY, session_id TEXT NOT NULL, instruction_count INTEGER NOT NULL
       );
     `);
   }
@@ -38,11 +47,14 @@ export class DeviceLedger {
       .run(workspace, runId).changes === 1;
   }
 
-  complete(workspace: string, scope: string, runId: string, outcome: RunOutcome) {
+  complete(workspace: string, scope: string, runId: string, outcome: RunOutcome, checkpoint?: SessionCheckpoint) {
     this.db.exec('BEGIN IMMEDIATE');
     try {
       if (!this.clearExecution(workspace, runId)) throw new Error('Execution record missing');
       this.save(scope, runId, outcome);
+      if (checkpoint && outcome.status === 'succeeded') {
+        this.db.prepare('INSERT INTO pending_session VALUES(?,?,?)').run(scope, runId, JSON.stringify(checkpoint));
+      }
       this.db.exec('COMMIT');
     } catch (error) {
       this.db.exec('ROLLBACK');
@@ -57,8 +69,27 @@ export class DeviceLedger {
     return { runId: String(row.run_id), outcome: JSON.parse(String(row.outcome)) as RunOutcome };
   }
 
-  acknowledge(scope: string, runId: string) {
-    this.db.prepare('DELETE FROM pending_result WHERE scope=? AND run_id=?').run(scope, runId);
+  takeSession(key: string, instructionCount: number) {
+    const row = this.db.prepare('DELETE FROM worker_session WHERE key=? RETURNING session_id,instruction_count').get(key);
+    if (!row || Number(row.instruction_count) >= instructionCount) return undefined;
+    return { id: String(row.session_id), instructionCount: Number(row.instruction_count) };
+  }
+
+  acknowledge(scope: string, runId: string, accepted = false) {
+    this.db.exec('BEGIN IMMEDIATE');
+    try {
+      const pending = this.db.prepare('DELETE FROM pending_session WHERE scope=? AND run_id=? RETURNING checkpoint')
+        .get(scope, runId);
+      if (accepted && pending) {
+        const { key, id, instructionCount } = JSON.parse(String(pending.checkpoint)) as SessionCheckpoint;
+        this.db.prepare('INSERT OR REPLACE INTO worker_session VALUES(?,?,?)').run(key, id, instructionCount);
+      }
+      this.db.prepare('DELETE FROM pending_result WHERE scope=? AND run_id=?').run(scope, runId);
+      this.db.exec('COMMIT');
+    } catch (error) {
+      this.db.exec('ROLLBACK');
+      throw error;
+    }
   }
 
   close() {

@@ -8,9 +8,9 @@ import { runClaude } from '../../packages/workers/claude.ts';
 import type { JobContext, WorkerSteer } from '../../packages/workers/prompt.ts';
 import { runCodex } from '../../packages/workers/codex.ts';
 import type { Worker } from '../../packages/workers/registry.ts';
-import { runAcp } from '../../packages/workers/acp.ts';
+import { AcpSessionRestoreError, runAcp } from '../../packages/workers/acp.ts';
 import { createHash, createHmac, randomUUID } from 'node:crypto';
-import { DeviceLedger } from './ledger.ts';
+import { DeviceLedger, type SessionCheckpoint } from './ledger.ts';
 import { setTimeout as delay } from 'node:timers/promises';
 import type { PredecessorInput, Run, RunOutcome, Task, WorkerConfiguration } from '../../packages/protocol/task.ts';
 import { performance } from 'node:perf_hooks';
@@ -69,7 +69,7 @@ export class DeviceClient {
       throw new Error(`Result submission failed (${finished.status})`);
     }
     await finished.body?.cancel();
-    this.ledger.acknowledge(this.scope, runId);
+    this.ledger.acknowledge(this.scope, runId, finished.ok);
   }
 
   private async approve(prefix: string, summary: string, signal: AbortSignal) {
@@ -144,6 +144,34 @@ export class DeviceClient {
       finished.abort();
       await steering;
     }
+  }
+
+  private async runAcpWorker(worker: Worker, prefix: string, taskId: string, job: JobContext, active: AbortSignal,
+                             report: (message: string, signal: AbortSignal) => Promise<void>) {
+    const key = createHash('sha256').update(JSON.stringify([
+      this.scope, this.workspaceIdentity, this.workerConfiguration?.revision, taskId, job.goal,
+      job.acceptanceCriteria, job.predecessors.map(({ taskId, version }) => [taskId, version]),
+    ])).digest('hex');
+    const instructionCount = job.instructions.length;
+    const previous = this.ledger.takeSession(key, instructionCount);
+    let checkpoint: SessionCheckpoint | undefined;
+    const run = (context: JobContext, resumeId?: string) => runAcp(worker, this.root, context, active,
+      async (summary, signal) => {
+        const decision = await this.approve(prefix, summary, signal);
+        if (decision?.decision !== 'approved') return decision?.decision;
+        if (await this.consumeApproval(prefix, decision.id, signal)) return 'approved';
+        return undefined;
+      }, report, { resumeId, onCompleted: id => { checkpoint = { key, id, instructionCount }; } });
+    let result: string;
+    try {
+      result = previous
+        ? await run({ ...job, instructions: job.instructions.slice(previous.instructionCount) }, previous.id)
+        : await run(job);
+    } catch (error) {
+      if (!(error instanceof AcpSessionRestoreError)) throw error;
+      result = await run(job);
+    }
+    return { result, checkpoint };
   }
 
   private async completeInputArtifacts(inputs: PredecessorInput[], prefix: string, signal: AbortSignal) {
@@ -223,6 +251,7 @@ export class DeviceClient {
       active.throwIfAborted();
       this.ledger.begin(this.workspaceIdentity, assignment.run.id);
       let outcome: RunOutcome;
+      let checkpoint: SessionCheckpoint | undefined;
       try {
         if (this.observation) {
           const click = assignment.task.goal.startsWith('/click ');
@@ -256,13 +285,10 @@ export class DeviceClient {
             ? await runClaude(this.worker, this.root, job, active)
               : this.worker.protocol === 'aider'
                 ? await runAider(this.worker, this.root, job, active)
-                : await runAcp(this.worker, this.root, job, active, async (summary, signal) => {
-                  const decision = await this.approve(prefix, summary, signal);
-                  if (decision?.decision !== 'approved') return decision?.decision;
-                  if (await this.consumeApproval(prefix, decision.id, signal)) return 'approved';
-                  return undefined;
-                }, report);
-          outcome = { status: 'succeeded', result, artifact: { name: 'worker-result.txt', text: result } };
+                : await this.runAcpWorker(this.worker, prefix, assignment.task.id, job, active, report);
+          if (typeof result !== 'string') checkpoint = result.checkpoint;
+          const text = typeof result === 'string' ? result : result.result;
+          outcome = { status: 'succeeded', result: text, artifact: { name: 'worker-result.txt', text } };
         } else {
           if (assignment.instructions.length) throw new Error('Submit a new preview to change the document path.');
           const document = await preview(this.root, assignment.task.goal, active);
@@ -277,7 +303,7 @@ export class DeviceClient {
         }
         outcome = { status: 'failed', result: error instanceof Error ? error.message : 'Preview failed' };
       }
-      this.ledger.complete(this.workspaceIdentity, this.scope, assignment.run.id, outcome);
+      this.ledger.complete(this.workspaceIdentity, this.scope, assignment.run.id, outcome, checkpoint);
       await this.deliver(assignment.run.id, outcome, active);
       return true;
     } finally {

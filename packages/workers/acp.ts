@@ -19,6 +19,7 @@ type AcpSession = {
   resumeId?: string;
   onCompleted?: (sessionId: string) => void;
 };
+export class AcpSessionRestoreError extends Error {}
 
 export async function probeAcp(worker: AcpWorker, root: string, signal: AbortSignal) {
   signal.throwIfAborted();
@@ -124,12 +125,17 @@ export async function runAcp(worker: AcpWorker, root: string, job: JobContext, s
         const scope = { cwd: root, mcpServers: [] };
         if (continuity?.resumeId) {
           const parameters = { ...scope, sessionId: continuity.resumeId };
-          if (ready.agentCapabilities?.sessionCapabilities?.resume) {
-            await ctx.request(methods.agent.session.resume, parameters, options);
-          } else if (ready.agentCapabilities?.loadSession) {
-            await ctx.request(methods.agent.session.load, parameters, options);
-          } else {
-            throw new Error('ACP Worker does not support session restoration');
+          try {
+            if (ready.agentCapabilities?.sessionCapabilities?.resume) {
+              await ctx.request(methods.agent.session.resume, parameters, options);
+            } else if (ready.agentCapabilities?.loadSession) {
+              await ctx.request(methods.agent.session.load, parameters, options);
+            } else {
+              throw new Error('ACP Worker does not support session restoration');
+            }
+          } catch (error) {
+            active.throwIfAborted();
+            throw new AcpSessionRestoreError('ACP Worker could not restore the session', { cause: error });
           }
           sessionId = continuity.resumeId;
         } else {
