@@ -150,6 +150,13 @@ struct ApplicationWriteDetail: Decodable {
 struct RouterClient: Equatable {
     let base: URL
     let token: String
+    private let session: URLSession
+
+    init(base: URL, token: String, session: URLSession = .shared) {
+        self.base = base
+        self.token = token
+        self.session = session
+    }
 
     static func pair(base: URL, code: String, name: String) async throws -> RouterClient {
         struct PairingRequest: Decodable { let id: String }
@@ -227,7 +234,7 @@ struct RouterClient: Equatable {
         request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
         request.setValue("text/event-stream", forHTTPHeaderField: "Accept")
         request.setValue(String(cursor), forHTTPHeaderField: "Last-Event-ID")
-        let (bytes, response) = try await URLSession.shared.bytes(for: request, delegate: RejectRedirects())
+        let (bytes, response) = try await session.bytes(for: request, delegate: RejectRedirects())
         guard let http = response as? HTTPURLResponse else {
             throw RouterError(error: "The Router event stream is unavailable.")
         }
@@ -359,7 +366,7 @@ struct RouterClient: Equatable {
             request.setValue("application/json", forHTTPHeaderField: "Content-Type")
             request.setValue(key?.uuidString, forHTTPHeaderField: "Idempotency-Key")
         }
-        let (data, response) = try await URLSession.shared.data(for: request, delegate: RejectRedirects())
+        let (data, response) = try await session.data(for: request, delegate: RejectRedirects())
         if path == "v1/state", let status = (response as? HTTPURLResponse)?.statusCode, status == 401 || status == 403 {
             throw RouterAccessDenied()
         }
