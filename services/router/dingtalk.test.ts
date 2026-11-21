@@ -1,7 +1,10 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { TaskStore } from './store.ts';
-import { receiveDingTalkEvent } from './dingtalk.ts';
+import { mkdtempSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { deliverDingTalkNotice, receiveDingTalkEvent } from './dingtalk.ts';
 import { createDingTalkAttachmentReader, dingTalkReplyWindow, parseDingTalk, sendDingTalkNotice } from '../../packages/channels/dingtalk.ts';
 
 test('DingTalk Stream events deduplicate and can follow tasks only from their original conversation', t => {
@@ -127,9 +130,11 @@ test('a DingTalk private file consumes only its sender’s pending task attachme
   assert.equal(store.taskAttachment('owner', another.id, 0)?.text, 'DingTalk fixture text');
 });
 
-test('DingTalk delivery matches the originating message window within the same chat', async t => {
-  const store = new TaskStore(':memory:');
-  t.after(() => store.close());
+test('DingTalk recovers the originating message window across restarts', async t => {
+  const dir = mkdtempSync(join(tmpdir(), 'blazar-dingtalk-recovery-'));
+  const file = join(dir, 'router.sqlite');
+  let store = new TaskStore(file);
+  t.after(() => { store.close(); rmSync(dir, { recursive: true, force: true }); });
   const config = {
     robotCode: 'robot', clientId: 'client', clientSecret: 'fixture', workspace: 'project',
     senders: new Set(['sender']), conversations: new Set(['chat']),
@@ -142,14 +147,23 @@ test('DingTalk delivery matches the originating message window within the same c
     sessionWebhook: 'https://oapi.dingtalk.com/robot/sendBySession?session=' + msgId,
     sessionWebhookExpiredTime: expires,
   }));
-  const first = await receive('first', now + 60_000);
-  const second = await receive('second', now + 120_000);
-  assert.ok(first?.window && second?.window);
+  assert.ok(await receive('first', now + 60_000));
+  assert.ok(await receive('second', now + 120_000));
   const { run } = store.claim('owner', 'project', 'device', now, 45_000)!;
   assert.ok(store.finish(run.id, run.device, now, { status: 'succeeded', result: 'Reviewed' }));
-  assert.equal(store.leaseDingTalkNotice(channel, now + 10, [second]), undefined);
+  store.close();
+  store = new TaskStore(file);
+
   assert.equal(store.metrics('owner', now + 60_000).channelDelivery[0].expired, 1);
-  assert.equal(store.leaseDingTalkNotice(channel, now + 60_000, [first, second]), undefined);
-  assert.equal(store.leaseDingTalkNotice(channel, now + 10, [first, second])?.messageId, 'first');
-  assert.equal(store.leaseDingTalkNotice(channel, now + 10, [first, second]), undefined);
+  assert.equal(store.leaseDingTalkNotice(channel, now + 10, ['different-chat']), undefined);
+  const sent: string[] = [];
+  const transport: typeof fetch = async input => {
+    const url = new URL(String(input));
+    sent.push(url.searchParams.get('session')!);
+    return Response.json({ errcode: 0 });
+  };
+  assert.equal(await deliverDingTalkNotice(store, channel, config, transport), true);
+  assert.equal(await deliverDingTalkNotice(store, channel, config, transport), false);
+  assert.deepEqual(sent, ['first']);
+  assert.equal(store.metrics('owner', Date.now()).channelDelivery[0].sent, 1);
 });

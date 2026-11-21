@@ -86,6 +86,11 @@ export class TaskStore {
         channel TEXT NOT NULL, chat TEXT NOT NULL, message_id TEXT NOT NULL, expires INTEGER NOT NULL,
         PRIMARY KEY(channel,chat,message_id)
       );
+      CREATE TABLE IF NOT EXISTS dingtalk_reply_secret (
+        channel TEXT NOT NULL, chat TEXT NOT NULL, message_id TEXT NOT NULL, sealed TEXT NOT NULL, expires INTEGER NOT NULL,
+        PRIMARY KEY(channel,chat,message_id)
+      );
+      CREATE INDEX IF NOT EXISTS dingtalk_reply_secret_expiry ON dingtalk_reply_secret(expires);
       CREATE TABLE IF NOT EXISTS channel_message (
         owner TEXT NOT NULL, channel TEXT NOT NULL, message TEXT NOT NULL,
         PRIMARY KEY(owner,channel,message)
@@ -657,16 +662,16 @@ export class TaskStore {
     });
   }
 
-  leaseDingTalkNotice(channel: string, now: number, available: readonly { chat: string; messageId: string }[]) {
+  leaseDingTalkNotice(channel: string, now: number, chats: readonly string[]) {
     return this.transaction(() => {
-      const notice = this.db.prepare(`SELECT o.id,o.chat,o.message_id AS messageId,o.text
-        FROM channel_outbox o JOIN channel_reply_window w ON w.channel=o.channel
+      this.db.prepare('DELETE FROM dingtalk_reply_secret WHERE expires<=?').run(now);
+      const notice = this.db.prepare(`SELECT o.id,o.chat,o.message_id AS messageId,o.text,w.expires,w.sealed
+        FROM channel_outbox o JOIN dingtalk_reply_secret w ON w.channel=o.channel
           AND w.chat=o.chat AND w.message_id=o.message_id
         WHERE o.channel=? AND o.delivered=0 AND o.retry<=? AND w.expires>?
-        AND EXISTS (SELECT 1 FROM json_each(?) j WHERE json_extract(j.value,'$[0]')=o.chat
-          AND json_extract(j.value,'$[1]')=o.message_id) ORDER BY o.created,o.rowid LIMIT 1`)
-        .get(channel, now, now, JSON.stringify(available.map(({ chat, messageId }) => [chat, messageId]))) as
-        { id: string; chat: string; messageId: string; text: string } | undefined;
+        AND o.chat IN (SELECT value FROM json_each(?)) ORDER BY o.created,o.rowid LIMIT 1`)
+        .get(channel, now, now, JSON.stringify(chats)) as
+        { id: string; chat: string; messageId: string; text: string; expires: number; sealed: string } | undefined;
       if (notice) this.db.prepare('UPDATE channel_outbox SET delivered=-2 WHERE id=?').run(notice.id);
       return notice;
     });
@@ -829,12 +834,16 @@ export class TaskStore {
   }
 
   receiveChannelMessage(owner: string, channel: string, workspace: string,
-                        message: { id: string; chat: string; thread: string; root: boolean; text: string; taskId?: string; replyExpires?: number }, weixinContext?: string) {
+                        message: { id: string; chat: string; thread: string; root: boolean; text: string; taskId?: string; replyExpires?: number }, weixinContext?: string, sealedDingTalkReply?: string) {
     if (message.text.startsWith('/observe ') || message.text.startsWith('/click ')) return;
     return this.transaction(() => {
       const existing = this.db.prepare('INSERT OR IGNORE INTO channel_message VALUES(?,?,?)')
         .run(owner, channel, message.id);
       if (!existing.changes) return;
+      if (sealedDingTalkReply && message.replyExpires !== undefined) {
+        this.db.prepare('INSERT INTO dingtalk_reply_secret VALUES(?,?,?,?,?)')
+          .run(channel, message.chat, message.id, sealedDingTalkReply, message.replyExpires);
+      }
       if (weixinContext) {
         this.db.prepare(`INSERT INTO weixin_reply_context VALUES(?,?,?,?,?) ON CONFLICT(owner,channel,chat)
           DO UPDATE SET token=excluded.token,expires=excluded.expires`)

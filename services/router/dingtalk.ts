@@ -1,9 +1,52 @@
+import { createCipheriv, createDecipheriv, createHmac, randomBytes } from 'node:crypto';
 import type { StreamHealth } from './metrics.ts';
 import { DWClient, TOPIC_ROBOT } from 'dingtalk-stream';
 import { createDingTalkAttachmentReader, dingTalkReplyWindow, parseDingTalk, parseDingTalkAttachment, sendDingTalkNotice, type DingTalkConfig, type ReplyWindow } from '../../packages/channels/dingtalk.ts';
 import type { TaskStore } from './store.ts';
 
 type ConnectionConfig = DingTalkConfig & { clientId: string; clientSecret: string; workspace: string; mediaHosts?: ReadonlySet<string> };
+
+function replyCipherKey(secret: string) {
+  return createHmac('sha256', secret).update('Blazar DingTalk reply window v1').digest();
+}
+
+function sealReply(secret: string, window: ReplyWindow, id: string) {
+  const nonce = randomBytes(12);
+  const cipher = createCipheriv('aes-256-gcm', replyCipherKey(secret), nonce);
+  cipher.setAAD(Buffer.from(id));
+  const payload = Buffer.concat([cipher.update(window.url.href, 'utf8'), cipher.final()]);
+  return Buffer.concat([nonce, cipher.getAuthTag(), payload]).toString('base64url');
+}
+
+function restoreReply(secret: string, sealed: string, id: string, expires: number, now: number) {
+  const bytes = Buffer.from(sealed, 'base64url');
+  const decipher = createDecipheriv('aes-256-gcm', replyCipherKey(secret), bytes.subarray(0, 12));
+  decipher.setAAD(Buffer.from(id));
+  decipher.setAuthTag(bytes.subarray(12, 28));
+  const href = Buffer.concat([decipher.update(bytes.subarray(28)), decipher.final()]).toString('utf8');
+  return dingTalkReplyWindow(JSON.stringify({ sessionWebhook: href, sessionWebhookExpiredTime: expires }), now);
+}
+
+export async function deliverDingTalkNotice(store: TaskStore, channel: string, config: ConnectionConfig, transport = fetch, signal?: AbortSignal) {
+  const now = Date.now();
+  const notice = store.leaseDingTalkNotice(channel, now, [...config.conversations]);
+  if (!notice) return false;
+  let window: ReplyWindow | undefined;
+  try {
+    window = restoreReply(config.clientSecret, notice.sealed,
+      JSON.stringify([channel, notice.chat, notice.messageId, notice.expires]), notice.expires, now);
+  } catch {
+    store.finishChannelNotice(notice.id, false);
+    return false;
+  }
+  if (!window) {
+    store.finishChannelNotice(notice.id, false);
+    return false;
+  }
+  await sendDingTalkNotice(window, notice.text, transport);
+  if (!signal?.aborted) store.finishChannelNotice(notice.id, true);
+  return true;
+}
 
 export async function receiveDingTalkEvent(store: TaskStore, owner: string, channel: string, config: ConnectionConfig,
                                           raw: string, download?: (code: string) => Promise<string | undefined>,
@@ -17,9 +60,12 @@ export async function receiveDingTalkEvent(store: TaskStore, owner: string, chan
         store.expectChannelAttachment(owner, channel, config.workspace, { ...event, taskId: event.taskId }, Date.now());
       }
     } else {
-      store.receiveChannelMessage(owner, channel, config.workspace, { ...event, replyExpires: window?.expires ?? now });
+      const sealed = window && sealReply(config.clientSecret, window,
+        JSON.stringify([channel, event.chat, event.id, window.expires]));
+      store.receiveChannelMessage(owner, channel, config.workspace, { ...event, replyExpires: window?.expires ?? now },
+        undefined, sealed);
     }
-    return { chat: event.chat, messageId: event.id, window };
+    return true;
   }
   if (!download) return undefined;
   const file = parseDingTalkAttachment(raw, config);
@@ -32,7 +78,7 @@ export async function receiveDingTalkEvent(store: TaskStore, owner: string, chan
     store.addChannelAttachment(owner, channel, config.workspace, intent.taskId, message, { name: file.name, text },
       { sender: file.sender, commandId: intent.commandId });
   }
-  return { chat: file.chat, messageId: file.id, window: undefined };
+  return true;
 }
 
 export function startDingTalk(store: TaskStore, owner: string, config: ConnectionConfig, onMessage?: () => void) {
@@ -44,21 +90,10 @@ export function startDingTalk(store: TaskStore, owner: string, config: Connectio
   let active = true;
   let sending = false;
   let attempted = false;
-  const windows = new Map<string, { chat: string; messageId: string; window: ReplyWindow }>();
-  const windowKey = (chat: string, messageId: string) => JSON.stringify([chat, messageId]);
   const dispatcher = setInterval(() => {
     if (!active || sending) return;
-    const now = Date.now();
-    for (const [id, { window }] of windows) {
-      if (window.expires <= now) windows.delete(id);
-    }
-    if (!windows.size) return;
-    // DingTalk's session reply has no idempotency key. Record the attempt before sending.
-    const notice = store.leaseDingTalkNotice(channel, now, [...windows.values()]);
-    if (!notice) return;
     sending = true;
-    void sendDingTalkNotice(windows.get(windowKey(notice.chat, notice.messageId))!.window, notice.text)
-      .then(() => { if (active) store.finishChannelNotice(notice.id, true); })
+    void deliverDingTalkNotice(store, channel, config, fetch, stop.signal)
       .catch(() => { if (active) console.error('DingTalk notification outcome is unknown'); })
       .finally(() => { sending = false; });
   }, 1_000);
@@ -67,11 +102,7 @@ export function startDingTalk(store: TaskStore, owner: string, config: Connectio
     if (!active) return;
     void receiveDingTalkEvent(store, owner, channel, config, frame.data, download, stop.signal).then(receipt => {
       if (!active) return;
-      if (receipt) {
-        const { chat, messageId, window } = receipt;
-        if (window) windows.set(windowKey(chat, messageId), { chat, messageId, window });
-        onMessage?.();
-      }
+      if (receipt) onMessage?.();
       if (frame.headers.messageId) client.socketCallBackResponse(frame.headers.messageId, { success: true });
     }).catch(() => { if (active) console.error('DingTalk callback was not committed'); });
   });
