@@ -148,9 +148,18 @@ async function handleMemory(
     return true;
   }
 
-  const disconnect = /^\/v1\/app-connections\/([a-f0-9-]+)$/.exec(pathname);
-  if (disconnect && method === 'DELETE') {
-    if (!store.disconnect(owner, disconnect[1])) throw new RequestError(404, 'Active connection not found');
+  const connectionPath = /^\/v1\/app-connections\/([a-f0-9-]+)$/.exec(pathname);
+  if (connectionPath && method === 'PATCH') {
+    const data = await jsonObject(request);
+    const workspace = data.workspace === null ? null : requiredText(data.workspace, 'workspace', 128);
+    if (!store.setConnectionWorkspace(owner, connectionPath[1], workspace)) {
+      throw new RequestError(404, 'Active connection not found');
+    }
+    reply(response, 200, { workspace });
+    return true;
+  }
+  if (connectionPath && method === 'DELETE') {
+    if (!store.disconnect(owner, connectionPath[1])) throw new RequestError(404, 'Active connection not found');
     reply(response, 200, { disconnected: true });
     return true;
   }

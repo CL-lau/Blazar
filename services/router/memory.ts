@@ -120,6 +120,11 @@ export class MemoryStore {
       .run(connection, owner).changes === 1;
   }
 
+  setConnectionWorkspace(owner: string, connection: string, workspace: string | null): boolean {
+    return this.db.prepare('UPDATE app_connection SET workspace=? WHERE id=? AND owner=? AND active=1')
+      .run(workspace, connection, owner).changes === 1;
+  }
+
   remember(owner: string, workspace: string, body: string, source?: ResourceRef, expires?: number): string | undefined {
     const id = randomUUID();
     const inserted = this.db.prepare(`INSERT INTO memory(id,owner,workspace,body,connection,resource,revision,created,expires)

@@ -63,6 +63,18 @@ export function Knowledge({ token }) {
     });
   }
 
+  function changeWorkspace(event, connection) {
+    event.preventDefault();
+    const workspace = String(new FormData(event.currentTarget).get('workspace')).trim() || null;
+    void perform(async () => {
+      await request('/app-connections/' + connection.id, { method: 'PATCH', body: { workspace } });
+      setResults(null);
+      setEditing(null);
+      await refreshConnections();
+      setNotice('Workspace access updated.');
+    });
+  }
+
   function search(event) {
     event.preventDefault();
     const fields = new FormData(event.currentTarget);
@@ -117,6 +129,10 @@ export function Knowledge({ token }) {
         <ul>{connections.map(connection => (
           <li key={connection.id}>
             <span>{accountName(connection)}{connection.workspace && ` · ${connection.workspace}`}</span>
+            {connection.active && <form onSubmit={event => changeWorkspace(event, connection)}>
+              <label>Limit to workspace<input name="workspace" defaultValue={connection.workspace ?? ''} maxLength={128} /></label>
+              <button>Save scope</button>
+            </form>}
             {connection.active ? <button onClick={() => perform(async () => {
               await request('/app-connections/' + connection.id, { method: 'DELETE' });
               setResults(null);

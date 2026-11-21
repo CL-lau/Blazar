@@ -163,6 +163,15 @@ test('Router authenticates, deduplicates commands and replays task changes over 
   const configured = await (await fetch(url + '/v1/app-connections', { headers })).json();
   assert.equal(configured.connections.filter(item => item.canImportDocument).length, 3);
   assert.equal(configured.connections.find(item => item.id === scopedConnection)?.workspace, 'private');
+  const scopedRecall = '/v1/memory?workspace=private&q=findings&source=' + scopedConnection;
+  assert.equal((await (await fetch(url + scopedRecall, { headers })).json()).items.length, 1);
+  const changedScope = await fetch(url + '/v1/app-connections/' + scopedConnection, {
+    method: 'PATCH', headers: { ...headers, 'Content-Type': 'application/json' },
+    body: JSON.stringify({ workspace: 'archive' }),
+  });
+  assert.equal(changedScope.status, 200);
+  assert.deepEqual((await (await fetch(url + scopedRecall, { headers })).json()).items, []);
+  assert.equal((await post(scopedImport, 'stale-scope', { workspace: 'private', document: 'doc123' })).status, 404);
   const answerRequest = { workspace: 'demo', query: 'findings', question: 'What did we find?' };
   const updateImported = (expectedVersion: number, disabled: boolean) => fetch(url + '/v1/memory/' + document.id, {
     method: 'PATCH', headers: { ...headers, 'Content-Type': 'application/json' },
