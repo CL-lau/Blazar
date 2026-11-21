@@ -344,3 +344,5 @@ packages/storage          事务、迁移、备份
 - `npm run router:benchmark:topology` 使用同一个 SQLite 任务存储、相同的 300 条事件节奏、固定模型延迟和工作负载对照三种实验拓扑。单会话串行处理推理和执行，双层拆分路由和 10 个执行端，订阅直达使用进程内订阅交付已绑定事件，未绑定事件仍使用相同的模拟模型。一次 Apple M4 运行中，三组分别调用模型 200、67、67 次，已绑定任务从入站到可调度的 p95 为 2179.85、0.18、0.13 ms，均完成 200 个唯一任务。该对照采用实验调度器和模拟模型。生产 HTTP 与 WebSocket 路径继续用 `router:benchmark` 验收。
 
 - Codex 增加 offline-tools 步骤能力。Router 仅派给声明该能力的 Worker，设备在启动轮次前确认原生沙箱的 networkAccess 为 false。使用真实 Codex App Server 和本机 HTTP 测试服务验证，宿主请求可以访问，沙箱内命令无法连接。该验证覆盖工具子进程，不涉及模型端点。
+
+- 使用官方 GitHub Copilot CLI 1.0.114 和本机 OpenAI 兼容模拟服务验证 ACP v1 握手、流式输出、进程重启后恢复会话，以及取消后关闭模型流。测试使用独立配置目录及模拟凭据。 [GitHub Copilot CLI ACP 参考](https://docs.github.com/en/copilot/reference/copilot-cli-reference/acp-server)
