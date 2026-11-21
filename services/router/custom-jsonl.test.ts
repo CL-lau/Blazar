@@ -266,6 +266,12 @@ test('a registered JSONL extension executes a real subprocess through Router and
   assert.equal((await download(phone.token)).status, 404);
   const hidden = await (await fetch(base + '/v1/state', { headers: { Authorization: 'Bearer local' } })).json();
   assert.equal(hidden.tasks.find((item: { id: string }) => item.id === protectedTask.id)?.result, null);
+  assert.equal(hidden.tasks.find((item: { id: string }) => item.id === protectedTask.id)?.appMemoryUnavailable, true);
+  const phoneAfterRevocation = await (await fetch(base + '/v1/state', {
+    headers: { Authorization: 'Bearer ' + phone.token },
+  })).json();
+  assert.equal(phoneAfterRevocation.tasks.find((item: { id: string }) => item.id === protectedTask.id)?.appMemoryUnavailable,
+    undefined);
 
   assert.equal((await (await converse('local', 'protected-admin-status', statusText)).json()).text, 'No matching tasks.');
   const protectedEvents = (await audit()).events.filter((event: { taskId: string }) => event.taskId === protectedTask.id);
@@ -350,6 +356,8 @@ test('a registered JSONL extension executes a real subprocess through Router and
   assert.equal((await retry()).status, 409);
   assert.equal(store.get('owner', recoveryTask.id)?.version, 1);
   assert.equal((await changeScope('project')).status, 200);
+  const restoredState = await (await fetch(base + '/v1/state', { headers: { Authorization: 'Bearer local' } })).json();
+  assert.equal(restoredState.tasks.find((item: { id: string }) => item.id === recoveryTask.id)?.appMemoryUnavailable, undefined);
   assert.equal((await retry()).status, 200);
   assert.equal(await client.runOnce(AbortSignal.timeout(5_000)), true);
   assert.equal(store.get('owner', recoveryTask.id)?.result, 'Private review template');

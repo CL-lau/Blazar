@@ -894,7 +894,10 @@ export function routerServer(store: TaskStore, config: { owner: string; token: s
         const restricted = new Set([...protectedTasks].filter(taskId => !canReadTask(taskId)));
         reply(response, 200, { ...snapshot,
           tasks: snapshot.tasks.map(task => protectedTasks.has(task.id)
-            ? { ...task, usesAppMemory: true, ...(restricted.has(task.id) && !canReadTask(task.id, task.version) && { result: null }) } : task),
+            ? { ...task, usesAppMemory: true,
+                ...(admin && restricted.has(task.id) && { appMemoryUnavailable: true }),
+                ...(restricted.has(task.id) && !canReadTask(task.id, task.version) && { result: null }),
+              } : task),
           artifacts: snapshot.artifacts.filter(item => !restricted.has(String(item.taskId)) ||
             canReadTask(String(item.taskId), typeof item.version === 'number' ? item.version : undefined)),
           progress: snapshot.progress.filter(item => !restricted.has(String(item.taskId))),
