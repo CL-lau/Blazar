@@ -21,6 +21,7 @@
     "device:probe": "node --experimental-strip-types services/device/probe.ts",
     "ios:project": "cd apps/ios && xcodegen generate",
     "ios:build": "npm run ios:project && cd apps/ios && xcodebuild -project Blazar.xcodeproj -scheme Blazar -destination 'generic/platform=iOS Simulator' -derivedDataPath build CODE_SIGNING_ALLOWED=NO build",
+    "ios:test": "npm run ios:project && node apps/ios/scripts/test-simulator.mjs",
     "typecheck": "tsc --project tsconfig.json"
   },
   "dependencies": {

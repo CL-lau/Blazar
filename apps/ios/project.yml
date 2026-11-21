@@ -24,11 +24,25 @@ targets:
           BLAZAR_APNS_ENVIRONMENT: development
         Release:
           BLAZAR_APNS_ENVIRONMENT: production
+  BlazarTests:
+    type: bundle.unit-test
+    platform: iOS
+    sources: [BlazarTests]
+    dependencies:
+      - target: Blazar
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.blazar.app.tests
+        GENERATE_INFOPLIST_FILE: YES
+        SWIFT_VERSION: "5.0"
 schemes:
   Blazar:
     build:
       targets:
         Blazar: all
+    test:
+      config: Debug
+      targets: [BlazarTests]
     run:
       config: Debug
     archive:

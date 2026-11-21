@@ -20,7 +20,7 @@ Install the Rust toolchain and macOS build tools, run `npm ci`, then use `npm ru
 
 ## iOS build
 
-With full Xcode and [XcodeGen](https://github.com/yonaskolb/XcodeGen/releases) installed, run `npm run ios:project` to generate `apps/ios/Blazar.xcodeproj`. Run `npm run ios:build` for an unsigned simulator build. For an iPhone build, open the project, select the shared Blazar scheme, and configure a signing team. The deployment target is iOS 17.
+With full Xcode and [XcodeGen](https://github.com/yonaskolb/XcodeGen/releases) installed, run `npm run ios:project` to generate `apps/ios/Blazar.xcodeproj`. Run `npm run ios:build` for an unsigned simulator build and `npm run ios:test` to run the client tests on an available iPhone simulator. For an iPhone build, open the project, select the shared Blazar scheme, and configure a signing team. The deployment target is iOS 17.
 
 To enable task notifications, turn on Push Notifications for the signed iOS App ID and configure the Router with `BLAZAR_APNS_TEAM_ID`, `BLAZAR_APNS_KEY_ID`, `BLAZAR_APNS_KEY_PATH`, `BLAZAR_APNS_TOPIC` (the bundle ID), and `BLAZAR_APNS_ENVIRONMENT`. Use `sandbox` with a development push entitlement and `production` with a distribution push entitlement. Keep the signing key in a private file. Pair the iPhone and use **Enable task notifications** in Blazar to grant permission and register with its Router. When migrating to another Router, turn off notifications on the existing pairing or revoke that pairing from its desktop settings.
 

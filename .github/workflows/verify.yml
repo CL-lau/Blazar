@@ -71,3 +71,4 @@ jobs:
           ditto -x -k xcodegen.zip .
           echo "$tool_dir/xcodegen/bin" >> "$GITHUB_PATH"
       - run: npm run ios:build
+      - run: npm run ios:test
