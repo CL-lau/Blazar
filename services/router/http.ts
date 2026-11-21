@@ -341,7 +341,21 @@ function deviceOperation(store: TaskStore, bearer: string, pathname: string, dat
       }
       desktopApps = [...new Set(data.desktopApps as string[])].sort();
     }
-    store.recordDesktopApps(device.id, desktopApps);
+    let desktopPermissions: Record<string, string> | undefined;
+    if (data.desktopPermissions !== undefined) {
+      if (!desktopApps || !data.desktopPermissions || typeof data.desktopPermissions !== 'object' ||
+          Array.isArray(data.desktopPermissions)) throw new RequestError(400, 'Invalid desktop permissions');
+      const states = data.desktopPermissions as Record<string, unknown>;
+      desktopPermissions = {};
+      for (const name of ['accessibility', 'screen_recording', 'automation']) {
+        const state = states[name];
+        if (typeof state !== 'string' || !/^[a-z_]{1,32}$/.test(state)) {
+          throw new RequestError(400, 'Invalid desktop permission state');
+        }
+        desktopPermissions[name] = state;
+      }
+    }
+    store.recordDesktopApps(device.id, desktopApps, desktopPermissions);
     store.recordDeviceWorker(device.id, worker);
     store.recordDeviceActivity(device.id, now, data.capability, platform);
     store.expire(now);

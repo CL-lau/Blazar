@@ -15,6 +15,12 @@ test('a device observes only configured applications and stores a bounded window
   const directory = realpathSync(mkdtempSync(join(tmpdir(), 'blazar-observe-')));
   const executable = join(directory, 'driver.cjs');
   writeFileSync(executable, `#!${process.execPath}
+if (process.argv[2] === 'permissions') {
+  console.log(JSON.stringify({ok:true,command:'permissions',data:{
+    accessibility:{state:'granted'},screen_recording:{state:'denied'},automation:{state:'unknown'}
+  }}));
+  process.exit(0);
+}
 if (process.argv[2] === 'screenshot') {
   if (process.argv.slice(3, 7).join(' ') !== '--app Calculator --window-id w-10') process.exit(2);
   require('node:fs').writeFileSync(process.argv[7],
@@ -83,8 +89,10 @@ console.log(JSON.stringify({ok:true,command:'snapshot',data:{tree:{role:'window'
     headers: { Authorization: 'Bearer admin' },
   });
   assert.deepEqual((await state.json()).desktopTargets, [
-    { workspace: 'work', deviceId: computer, deviceName: 'Computer', alias: 'calculator' },
-    { workspace: 'work', deviceId: second.id, deviceName: 'Second computer', alias: 'calculator' },
+    { workspace: 'work', deviceId: computer, deviceName: 'Computer', alias: 'calculator',
+      accessibility: 'granted', screenRecording: 'denied' },
+    { workspace: 'work', deviceId: second.id, deviceName: 'Second computer', alias: 'calculator',
+      accessibility: null, screenRecording: null },
   ]);
   const { artifacts } = store.snapshot('owner');
   assert.equal(artifacts.length, 1);

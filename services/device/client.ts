@@ -1,5 +1,5 @@
 import { WorkerCleanupError } from '../../packages/workers/process.ts';
-import { captureWindow, clickApp, observeApp, type ObservationConfig } from '../../packages/computer-use/observe.ts';
+import { captureWindow, clickApp, observeApp, probeComputer, type ObservationConfig } from '../../packages/computer-use/observe.ts';
 import { DeviceSocket } from './socket.ts';
 import { runAider } from '../../packages/workers/aider.ts';
 import { runCustomJsonl } from '../../packages/workers/custom-jsonl.ts';
@@ -28,6 +28,8 @@ export class DeviceClient {
   private worker?: Worker;
   private workerConfiguration?: WorkerConfiguration;
   private observation?: ObservationConfig;
+  private desktopPermissions?: Awaited<ReturnType<typeof probeComputer>>;
+  private nextDesktopProbe = 0;
   private workspaceIdentity: string;
   private claimId = randomUUID();
 
@@ -211,10 +213,17 @@ export class DeviceClient {
       await this.deliver(pending.runId, pending.outcome, signal);
       return true;
     }
+    if (this.observation && performance.now() >= this.nextDesktopProbe) {
+      this.desktopPermissions = await probeComputer(this.observation, this.root,
+        AbortSignal.any([signal, AbortSignal.timeout(3_000)])).catch(() => undefined);
+      this.nextDesktopProbe = performance.now() + 30_000;
+      signal.throwIfAborted();
+    }
     const claimStarted = performance.now();
     const claim = await this.post('claim', {
       capability: this.observation ? 'computer.observe' : this.worker ? 'agent.acp' : 'document.preview', requestId: this.claimId, platform: platform(),
       worker: this.workerConfiguration,
+      desktopPermissions: this.desktopPermissions,
       desktopApps: this.observation ? [...this.observation.apps.keys()] : undefined,
     }, signal);
     if (!claim.ok) throw new Error(`Task claim failed (${claim.status})`);

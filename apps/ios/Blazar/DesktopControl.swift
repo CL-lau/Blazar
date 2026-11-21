@@ -90,6 +90,10 @@ struct DesktopControl: View {
         available.filter { $0.deviceId == targetDevice }.map(\.alias)
     }
 
+    private var selectedComputer: RouterSnapshot.DesktopTarget? {
+        computers.first { $0.deviceId == targetDevice }
+    }
+
     var body: some View {
         Section("Desktop control") {
             TextField("Workspace", text: $workspace)
@@ -141,6 +145,11 @@ struct DesktopControl: View {
                 TextField("Configured button label", text: $button)
                 Text("Blazar will ask for approval before clicking.")
                     .font(.caption)
+            }
+            if operation == .visual && selectedComputer?.screenRecording == "denied" {
+                Text("Screen Recording is disabled on the selected computer.").font(.caption)
+            } else if (operation == .inspect || operation == .click) && selectedComputer?.accessibility == "denied" {
+                Text("Accessibility is disabled on the selected computer.").font(.caption)
             }
             Button(operation.rawValue) {
                 guard let command else { return }

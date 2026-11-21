@@ -121,6 +121,9 @@ export class TaskStore {
       CREATE TABLE IF NOT EXISTS device_desktop_apps (
         device_id TEXT PRIMARY KEY REFERENCES device(id), aliases TEXT NOT NULL
       );
+      CREATE TABLE IF NOT EXISTS device_desktop_permissions (
+        device_id TEXT PRIMARY KEY REFERENCES device(id), states TEXT NOT NULL
+      );
       CREATE TABLE IF NOT EXISTS device_interruption (
         device_id TEXT PRIMARY KEY REFERENCES device(id), run_id TEXT NOT NULL
       );
@@ -818,7 +821,13 @@ export class TaskStore {
     };
   }
 
-  recordDesktopApps(device: string, aliases?: string[]) {
+  recordDesktopApps(device: string, aliases?: string[], permissions?: Record<string, string>) {
+    if (permissions) {
+      this.db.prepare(`INSERT INTO device_desktop_permissions VALUES(?,?) ON CONFLICT(device_id)
+        DO UPDATE SET states=excluded.states WHERE states<>excluded.states`).run(device, JSON.stringify(permissions));
+    } else {
+      this.db.prepare('DELETE FROM device_desktop_permissions WHERE device_id=?').run(device);
+    }
     if (!aliases) {
       this.db.prepare('DELETE FROM device_desktop_apps WHERE device_id=?').run(device);
       return;
@@ -828,8 +837,12 @@ export class TaskStore {
   }
 
   desktopTargets(owner: string, now = Date.now()) {
-    return this.db.prepare(`SELECT d.workspace,d.id AS deviceId,d.name AS deviceName,j.value AS alias FROM device d
+    return this.db.prepare(`SELECT d.workspace,d.id AS deviceId,d.name AS deviceName,j.value AS alias,
+      json_extract(xp.states,'$.accessibility') AS accessibility,
+      json_extract(xp.states,'$.screen_recording') AS screenRecording
+      FROM device d
       JOIN device_presence p ON p.device_id=d.id JOIN device_desktop_apps a ON a.device_id=d.id
+      LEFT JOIN device_desktop_permissions xp ON xp.device_id=d.id
       JOIN json_each(a.aliases) j WHERE d.owner=? AND d.revoked=0 AND p.last_seen>=?
       AND p.capability='computer.observe'
       AND NOT EXISTS(SELECT 1 FROM device_interruption i WHERE i.device_id=d.id)

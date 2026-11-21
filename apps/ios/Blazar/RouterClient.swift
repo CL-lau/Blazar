@@ -6,6 +6,8 @@ struct RouterSnapshot: Decodable {
         let alias: String
         let deviceId: String?
         let deviceName: String?
+        let accessibility: String?
+        let screenRecording: String?
     }
     struct Task: Decodable, Identifiable {
         let id: String
