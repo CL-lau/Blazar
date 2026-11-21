@@ -878,3 +878,29 @@ test('IM cancellation confirmation uses the stop request reply window after devi
   assert.match(notice?.text ?? '', /cancelled/);
   assert.equal(db.leasePassiveNotice('qq', Date.now(), ['chat']), undefined);
 });
+
+test('an interrupted workflow observation gets one fresh attempt across Router restarts', t => {
+  const dir = mkdtempSync(join(tmpdir(), 'blazar-observation-recovery-'));
+  const file = join(dir, 'router.sqlite');
+  let store = new TaskStore(file);
+  t.after(() => { store.close(); rmSync(dir, { recursive: true, force: true }); });
+  const device = store.registerDevice('owner', 'Desktop', 'project');
+  const workflow = store.createWorkflow('owner', 'observe-recovery', 'project', [
+    { key: 'observe', goal: 'Inspect Notes', needs: [], action: { kind: 'desktop.observe', alias: 'notes', deviceId: device.id } },
+    { key: 'summary', goal: 'Summarize notes', needs: ['observe'] },
+  ]);
+  const taskId = String(workflow.steps[0].taskId);
+  const downstreamId = String(workflow.steps[1].taskId);
+  const first = store.claim('owner', 'project', device.id, 0, 45_000, '/observe ')!.run;
+  store.close();
+  store = new TaskStore(file);
+  assert.equal(store.expire(45_000), 1);
+  assert.equal(store.get('owner', downstreamId)?.status, 'waiting_dependency');
+  assert.equal(store.finish(first.id, device.id, 45_000, { status: 'succeeded', result: 'Stale' }), false);
+  const second = store.claim('owner', 'project', device.id, 45_001, 45_000, '/observe ')!.run;
+  assert.equal(second.taskId, taskId);
+  assert.equal(second.version, first.version + 1);
+  assert.equal(store.expire(90_001), 1);
+  assert.equal(store.get('owner', taskId)?.status, 'waiting_user');
+  assert.equal(store.claim('owner', 'project', device.id, 90_002, 45_000, '/observe '), undefined);
+});

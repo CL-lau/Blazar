@@ -103,6 +103,10 @@ export class TaskStore {
         workflow_id TEXT NOT NULL REFERENCES workflow(id), step_key TEXT NOT NULL,
         task_id TEXT NOT NULL UNIQUE REFERENCES task(id), PRIMARY KEY(workflow_id,step_key)
       );
+      CREATE TABLE IF NOT EXISTS workflow_observation (
+        task_id TEXT PRIMARY KEY REFERENCES task(id) ON DELETE CASCADE,
+        recovery_count INTEGER NOT NULL DEFAULT 0
+      );
       CREATE TABLE IF NOT EXISTS task_review (
         task_id TEXT PRIMARY KEY REFERENCES task(id) ON DELETE CASCADE
       );
@@ -357,6 +361,9 @@ export class TaskStore {
     if (!workerColumns.has('revision')) this.db.exec('ALTER TABLE device_worker ADD COLUMN revision TEXT');
     if (!workerColumns.has('adapter_version')) this.db.exec('ALTER TABLE device_worker ADD COLUMN adapter_version INTEGER');
     this.transaction(() => {
+      this.db.exec(`INSERT OR IGNORE INTO workflow_observation(task_id)
+        SELECT s.task_id FROM workflow_step s JOIN task t ON t.id=s.task_id
+        JOIN task_desktop_device target ON target.task_id=t.id WHERE substr(t.goal,1,9)='/observe '`);
       if (this.db.prepare('INSERT OR IGNORE INTO event_retention VALUES(1,0)').run().changes) {
         this.db.prepare(`INSERT OR IGNORE INTO progress_event_time
           SELECT seq,? FROM event WHERE type='run.progress'`).run(Date.now());
@@ -1151,7 +1158,10 @@ export class TaskStore {
         const goal = step.action ? '/observe ' + step.action.alias : step.goal;
         this.db.prepare('INSERT INTO task(id,owner,workspace,goal,status) VALUES(?,?,?,?,?)')
           .run(taskId, owner, workspace, goal, status);
-        if (step.action) this.db.prepare('INSERT INTO task_desktop_device VALUES(?,?)').run(taskId, step.action.deviceId);
+        if (step.action) {
+          this.db.prepare('INSERT INTO task_desktop_device VALUES(?,?)').run(taskId, step.action.deviceId);
+          this.db.prepare('INSERT INTO workflow_observation(task_id) VALUES(?)').run(taskId);
+        }
         this.db.prepare('INSERT INTO workflow_step VALUES(?,?,?)').run(id, name, taskId);
         if (step.requireReview) this.db.prepare('INSERT INTO task_review VALUES(?)').run(taskId);
         for (const [position, criterion] of (step.acceptanceCriteria ?? []).entries()) {
@@ -2084,6 +2094,15 @@ export class TaskStore {
         const taskId = String(row.taskId);
         if (row.status === 'waiting_user' && this.runEvidenceStopping(String(row.id))) {
           this.finishRejectedEvidence(String(row.id), taskId);
+          continue;
+        }
+        if (row.status === 'running' && !row.staleInputs && !row.deadlineReached &&
+            this.db.prepare(`UPDATE workflow_observation SET recovery_count=recovery_count+1
+              WHERE task_id=? AND recovery_count=0`).run(taskId).changes) {
+          this.db.prepare('DELETE FROM run WHERE id=?').run(row.id!);
+          this.db.prepare("UPDATE task SET status='queued',version=version+1,result=NULL WHERE id=?").run(taskId);
+          this.event(taskId, 'run.lease_expired', { runId: row.id, status: 'queued', automaticRetry: true });
+          this.updateWorkflowReadiness(taskId);
           continue;
         }
         const status = row.status === 'cancelling' ? 'cancelled' : 'waiting_user';
