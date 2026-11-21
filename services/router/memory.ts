@@ -47,6 +47,14 @@ export class MemoryStore {
         version INTEGER NOT NULL, body TEXT NOT NULL, changed INTEGER NOT NULL,
         PRIMARY KEY(id,version)
       );
+      CREATE TABLE IF NOT EXISTS document_import (
+        id TEXT PRIMARY KEY REFERENCES memory(id) ON DELETE CASCADE
+      );
+      CREATE TABLE IF NOT EXISTS document_head (
+        owner TEXT NOT NULL, workspace TEXT NOT NULL, connection TEXT NOT NULL REFERENCES app_connection(id),
+        resource TEXT NOT NULL, memory_id TEXT NOT NULL, request_id INTEGER,
+        PRIMARY KEY(owner,workspace,connection,resource)
+      );
       CREATE INDEX IF NOT EXISTS memory_scope ON memory(owner,workspace,created);
       CREATE INDEX IF NOT EXISTS memory_connection ON memory(connection);
     `);
@@ -154,7 +162,8 @@ export class MemoryStore {
       .all(connection);
   }
 
-  importDocument(owner: string, workspace: string, body: string, source: ResourceRef): string | undefined {
+  importDocument(owner: string, workspace: string, body: string, source: ResourceRef,
+                 requestId?: number | bigint): string | undefined {
     this.db.exec('BEGIN IMMEDIATE');
     try {
       let id: string | undefined;
@@ -166,6 +175,15 @@ export class MemoryStore {
           .get(owner, workspace, source.connection, source.resource, source.revision, body, body);
         if (identical) id = String(identical.id);
         else id = this.remember(owner, workspace, body, source);
+        if (id) {
+          this.db.prepare('INSERT OR IGNORE INTO document_import VALUES(?)').run(id);
+          this.db.prepare(`INSERT INTO document_head(owner,workspace,connection,resource,memory_id,request_id)
+            VALUES(?,?,?,?,?,?) ON CONFLICT(owner,workspace,connection,resource) DO UPDATE
+            SET memory_id=excluded.memory_id,request_id=excluded.request_id
+            WHERE document_head.request_id IS NULL OR excluded.request_id IS NULL
+              OR excluded.request_id>=document_head.request_id`)
+            .run(owner, workspace, source.connection, source.resource, id, requestId ?? null);
+        }
       }
       this.db.exec('COMMIT');
       return id;
@@ -204,6 +222,10 @@ export class MemoryStore {
     if (!term || term.length > 256) return [];
     const allowed = JSON.stringify(allowedSources);
     const filter = `m.owner=? AND m.workspace=? AND COALESCE(s.disabled,0)=? AND (m.expires IS NULL OR m.expires>?)
+      AND (NOT EXISTS(SELECT 1 FROM document_import i WHERE i.id=m.id) OR EXISTS (
+        SELECT 1 FROM document_head h WHERE h.owner=m.owner AND h.workspace=m.workspace
+          AND h.connection=m.connection AND h.resource=m.resource AND h.memory_id=m.id
+      ))
       AND ((?=1 AND m.connection IS NULL) OR EXISTS (
         SELECT 1 FROM app_connection a WHERE a.id=m.connection AND a.owner=m.owner AND a.active=1 AND (a.workspace IS NULL OR a.workspace=m.workspace)
         AND a.id IN (SELECT value FROM json_each(?))

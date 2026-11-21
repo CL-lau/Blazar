@@ -152,7 +152,7 @@ async function handleMemory(
     }
     const id = store.importDocument(owner, workspace, content.text, {
       connection: importPath[1], resource: document, revision: content.revision,
-    });
+    }, usageId);
     store.finishAppUsage(usageId, id ? 'succeeded' : 'access_changed');
     if (!id) throw new RequestError(409, 'Source access changed during import');
     reply(response, 200, { id, revision: content.revision });

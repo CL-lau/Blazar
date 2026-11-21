@@ -104,3 +104,18 @@ test('source revocation removes every version and blocks a late import without a
   assert.equal(store.recall('owner', 'project', 'Confidential', [connection]).length, 0);
   assert.equal(store.recall('owner', 'project', 'Other source', [connection]).length, 1);
 });
+
+test('a delayed document import cannot replace the newer revision in recall', t => {
+  const store = new MemoryStore(':memory:');
+  t.after(() => store.close());
+  const connection = store.connect('owner', 'github', 'handbook');
+  const source = { connection, resource: 'review.md' };
+  const latest = store.importDocument('owner', 'project', 'Current review template', { ...source, revision: 'v2' }, 2);
+  const earlier = store.importDocument('owner', 'project', 'Outdated review template', { ...source, revision: 'v1' }, 1);
+  assert.ok(latest && earlier && latest !== earlier);
+  assert.deepEqual(store.recall('owner', 'project', 'review', [connection]).map(row => row.id), [latest]);
+  assert.equal(store.recall('owner', 'project', 'Outdated', [connection]).length, 0);
+  assert.equal(store.remove('owner', latest), true);
+  assert.equal(store.recall('owner', 'project', 'review', [connection]).length, 0);
+  assert.equal(store.revokeResource('owner', connection, source.resource), 1);
+});
