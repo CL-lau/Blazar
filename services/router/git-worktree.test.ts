@@ -83,7 +83,7 @@ test('isolated Worker runs keep their changes in independent retained worktrees'
   const address = server.address();
   assert(address && typeof address !== 'string');
   const client = new DeviceClient(new URL('http://127.0.0.1:' + address.port), device.token,
-    repository, ledger, worker, undefined, repository, worktrees);
+    repository, ledger, worker, undefined, repository, await gitRunWorktrees(repository, state, true));
   t.after(async () => {
     client.close();
     server.closeDeviceSockets();
@@ -100,6 +100,13 @@ test('isolated Worker runs keep their changes in independent retained worktrees'
   assert.equal(receiver.task.goal, 'Review changes');
   assert.equal(receiver.predecessors[0].result, 'Draft content');
   assert.equal(receiver.predecessors[0].artifact?.name, 'git-changes.json');
-  assert.deepEqual(JSON.parse(receiver.predecessors[0].artifact!.excerpt).trackedFiles, ['M\tnotes.txt']);
+  const received = JSON.parse(receiver.predecessors[0].artifact!.excerpt);
+  assert.deepEqual(received.trackedFiles, ['M\tnotes.txt']);
+  assert.match(received.patch, /-Committed source[\s\S]*\+Draft content/);
+  const patched = await gitRunWorktrees(repository, state, true);
+  await writeFile(join(first, 'notes.txt'), 'x'.repeat(70_000));
+  const oversized = JSON.parse((await patched.artifact(firstId, AbortSignal.timeout(5_000))).text);
+  assert.equal(oversized.patch, undefined);
+  assert.equal(oversized.patchOmitted, 'size_limit');
 
 });

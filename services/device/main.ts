@@ -22,7 +22,7 @@ const worker = observation ? undefined : await resolveWorker(mode, process.env.B
 const workspaceLock = lockWorkspace(workspace, stateDirectory);
 try {
   const worktrees = worker && process.env.BLAZAR_WORKER_GIT_WORKTREE === '1'
-    ? await gitRunWorktrees(workspaceLock.root, stateDirectory) : undefined;
+    ? await gitRunWorktrees(workspaceLock.root, stateDirectory, process.env.BLAZAR_WORKER_GIT_PATCH === '1') : undefined;
   if (worker && !worktrees && (worker.protocol ?? 'acp') === 'acp') {
     try {
       await probeAcp(worker, workspaceLock.root, AbortSignal.timeout(5_000));

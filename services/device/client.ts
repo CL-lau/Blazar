@@ -48,7 +48,7 @@ export class DeviceClient {
       const revision = createHmac('sha256', token).update(JSON.stringify([
         adapterVersion, worker.label, protocol, worker.executable, worker.args, worker.env ?? [],
         worker.protocol === 'jsonl' && worker.includeFullInputArtifacts === true,
-        ...(worktrees ? ['git-worktree'] : []),
+        ...(worktrees ? ['git-worktree', worktrees.includePatch] : []),
       ])).digest('hex');
       const capabilities: WorkerCapability[] = [];
       if (worktrees) capabilities.push('git-worktree');

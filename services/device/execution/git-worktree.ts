@@ -19,7 +19,7 @@ function runPath(storage: string, runId: string) {
   return join(storage, runId);
 }
 
-export async function gitRunWorktrees(workspace: string, stateDirectory: string) {
+export async function gitRunWorktrees(workspace: string, stateDirectory: string, includePatch = false) {
   const git = gitAt(workspace);
   const repository = await realpath(await git('rev-parse', '--show-toplevel'));
   if (repository !== workspace) throw new Error('Git worktree execution requires the repository root as the workspace');
@@ -50,11 +50,26 @@ export async function gitRunWorktrees(workspace: string, stateDirectory: string)
     const command = gitAt(checkout.root, signal);
     const trackedFiles = await command('diff', '--no-ext-diff', '--no-textconv', '--name-status', baseCommit, '--');
     signal.throwIfAborted();
-    const text = JSON.stringify({ version: 1, baseCommit, head, commits, trackedFiles: trackedFiles ? trackedFiles.split('\n') : [], changes }, null, 2);
+    const evidence = { version: 1, baseCommit, head, commits, trackedFiles: trackedFiles ? trackedFiles.split('\n') : [], changes };
+    let text = JSON.stringify(evidence, null, 2);
+    if (includePatch) {
+      let patch: string | undefined;
+      try {
+        patch = await command('diff', '--no-ext-diff', '--no-textconv', '--no-color',
+          '--src-prefix=a/', '--dst-prefix=b/', '--patch', baseCommit, '--');
+      } catch (error) {
+        signal.throwIfAborted();
+        if ((error as NodeJS.ErrnoException).code !== 'ERR_CHILD_PROCESS_STDIO_MAXBUFFER') throw error;
+      }
+      const withPatch = patch === undefined ? undefined :
+        JSON.stringify({ ...evidence, patch: patch ? patch + '\n' : '' }, null, 2);
+      text = withPatch !== undefined && Buffer.byteLength(withPatch) <= 32_000 ? withPatch :
+        JSON.stringify({ ...evidence, patchOmitted: 'size_limit' }, null, 2);
+    }
     if (Buffer.byteLength(text) > 32_000) throw new Error('Run checkout evidence exceeds the artifact limit');
     return { name: 'git-changes.json', text };
   };
-  return { prepare, artifact };
+  return { prepare, artifact, includePatch };
 }
 
 export async function inspectRunWorktree(workspace: string, storage: string, runId: string, signal?: AbortSignal) {
