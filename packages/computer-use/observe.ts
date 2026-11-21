@@ -122,6 +122,10 @@ export function captureWindow(config: ObservationConfig, root: string, alias: st
     if (!app || !config.visualApps?.has(alias) || !/^w-[0-9]{1,20}$/.test(id) || !/^[a-f0-9]{64}$/.test(identity)) {
       throw new Error('Choose a window from the current application inventory.');
     }
+    const permissions = await probeComputer(config, root, signal);
+    if (permissions.screen_recording !== 'granted') {
+      throw new Error('Screen Recording permission is required for window screenshots.');
+    }
     const assertPresent = async () => {
       const matches = (await windowsFor(config, root, app, signal)).filter(window => window.id === id);
       if (matches.length !== 1 || windowIdentity(app, matches[0]) !== identity) {

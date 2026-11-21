@@ -17,7 +17,7 @@ test('a device observes only configured applications and stores a bounded window
   writeFileSync(executable, `#!${process.execPath}
 if (process.argv[2] === 'permissions') {
   console.log(JSON.stringify({ok:true,command:'permissions',data:{
-    accessibility:{state:'granted'},screen_recording:{state:'denied'},automation:{state:'unknown'}
+    accessibility:{state:'granted'},screen_recording:{state:require('node:fs').existsSync('recording-denied')?'denied':'granted'},automation:{state:'unknown'}
   }}));
   process.exit(0);
 }
@@ -91,7 +91,7 @@ console.log(JSON.stringify({ok:true,command:'snapshot',data:{tree:{role:'window'
   });
   assert.deepEqual((await state.json()).desktopTargets, [
     { workspace: 'work', deviceId: computer, deviceName: 'Computer', alias: 'calculator',
-      accessibility: 'granted', screenRecording: 'denied',
+      accessibility: 'granted', screenRecording: 'granted',
       controls: { alias: 'calculator', visual: true, buttons: ['Add'] } },
     { workspace: 'work', deviceId: second.id, deviceName: 'Second computer', alias: 'calculator',
       accessibility: null, screenRecording: null, controls: null },
@@ -141,6 +141,13 @@ console.log(JSON.stringify({ok:true,command:'snapshot',data:{tree:{role:'window'
   const { steps } = await submitted.json();
   assert.equal(await client.runOnce(AbortSignal.timeout(8_000)), true);
   assert.equal(await client.runOnce(AbortSignal.timeout(8_000)), true);
+  const blockedVisual = store.create('owner', 'desktop', 'permission-changed', 'work',
+    '/observe calculator --window w-10 --instance ' + inventory[0].identity + ' --visual', computer);
+  writeFileSync(join(directory, 'recording-denied'), '');
+  assert.equal(await client.runOnce(AbortSignal.timeout(8_000)), true);
+  assert.equal(store.get('owner', blockedVisual.id)?.status, 'failed');
+  assert.match(store.get('owner', blockedVisual.id)?.result ?? '', /Screen Recording permission is required/);
+  assert.equal(store.snapshot('owner').artifacts.some(item => item.taskId === blockedVisual.id), false);
   const captured = store.snapshot('owner').artifacts.find(item => item.taskId === steps[1].taskId)!;
   assert.equal(captured.mime, 'image/png');
   const downstream = store.claim('owner', 'work', 'reviewer', Date.now(), 45_000, '', '/preview ')!;

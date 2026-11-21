@@ -309,3 +309,5 @@ packages/storage          事务、迁移、备份
 - 模拟桌面驱动通过真实 Router HTTP 和设备 WebSocket 完成了「窗口清单 → 按标题确定窗口 → 配对手机凭据批准 → 点击 → 核验预期文本 → 传递产物」联调。实体 iPhone 和真实 macOS 辅助功能操作仍需验收。
 
 - 使用官方 Codex App Server 0.167.0，通过临时配置目录和本地测试文件验证只读权限。原生线程返回 `readOnly` 和 `never`。使用返回的沙箱策略启动独立命令，文件读取成功，文件创建被操作系统拦截。测试无需模型账号。
+
+- 本机通过真实 agent-desktop 探测到 Accessibility 和 Screen Recording 均未授权。当前 Xcode 命令行工具缺少 simctl，macOS 实际截图和 iOS 模拟器预览仍需要对应权限与工具。
