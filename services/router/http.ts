@@ -627,6 +627,8 @@ export function routerServer(store: TaskStore, config: { owner: string; token: s
     }
     return metrics;
   }
+  const modelRoutesByCaller = new Map<string, number>();
+  let modelRoutes = 0;
   const pendingRoutes = new Map<string, { fingerprint: string; decision: Promise<Decision> }>();
   const stopSubscribers = new Map<string, Set<WebSocket>>();
   function sendStop(device: string, runId: string) {
@@ -1142,6 +1144,13 @@ export function routerServer(store: TaskStore, config: { owner: string; token: s
                   ? config.memory?.personalContext(owner, input.workspace, input.text) ?? [] : [];
                 const evidence = recall();
                 const modelStarted = performance.now();
+                const modelScope = JSON.stringify([owner, caller]);
+                const callerRoutes = modelRoutesByCaller.get(modelScope) ?? 0;
+                if (modelRoutes >= 16 || callerRoutes >= 4) {
+                  throw new RequestError(429, 'Blazar routing is busy. Please retry.');
+                }
+                modelRoutes++;
+                modelRoutesByCaller.set(modelScope, callerRoutes + 1);
                 metrics.route('model');
                 try {
                   decision = await config.harness({
@@ -1179,6 +1188,10 @@ export function routerServer(store: TaskStore, config: { owner: string; token: s
                   metrics.route('modelErrors');
                   throw new RequestError(503, 'Blazar could not make a routing decision. Please retry.');
                 } finally {
+                  modelRoutes--;
+                  const remaining = (modelRoutesByCaller.get(modelScope) ?? 1) - 1;
+                  if (remaining) modelRoutesByCaller.set(modelScope, remaining);
+                  else modelRoutesByCaller.delete(modelScope);
                   metrics.observe('model', performance.now() - modelStarted);
                 }
                 if (evidence.length) {

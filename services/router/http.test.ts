@@ -732,6 +732,7 @@ test('Router capability tools only expose active connections and devices in the 
 test('concurrent conversation retries share routing and reject in-flight key conflicts', { timeout: 5000 }, async t => {
   const store = new TaskStore(':memory:');
   const entered = Promise.withResolvers<void>();
+  const saturated = Promise.withResolvers<void>();
   const release = Promise.withResolvers<void>();
   let calls = 0;
   const server = routerServer(store, {
@@ -739,6 +740,7 @@ test('concurrent conversation retries share routing and reject in-flight key con
     async harness() {
       calls++;
       entered.resolve();
+      if (calls === 4) saturated.resolve();
       await release.promise;
       return { kind: 'create_task' };
     },
@@ -752,17 +754,29 @@ test('concurrent conversation retries share routing and reject in-flight key con
   await once(server, 'listening');
   const address = server.address();
   assert.ok(address && typeof address !== 'string');
-  const ask = (text: string) => fetch('http://127.0.0.1:' + address.port + '/v1/conversation', {
+  const ask = (text: string, key = 'same-key') => fetch('http://127.0.0.1:' + address.port + '/v1/conversation', {
     method: 'POST', signal: AbortSignal.timeout(3_000),
-    headers: { Authorization: 'Bearer admin', 'Content-Type': 'application/json', 'Idempotency-Key': 'same-key' },
+    headers: { Authorization: 'Bearer admin', 'Content-Type': 'application/json', 'Idempotency-Key': key },
     body: JSON.stringify({ workspace: 'project', text }),
   });
   const first = ask('Review the report');
   await entered.promise;
   const replay = ask('Review the report');
+  const otherRoutes = ['one', 'two', 'three'].map(key => ask('Review ' + key, key));
   try {
+    await saturated.promise;
     assert.equal((await ask('Review a different report')).status, 409);
-    assert.equal(calls, 1);
+    assert.equal((await ask('Try another report', 'over-limit')).status, 429);
+    assert.equal((await ask('/status', 'status')).status, 200);
+    const task = store.create('owner', 'fixture', 'cancel', 'project', 'Cancel under load');
+    const cancellation = await fetch('http://127.0.0.1:' + address.port + '/v1/tasks/' + task.id + '/commands', {
+      method: 'POST',
+      headers: { Authorization: 'Bearer admin', 'Content-Type': 'application/json', 'Idempotency-Key': 'cancel-test' },
+      body: JSON.stringify({ action: 'cancel', expectedVersion: task.version }),
+    });
+    assert.equal(cancellation.status, 200);
+    assert.equal((await cancellation.json()).status, 'cancelled');
+    assert.equal(calls, 4);
   } finally {
     release.resolve();
   }
@@ -770,6 +784,8 @@ test('concurrent conversation retries share routing and reject in-flight key con
   assert.deepEqual(responses.map(response => response.status), [202, 202]);
   const [original, repeated] = await Promise.all(responses.map(response => response.json()));
   assert.equal(original.task.id, repeated.task.id);
-  assert.equal(calls, 1);
-  assert.equal(store.snapshot('owner').tasks.length, 1);
+  assert.deepEqual((await Promise.all(otherRoutes)).map(response => response.status), [202, 202, 202]);
+  assert.equal((await ask('Try another report', 'over-limit')).status, 202);
+  assert.equal(calls, 5);
+  assert.equal(store.snapshot('owner').tasks.length, 6);
 });
