@@ -679,6 +679,7 @@ test('Router capability tools only expose active connections and devices in the 
   const memory = new MemoryStore(':memory:');
   const desktop = store.registerDevice('owner', 'Workspace desktop', 'project');
   store.recordDeviceActivity(desktop.id, Date.now(), 'computer.observe');
+  store.recordDesktopApps(desktop.id, ['notes']);
   store.registerDevice('owner', 'Separate workspace', 'other');
   store.registerDevice('other', 'Separate owner', 'project');
   memory.connect('owner', 'feishu', 'authorized account', 'project');
@@ -724,9 +725,39 @@ test('Router capability tools only expose active connections and devices in the 
   assert.equal((await (await ask(phone.token, 'follow-up')).json()).text, 'Mobile summary');
   assert.deepEqual(historyLengths, [0, 0, 1]);
   assert.deepEqual(summaries, [{
+    desktopTargets: [{ alias: 'notes', deviceId: desktop.id }],
     devices: [{ name: 'Workspace desktop', capability: 'computer.observe', online: true, available: true }],
     apps: [{ app: 'github', documentRead: false }, { app: 'feishu', documentRead: true }],
   }, undefined, undefined]);
+
+  const submit = (alias: string) => fetch('http://127.0.0.1:' + address.port + '/v1/workflows', {
+    method: 'POST',
+    headers: { Authorization: 'Bearer ' + phone.token, 'Content-Type': 'application/json', 'Idempotency-Key': 'observe-flow' },
+    body: JSON.stringify({ workspace: 'project', steps: [
+      { key: 'observe', goal: 'Inspect Notes', needs: [],
+        action: { kind: 'desktop.observe', alias, deviceId: desktop.id } },
+      { key: 'summarize', goal: 'Summarize the observation', needs: ['observe'] },
+    ] }),
+  });
+  assert.equal((await submit('unknown')).status, 404);
+  const workflow = await submit('notes');
+  assert.equal(workflow.status, 202);
+  const result = await workflow.json();
+  const now = Date.now();
+  assert.equal(store.claim('owner', 'project', 'different-device', now, 45_000, '/observe '), undefined);
+  const observation = store.claim('owner', 'project', desktop.id, now, 45_000, '/observe ', '', undefined, undefined, ['notes'])!;
+  assert.equal(observation.task.id, result.steps[0].taskId);
+  assert.equal(observation.task.goal, '/observe notes');
+  assert.equal(store.finish(observation.run.id, desktop.id, now, {
+    status: 'succeeded', result: 'Notes contain a draft', artifact: { name: 'observation.txt', text: 'Notes contain a draft' },
+  }), true);
+  const claimWorker = () => store.claim('owner', 'project', 'worker', now, 45_000, '', '/preview ', undefined, undefined, undefined, true)!;
+  const earlier = claimWorker();
+  assert.equal(earlier.task.id, task.id);
+  assert.ok(store.finish(earlier.run.id, 'worker', now, { status: 'succeeded', result: 'Fixture completed' }));
+  const downstream = claimWorker();
+  assert.equal(downstream.task.id, result.steps[1].taskId);
+  assert.equal(downstream.predecessors[0].artifact?.excerpt, 'Notes contain a draft');
 });
 
 test('task and workflow intake deduplicate per paired phone and administrator', async t => {

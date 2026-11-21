@@ -21,9 +21,16 @@ export function workflowSteps(input: unknown): WorkflowStep[] {
     if (value.requireReview !== undefined && typeof value.requireReview !== 'boolean') {
       throw new InvalidWorkflow('Invalid workflow review option');
     }
+    const action = value.action;
+    if (action !== undefined && (!action || typeof action !== 'object' || action.kind !== 'desktop.observe' ||
+        typeof action.alias !== 'string' || !/^[a-z0-9_-]{1,32}$/.test(action.alias) ||
+        typeof action.deviceId !== 'string' || !/^[a-f0-9-]{36}$/.test(action.deviceId))) {
+      throw new InvalidWorkflow('Invalid workflow action');
+    }
     const acceptanceCriteria: string[] = Array.isArray(value.acceptanceCriteria)
       ? [...new Set<string>(value.acceptanceCriteria.map((criterion: string) => criterion.trim()))] : [];
     return { key: value.key as string, goal: value.goal as string, needs: [...new Set<string>(value.needs)],
+      ...(action && { action: { kind: 'desktop.observe' as const, alias: action.alias as string, deviceId: action.deviceId as string } }),
       ...(acceptanceCriteria.length && { acceptanceCriteria }), ...(value.requireReview === true && { requireReview: true }) };
   });
   orderWorkflow(steps);

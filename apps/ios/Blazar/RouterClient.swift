@@ -211,6 +211,12 @@ struct RouterClient: Equatable {
     }
 
     struct WorkflowStep: Codable, Identifiable {
+        struct Action: Codable {
+            let kind: String
+            let alias: String
+            let deviceId: String
+        }
+        var action: Action? = nil
         let key: String
         let goal: String
         let needs: [String]

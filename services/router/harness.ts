@@ -15,6 +15,7 @@ export type RouterHarness = (input: RouteRequest & {
   recent: ConversationTurn[];
   personalMemory?: string[];
   workspaceCapabilities?: () => {
+    desktopTargets?: { alias: string; deviceId: string }[];
     devices: { name: string; capability: string; online: boolean; available: boolean }[];
     apps: { app: string; documentRead: boolean }[];
   };
@@ -29,6 +30,7 @@ const instructions = [
   'For a task the user clearly asks you to perform, return {"kind":"create_task"}.',
   'If the user asks for a multi-step plan, return {"kind":"propose_workflow","text":"Summary","steps":[{"key":"draft","goal":"Draft the document","needs":[],"acceptanceCriteria":["Include the agreed findings"]}]} with unique keys and dependency keys in needs.',
   'Set requireReview to true for any step the user asks to accept manually before downstream work continues.',
+  'If the user explicitly requests desktop observation as a workflow step, use workspace_capabilities to get its exact deviceId and alias. Set action to {"kind":"desktop.observe","deviceId":"ID","alias":"alias"}. Keep goal as a human-readable description. Ask for clarification if the target is ambiguous.',
   'A proposed workflow is reviewed by the user before anything is queued.',
   'If the request needs clarification, return {"kind":"clarify","text":"Your question"}.',
   'For a question you can answer from the message and any relevant supplied reference data, return {"kind":"reply","text":"Answer"}.',

@@ -1148,8 +1148,10 @@ export class TaskStore {
         const taskId = randomUUID();
         tasks.set(name, taskId);
         const status = step.needs.length ? 'waiting_dependency' : 'queued';
+        const goal = step.action ? '/observe ' + step.action.alias : step.goal;
         this.db.prepare('INSERT INTO task(id,owner,workspace,goal,status) VALUES(?,?,?,?,?)')
-          .run(taskId, owner, workspace, step.goal, status);
+          .run(taskId, owner, workspace, goal, status);
+        if (step.action) this.db.prepare('INSERT INTO task_desktop_device VALUES(?,?)').run(taskId, step.action.deviceId);
         this.db.prepare('INSERT INTO workflow_step VALUES(?,?,?)').run(id, name, taskId);
         if (step.requireReview) this.db.prepare('INSERT INTO task_review VALUES(?)').run(taskId);
         for (const [position, criterion] of (step.acceptanceCriteria ?? []).entries()) {
@@ -1163,6 +1165,7 @@ export class TaskStore {
           this.db.prepare('INSERT INTO task_app_evidence VALUES(?,?)').run(taskId, JSON.stringify(appEvidence.refs));
         }
         this.event(taskId, 'task.created', { goal: step.goal, workspace, workflowId: id, stepKey: name, predecessors, status,
+          ...(step.action && { action: step.action }),
           ...(appEvidence && { appEvidence: appEvidence.refs }),
         });
       }
@@ -1517,7 +1520,11 @@ export class TaskStore {
       AND NOT EXISTS(SELECT 1 FROM device_interruption i WHERE i.device_id=d.id)
       AND NOT EXISTS(SELECT 1 FROM device_pause x WHERE x.device_id=d.id)
       ORDER BY d.workspace,d.name,d.id,j.value LIMIT 250`).all(owner, now - 45_000)
-      .map(({ controls, ...target }) => ({ ...target, controls: controls ? JSON.parse(String(controls)) as DesktopAppControls : null }));
+      .map(row => ({
+        workspace: String(row.workspace), deviceId: String(row.deviceId), deviceName: String(row.deviceName), alias: String(row.alias),
+        accessibility: row.accessibility, screenRecording: row.screenRecording,
+        controls: row.controls ? JSON.parse(String(row.controls)) as DesktopAppControls : null,
+      }));
   }
 
   ownsDesktopTarget(owner: string, workspace: string, id: string) {

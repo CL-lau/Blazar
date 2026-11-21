@@ -48,6 +48,7 @@ export interface WorkflowStep {
   needs: string[];
   acceptanceCriteria?: string[];
   requireReview?: boolean;
+  action?: { kind: 'desktop.observe'; alias: string; deviceId: string };
 }
 
 

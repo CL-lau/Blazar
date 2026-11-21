@@ -1104,6 +1104,15 @@ export function routerServer(store: TaskStore, config: { owner: string; token: s
         if (steps.some(step => step.goal.startsWith('/observe ') || step.goal.startsWith('/click '))) {
           throw new RequestError(400, 'Desktop operations require a direct task request');
         }
+        const desktopSteps = steps.flatMap(step => step.action ? [step.action] : []);
+        if (desktopSteps.length) {
+          const targets = store.desktopTargets(owner);
+          if (desktopSteps.some(action => !targets.some(target => target.workspace === workspace &&
+              target.deviceId === action.deviceId && target.alias === action.alias))) {
+            throw new RequestError(404, 'Workflow desktop target unavailable');
+          }
+          if (data.appMemory !== undefined) throw new RequestError(400, 'Desktop workflow steps cannot use application memory');
+        }
         if (data.appMemory !== undefined && (!admin || steps.some(step => step.goal.startsWith('/preview ')))) {
           throw new RequestError(403, 'Application memory requires an administrator Worker workflow');
         }
@@ -1186,6 +1195,8 @@ export function routerServer(store: TaskStore, config: { owner: string; token: s
                       return store.recentTaskEventTypes(owner, input.workspace, matches[0].id);
                     },
                     ...(admin && { workspaceCapabilities: () => ({
+                      desktopTargets: store.desktopTargets(owner).filter(target => target.workspace === input.workspace)
+                        .slice(0, 16).map(target => ({ alias: String(target.alias), deviceId: String(target.deviceId) })),
                       devices: store.devices(owner).filter(device => device.workspace === input.workspace && !device.revoked)
                         .slice(0, 16).map(device => ({
                           name: String(device.name), capability: String(device.capability ?? 'unreported'),
