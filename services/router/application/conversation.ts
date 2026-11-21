@@ -68,6 +68,21 @@ export function createConversationRouter(store: ConversationTasks, config: Conve
       metrics.route('deterministic');
       return { status: 200, body: { kind: 'reply', text: text || 'No matching imported documents.' } };
     }
+    if (/^\/document(?:\s|$)/.test(input.text)) {
+      if (!admin || !authorized()) throw new ConversationError(403, 'Administrator required for document preview');
+      if (!config.memory) throw new ConversationError(503, 'Document preview is unavailable');
+      const command = /^\/document ([a-f0-9-]{36}) ([^\r\n]+)$/.exec(input.text);
+      if (!command) throw new ConversationError(400, 'Use /document CONNECTION_ID DOCUMENT_REFERENCE');
+      const result = await invokeDocumentCapability(config.memory, owner, command[1],
+        config.documents ?? [], 'document.read', { workspace: input.workspace, document: command[2].trim() });
+      if (!authorized()) throw new ConversationError(401, 'Authentication required');
+      if (!('text' in result) || typeof result.text !== 'string') throw new ConversationError(502, 'Document preview is unavailable');
+      const backend = result.backend ? ' · ' + (result.backend.kind === 'github' ? 'GitHub API' : 'MCP') +
+        (result.backend.fallback ? ' fallback' : '') : '';
+      const text = `${result.resource} · ${result.revision}${backend}\n\n${result.text}${result.truncated ? '\n\nPreview truncated.' : ''}`;
+      metrics.route('deterministic');
+      return { status: 200, body: { kind: 'reply', text } };
+    }
     let decision = store.routingDecision(owner, key, input, undefined, caller);
     if (decision) metrics.route('replayed');
     else {

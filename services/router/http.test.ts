@@ -178,6 +178,16 @@ test('Router authenticates, deduplicates commands and replays task changes over 
   assert.equal((await post('/v1/conversation', 'conversation-document-wrong-scope', {
     workspace: 'demo', text: searchCommand,
   })).status, 404);
+  const previewCommand = '/document ' + scopedConnection + ' doc123';
+  const conversationPreview = await post('/v1/conversation', 'conversation-live-document', {
+    workspace: 'private', text: previewCommand,
+  });
+  assert.equal(conversationPreview.status, 200);
+  assert.match((await conversationPreview.json()).text, /doc123 · sha256:.*\n\nDesign review findings/);
+  assert.equal(store.recentConversation('test', 'private').length, 0);
+  assert.equal((await post('/v1/conversation', 'conversation-live-document-wrong-scope', {
+    workspace: 'demo', text: previewCommand,
+  })).status, 404);
   memory.removeResource('test', scopedConnection, 'manual');
   const { id: connection } = await registered.json();
   const entry = await post('/v1/memory', 'memory', {
@@ -625,7 +635,7 @@ test('Router authenticates, deduplicates commands and replays task changes over 
   const metrics = await fetch(url + '/v1/admin/metrics', { headers });
   assert.equal(metrics.status, 200);
   const measurement = await metrics.json();
-  assert.deepEqual(measurement.routing, { deterministic: 2, model: 4, replayed: 1, modelErrors: 0 });
+  assert.deepEqual(measurement.routing, { deterministic: 3, model: 4, replayed: 1, modelErrors: 0 });
   assert.equal(measurement.latencyMs.model.count, 4);
   assert.deepEqual(measurement.modelTokens, {
     samples: 4, input: 40, output: 16, cacheRead: 8, cacheWrite: 0, totalTokens: 64,
