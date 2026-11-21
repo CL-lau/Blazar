@@ -22,10 +22,17 @@ export function workflowSteps(input: unknown): WorkflowStep[] {
       throw new InvalidWorkflow('Invalid workflow review option');
     }
     const action = value.action === undefined ? undefined : workflowAction(value.action);
+    const protocols = value.workerProtocols;
+    if (protocols !== undefined && (action || /^\/(observe|click|preview) /.test(value.goal) ||
+        !Array.isArray(protocols) || !protocols.length || protocols.length > 6 ||
+        protocols.some(protocol => !['acp', 'codex', 'claude', 'pi', 'aider', 'jsonl'].includes(protocol)))) {
+      throw new InvalidWorkflow('Invalid workflow Worker protocols');
+    }
     const acceptanceCriteria: string[] = Array.isArray(value.acceptanceCriteria)
       ? [...new Set<string>(value.acceptanceCriteria.map((criterion: string) => criterion.trim()))] : [];
     return { key: value.key as string, goal: value.goal as string, needs: [...new Set<string>(value.needs)],
       ...(action && { action }),
+      ...(protocols && { workerProtocols: [...new Set<string>(protocols)].sort() }),
       ...(acceptanceCriteria.length && { acceptanceCriteria }), ...(value.requireReview === true && { requireReview: true }) };
   });
   orderWorkflow(steps);

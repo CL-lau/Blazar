@@ -53,6 +53,7 @@ export interface WorkflowStep {
   acceptanceCriteria?: string[];
   requireReview?: boolean;
   action?: WorkflowAction;
+  workerProtocols?: string[];
 }
 
 

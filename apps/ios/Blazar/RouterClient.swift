@@ -222,6 +222,7 @@ struct RouterClient: Equatable {
             let expectedText: String?
         }
         var action: Action? = nil
+        var workerProtocols: [String]? = nil
         let key: String
         let goal: String
         let needs: [String]

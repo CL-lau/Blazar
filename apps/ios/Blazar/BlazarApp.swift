@@ -226,6 +226,9 @@ private struct TaskScreen: View {
                                             Text("Observe \(action.alias) on device \(action.deviceId)").font(.caption)
                                         }
                                     }
+                                    if let protocols = step.workerProtocols {
+                                        Text("Worker protocols: \(protocols.joined(separator: ", "))").font(.caption)
+                                    }
                                     ForEach(step.acceptanceCriteria ?? [], id: \.self) { criterion in
                                         Text(criterion).font(.caption)
                                     }

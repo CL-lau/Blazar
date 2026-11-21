@@ -968,3 +968,34 @@ test('opening a legacy database migrates Worker time limits before scheduling', 
     store.close();
   }
 });
+
+test('workflow steps dispatch only to allowed Worker protocols and pass results across adapters', t => {
+  const db = new TaskStore(':memory:');
+  t.after(() => db.close());
+  const now = Date.now();
+  const repo = db.registerDevice('owner', 'Repository Worker', 'project');
+  const reviewer = db.registerDevice('owner', 'Review Worker', 'project');
+  const codex = { label: 'Codex fixture', protocol: 'codex' };
+  const acp = { label: 'ACP fixture', protocol: 'acp' };
+  const workflow = db.createWorkflow('owner', 'protocol-flow', 'project', [
+    { key: 'draft', goal: 'Draft notes', needs: [], workerProtocols: ['codex'] },
+    { key: 'review', goal: 'Review notes', needs: ['draft'], workerProtocols: ['acp'] },
+  ]);
+  const claim = (device: string, worker: typeof codex) =>
+    db.claim('owner', 'project', device, now, 45_000, '', '/preview ', undefined, worker);
+  db.recordDeviceWorker(reviewer.id, acp);
+  db.recordDeviceActivity(reviewer.id, now, 'agent.acp');
+  db.updateDeviceReadiness(now);
+  assert.equal(db.get('owner', String(workflow.steps[0].taskId))?.status, 'waiting_device');
+  assert.equal(claim(reviewer.id, acp), undefined);
+  db.recordDeviceWorker(repo.id, codex);
+  db.recordDeviceActivity(repo.id, now, 'agent.acp');
+  db.updateDeviceReadiness(now);
+  const draft = claim(repo.id, codex)!;
+  assert.equal(draft.task.id, workflow.steps[0].taskId);
+  assert.ok(db.finish(draft.run.id, repo.id, now, { status: 'succeeded', result: 'Draft notes' }));
+  assert.equal(claim(repo.id, codex), undefined);
+  const review = claim(reviewer.id, acp)!;
+  assert.equal(review.task.id, workflow.steps[1].taskId);
+  assert.equal(review.predecessors[0].result, 'Draft notes');
+});

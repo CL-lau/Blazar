@@ -760,6 +760,9 @@ export class TaskStore {
         }
         this.db.prepare('INSERT INTO workflow_step VALUES(?,?,?)').run(id, name, taskId);
         if (step.requireReview) this.db.prepare('INSERT INTO task_review VALUES(?)').run(taskId);
+        for (const protocol of step.workerProtocols ?? []) {
+          this.db.prepare('INSERT INTO task_worker_protocol VALUES(?,?)').run(taskId, protocol);
+        }
         for (const [position, criterion] of (step.acceptanceCriteria ?? []).entries()) {
           this.db.prepare('INSERT INTO task_criterion VALUES(?,?,?)').run(taskId, position, criterion);
         }
@@ -772,6 +775,7 @@ export class TaskStore {
         }
         this.event(taskId, 'task.created', { goal: step.goal, workspace, workflowId: id, stepKey: name, predecessors, status,
           ...(step.action && { action: step.action }),
+          ...(step.workerProtocols && { workerProtocols: step.workerProtocols }),
           ...(appEvidence && { appEvidence: appEvidence.refs }),
         });
       }
@@ -1375,6 +1379,8 @@ export class TaskStore {
             ELSE 'agent.acp' END)
           AND (policy.protocols IS NULL OR substr(t.goal,1,9) IN ('/observe ','/preview ') OR substr(t.goal,1,7)='/click '
             OR (p.capability='agent.acp' AND EXISTS(SELECT 1 FROM json_each(policy.protocols) WHERE value=worker.protocol)))
+          AND (NOT EXISTS(SELECT 1 FROM task_worker_protocol wp WHERE wp.task_id=t.id) OR
+            EXISTS(SELECT 1 FROM task_worker_protocol wp WHERE wp.task_id=t.id AND wp.protocol=worker.protocol))
           AND (p.capability='agent.acp' OR (
             NOT EXISTS(SELECT 1 FROM task_app_evidence e WHERE e.task_id=t.id)
             AND NOT EXISTS(SELECT 1 FROM task_memory_input m WHERE m.task_id=t.id)

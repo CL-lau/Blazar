@@ -83,6 +83,10 @@ export function initializeTaskSchema(db: DatabaseSync, runLimitMs: number) {
     CREATE TABLE IF NOT EXISTS desktop_reconciliation (
       task_id TEXT PRIMARY KEY REFERENCES task(id) ON DELETE CASCADE, inputs TEXT NOT NULL
     );
+    CREATE TABLE IF NOT EXISTS task_worker_protocol (
+      task_id TEXT NOT NULL REFERENCES task(id) ON DELETE CASCADE, protocol TEXT NOT NULL,
+      PRIMARY KEY(task_id,protocol)
+    );
     CREATE TABLE IF NOT EXISTS workflow_observation (
       task_id TEXT PRIMARY KEY REFERENCES task(id) ON DELETE CASCADE,
       recovery_count INTEGER NOT NULL DEFAULT 0
