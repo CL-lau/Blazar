@@ -330,6 +330,30 @@ test('a registered JSONL extension executes a real subprocess through Router and
   for (const artifact of workflowArtifacts) assert.equal((await workflowDownload(String(artifact.id))).status, 404);
   assert.equal(await client.runOnce(AbortSignal.timeout(5_000)), false);
   assert.equal(store.get('owner', workflowTasks[2])?.status, 'waiting_user');
+
+  const recoveryConnection = memory.connect('owner', 'github', 'Recovery handbook', 'project');
+  memory.importDocument('owner', 'project', 'Private review template', { ...source, connection: recoveryConnection });
+  const recoveryResponse = await createWithEvidence('recoverable-evidence', recoveryConnection);
+  assert.equal(recoveryResponse.status, 202);
+  const recoveryTask = await recoveryResponse.json();
+  const changeScope = (workspace: string) => fetch(base + '/v1/app-connections/' + recoveryConnection, {
+    method: 'PATCH', headers: { Authorization: 'Bearer local', 'Content-Type': 'application/json' },
+    body: JSON.stringify({ workspace }),
+  });
+  const retry = () => fetch(base + '/v1/tasks/' + recoveryTask.id + '/commands', {
+    method: 'POST', headers: {
+      Authorization: 'Bearer local', 'Content-Type': 'application/json', 'Idempotency-Key': 'retry-evidence',
+    }, body: JSON.stringify({ action: 'retry', expectedVersion: 1 }),
+  });
+  assert.equal((await changeScope('another-project')).status, 200);
+  assert.equal(store.get('owner', recoveryTask.id)?.status, 'waiting_user');
+  assert.equal((await retry()).status, 409);
+  assert.equal(store.get('owner', recoveryTask.id)?.version, 1);
+  assert.equal((await changeScope('project')).status, 200);
+  assert.equal((await retry()).status, 200);
+  assert.equal(await client.runOnce(AbortSignal.timeout(5_000)), true);
+  assert.equal(store.get('owner', recoveryTask.id)?.result, 'Private review template');
+  assert.equal(store.get('owner', recoveryTask.id)?.version, 2);
 });
 
 test('JSONL rejects duplicate terminal events and stops a cancelled subprocess', async () => {

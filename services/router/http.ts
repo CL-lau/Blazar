@@ -1055,7 +1055,8 @@ export function routerServer(store: TaskStore, config: { owner: string; token: s
           return;
         }
         const taskId = taskCommand[1];
-        if (!store.get(owner, taskId)) throw new RequestError(404, 'Task not found');
+        const current = store.get(owner, taskId);
+        if (!current) throw new RequestError(404, 'Task not found');
         const version = data.expectedVersion;
         if (typeof version !== 'number' || !Number.isSafeInteger(version) || version < 1) {
           throw new RequestError(400, 'Invalid expectedVersion');
@@ -1067,10 +1068,9 @@ export function routerServer(store: TaskStore, config: { owner: string; token: s
         else if (action === 'approve' || action === 'deny') {
           command = { action, approvalId: requiredText(data.approvalId, 'approval ID', 36) };
         } else throw new RequestError(400, 'Invalid action');
-        if (action === 'approve' || action === 'accept_result') {
-          const task = store.get(owner, taskId)!;
+        if (['approve', 'accept_result', 'append', 'resume', 'retry'].includes(command.action)) {
           const refs = store.appEvidence(taskId);
-          if (refs && !config.memory?.resolveAppEvidence(owner, task.workspace, refs)) {
+          if (refs && !config.memory?.resolveAppEvidence(owner, current.workspace, refs)) {
             flushStopNotifications();
             throw new RequestError(409, 'Application memory access changed');
           }
