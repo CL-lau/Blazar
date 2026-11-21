@@ -6,7 +6,11 @@ import { Readable, Writable } from 'node:stream';
 import { setTimeout as delay } from 'node:timers/promises';
 import { client, methods, ndJsonStream, PROTOCOL_VERSION } from '@agentclientprotocol/sdk';
 
-export type AcpWorker = WorkerCommand;
+export type AcpWorker = WorkerCommand & { startupTimeoutSeconds?: number };
+
+export function acpStartupSignal(worker: AcpWorker) {
+  return AbortSignal.timeout((worker.startupTimeoutSeconds ?? 5) * 1_000);
+}
 export const deepSeekWorker: AcpWorker = {
   executable: 'dsh',
   args: ['--profile', 'acp'],
@@ -35,6 +39,7 @@ export async function probeAcp(worker: AcpWorker, root: string, signal: AbortSig
           version: ready.protocolVersion,
           loadSession: ready.agentCapabilities?.loadSession === true,
           resumeSession: Boolean(ready.agentCapabilities?.sessionCapabilities?.resume),
+          ...(ready.authMethods?.length && { authMethodCount: ready.authMethods.length }),
         };
       });
   } finally {

@@ -78,6 +78,11 @@ export async function resolveWorker(mode: string, manifest?: string, executableO
       (data.protocol !== 'jsonl' || typeof data.includeFullInputArtifacts !== 'boolean')) {
     throw new Error('Invalid full-artifact option in Worker manifest');
   }
+  const startupTimeoutSeconds = data.startupTimeoutSeconds;
+  if (startupTimeoutSeconds !== undefined && (data.protocol !== 'acp' ||
+      !Number.isSafeInteger(startupTimeoutSeconds) || startupTimeoutSeconds < 5 || startupTimeoutSeconds > 60)) {
+    throw new Error('Invalid ACP Worker startup timeout');
+  }
   const env = data.env ?? [];
   if (!Array.isArray(env) || env.length > 32 || env.some((key: unknown) =>
     typeof key !== 'string' || !/^[A-Z_][A-Z0-9_]*$/.test(key) || /^(BLAZAR_|NODE_OPTIONS$|DYLD_|LD_)/.test(key))) {
@@ -85,7 +90,7 @@ export async function resolveWorker(mode: string, manifest?: string, executableO
   }
   const worker = { executable: await locateWorkerExecutable(data.executable), label: data.label, args: data.args, env };
   return data.protocol === 'jsonl' ? { ...worker, protocol: 'jsonl', includeFullInputArtifacts: data.includeFullInputArtifacts }
-    : { ...worker, protocol: 'acp' };
+    : { ...worker, protocol: 'acp', ...(startupTimeoutSeconds !== undefined && { startupTimeoutSeconds }) };
 }
 
 export async function locateWorkerExecutable(executable: string): Promise<string> {

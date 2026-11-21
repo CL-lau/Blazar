@@ -80,5 +80,6 @@ export async function registryWorkerManifest(entry: Entry, kind: Distribution, b
     commandArgs = kind === 'npx' ? ['--yes', spec, ...args] : [spec, ...args];
   }
   return { version: 1, protocol: 'acp', label: entry.name + ' ' + entry.version, executable, args: commandArgs, env,
+    ...(kind !== 'binary' && { startupTimeoutSeconds: 60 }),
     registry: { id: entry.id, version: entry.version, distribution: kind } };
 }

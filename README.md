@@ -106,8 +106,6 @@ Run `npm run device:probe -- <preset>` with the same configuration as the execut
 
 Use `BLAZAR_DEVICE_WORKER=custom` and `BLAZAR_WORKER_MANIFEST` to point to an absolute path containing a version 1 ACP manifest:
 
-Use `npm run device:acp-registry -- list` to browse the stable ACP Registry. Generate an ACP manifest on the execution device with `npm run device:acp-registry -- import ID npx /absolute/worker.json`. The command pins the registry version and writes a private manifest for review. Launching or probing a package-based Worker may download that pinned package. For a binary distribution, pass `binary` and the absolute path to the separately installed executable. Set any required credential variables in the device environment and use the generated manifest with the custom Worker mode.
-
 ```json
 {
   "version": 1,
@@ -118,6 +116,8 @@ Use `npm run device:acp-registry -- list` to browse the stable ACP Registry. Gen
   "env": ["MY_AGENT_API_KEY"]
 }
 ```
+
+Use `npm run device:acp-registry -- list` to browse the stable ACP Registry. Generate an ACP manifest on the execution device with `npm run device:acp-registry -- import ID npx /absolute/worker.json`. The command pins the registry version and writes a private manifest for review. Launching or probing a package-based Worker may download that pinned package. For a binary distribution, pass `binary` and the absolute path to the separately installed executable. Set any required credential variables in the device environment and use the generated manifest with the custom Worker mode. Package-based manifests allow up to 60 seconds for the first ACP handshake. Other ACP manifests default to five seconds and can set `startupTimeoutSeconds` from 5 to 60.
 
 For a JSONL extension, set `"protocol": "jsonl"` in the same manifest. Blazar writes one UTF-8 line with `version: 1`, `type: "run"`, and an `input` containing `goal`, `instructions`, and `predecessorResults`, then closes standard input. The Worker can emit progress lines and must emit exactly one terminal line. Write any diagnostic output to standard error.
 

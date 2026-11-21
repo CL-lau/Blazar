@@ -1,6 +1,6 @@
 import { observationConfig } from '../../packages/computer-use/observe.ts';
 import { resolveWorker } from '../../packages/workers/registry.ts';
-import { probeAcp } from '../../packages/workers/acp.ts';
+import { acpStartupSignal, probeAcp } from '../../packages/workers/acp.ts';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
 import { DeviceLedger } from './ledger.ts';
@@ -27,7 +27,7 @@ try {
       process.env.BLAZAR_WORKER_GIT_APPLY_INPUTS === '1') : undefined;
   if (worker && !worktrees && (worker.protocol ?? 'acp') === 'acp') {
     try {
-      await probeAcp(worker, workspaceLock.root, AbortSignal.timeout(5_000));
+      await probeAcp(worker, workspaceLock.root, acpStartupSignal(worker));
     } catch (error) {
       throw new Error(worker.label + ' failed the ACP startup handshake. Run npm run device:probe for diagnostics.', { cause: error });
     }
