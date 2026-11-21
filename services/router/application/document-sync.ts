@@ -101,7 +101,12 @@ export async function invokeDocumentCapability(store: DocumentMemory, owner: str
   }
   if (capability === 'document.refresh') {
     const after = input.after === undefined ? '' : requiredText(input.after, 'document cursor', 128);
-    return refreshDocumentPage(store, owner, workspace, connectionId, reader, after);
+    const result = await refreshDocumentPage(store, owner, workspace, connectionId, reader, after);
+    if (store.connection(owner, connectionId, workspace)?.scopeVersion !== connection.scopeVersion ||
+        (result.after !== null && store.resourceRevoked(connectionId, result.after))) {
+      throw new RequestError(409, 'Source access changed during refresh');
+    }
+    return result;
   }
   const document = requiredText(input.document, 'document ID', 128);
   return accessDocument(store, owner, workspace, connectionId, reader, document, capability === 'document.test' ? 'test' : 'import');

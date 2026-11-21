@@ -286,3 +286,23 @@ test('moving a connection away and back invalidates document reads already in fl
     { workspace: 'project', document: 'review.md' });
   assert.equal(store.recall('owner', 'project', 'review', [connection]).length, 1);
 });
+
+test('manual document refresh discards page results when the source scope changes', async t => {
+  const { invokeDocumentCapability } = await import('./application/document-sync.ts');
+  const store = new MemoryStore(':memory:');
+  t.after(() => store.close());
+  const connection = store.connect('owner', 'github', 'handbook', 'project');
+  const source = { connection, resource: 'review.md', revision: 'v1' };
+  store.importDocument('owner', 'project', 'Current review template', source);
+  const read = Promise.withResolvers<{ text: string; revision: string }>();
+  const reader = { app: 'github', account: 'handbook', accepts: () => true, read: () => read.promise };
+  const refresh = () => invokeDocumentCapability(store, 'owner', connection, [reader], 'document.refresh', { workspace: 'project' });
+  const stale = refresh();
+  store.setConnectionWorkspace('owner', connection, 'private');
+  store.setConnectionWorkspace('owner', connection, 'project');
+  read.resolve({ text: 'New review template', revision: 'v2' });
+  await assert.rejects(stale, /Source access changed during refresh/);
+  assert.equal(store.recall('owner', 'project', 'review', [connection])[0]?.revision, 'v1');
+  assert.deepEqual(await refresh(), { refreshed: 1, unavailable: 0, after: null });
+  assert.equal(store.recall('owner', 'project', 'review', [connection])[0]?.revision, 'v2');
+});
