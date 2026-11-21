@@ -3,6 +3,7 @@ import { callRouter } from './router.js';
 
 const timingLabels = { event: 'Task intake', feishu: 'Feishu intake', lark: 'Lark intake', qq: 'QQ intake', model: 'Model routing' };
 const deliveryLabels = { weixin: 'WeChat', feishu: 'Feishu', lark: 'Lark', wecom: 'WeCom', dingtalk: 'DingTalk', qq: 'QQ' };
+const connectionLabels = { starting: 'Starting', available: 'Available', unavailable: 'Unavailable' };
 const deliveryColumns = [
   ['pending', 'Pending'], ['sent', 'Sent'], ['failed', 'Failed'], ['unknown', 'Unknown'], ['expired', 'Expired'],
 ];
@@ -79,12 +80,13 @@ export function RouterStatus({ token }) {
         <h3>IM configuration</h3>
         <div className="status-table">
           <table aria-label="IM channel configuration">
-            <thead><tr><th scope="col">Channel</th><th scope="col">Workspace</th><th scope="col">Receive</th><th scope="col">Reply</th></tr></thead>
+            <thead><tr><th scope="col">Channel</th><th scope="col">Workspace</th><th scope="col">Receive</th><th scope="col">Reply</th><th scope="col">Connection</th></tr></thead>
             <tbody>{data.channels.map(channel => <tr key={channel.id}>
               <th scope="row">{deliveryLabels[channel.id] ?? channel.id}</th>
               <td>{channel.workspace ?? '—'}</td>
               <td>{channel.inbound ? 'Configured' : 'Disabled'}</td>
               <td>{channel.outbound ? 'Configured' : 'Disabled'}</td>
+              <td>{connectionLabels[channel.health] ?? '—'}</td>
             </tr>)}</tbody>
           </table>
         </div>

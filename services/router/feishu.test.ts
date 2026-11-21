@@ -173,9 +173,10 @@ test('Feishu and Lark isolate callback identity and outbound notices in one Rout
   const common = { appId: 'app', tenant: 'tenant', senders: new Set(['person']), chats: new Set(['chat']) };
   const feishu = { ...common, token: 'feishu-verification', workspace: 'cn' };
   const lark = { ...common, token: 'lark-verification', workspace: 'global' };
+  let health: 'starting' | 'unavailable' = 'starting';
   const server = routerServer(store, {
     owner: 'owner', token: 'admin', feishu, lark, readLarkAttachment: async () => undefined,
-    streamChannels: { weixin: { workspace: 'direct' } },
+    streamChannels: { weixin: { workspace: 'direct', health: () => health } },
   });
   server.listen(0, '127.0.0.1');
   t.after(async () => {
@@ -204,13 +205,18 @@ test('Feishu and Lark isolate callback identity and outbound notices in one Rout
   const diagnostics = await metrics.json();
   assert.equal(metrics.status, 200);
   assert.deepEqual(diagnostics.channels, [
-    { id: 'weixin', workspace: 'direct', inbound: true, outbound: true },
+    { id: 'weixin', workspace: 'direct', inbound: true, outbound: true, health: 'starting' },
     { id: 'feishu', workspace: 'cn', inbound: true, outbound: false },
     { id: 'lark', workspace: 'global', inbound: true, outbound: true },
     { id: 'wecom', workspace: null, inbound: false, outbound: false },
     { id: 'dingtalk', workspace: null, inbound: false, outbound: false },
     { id: 'qq', workspace: null, inbound: false, outbound: false },
   ]);
+  health = 'unavailable';
+  const changed = await fetch('http://127.0.0.1:' + address.port + '/v1/admin/metrics', {
+    headers: { Authorization: 'Bearer admin' },
+  });
+  assert.equal((await changed.json()).channels[0].health, 'unavailable');
   assert.equal((await callback('feishu', lark.token)).status, 401);
   assert.equal((await callback('lark', feishu.token)).status, 401);
   for (const [region, config] of [['feishu', feishu], ['lark', lark]] as const) {

@@ -1,3 +1,4 @@
+import type { StreamHealth } from './metrics.ts';
 import { DWClient, TOPIC_ROBOT } from 'dingtalk-stream';
 import { createDingTalkAttachmentReader, dingTalkReplyWindow, parseDingTalk, parseDingTalkAttachment, sendDingTalkNotice, type DingTalkConfig, type ReplyWindow } from '../../packages/channels/dingtalk.ts';
 import type { TaskStore } from './store.ts';
@@ -40,6 +41,7 @@ export function startDingTalk(store: TaskStore, owner: string, config: Connectio
   const download = config.mediaHosts?.size ? createDingTalkAttachmentReader(config, config.mediaHosts) : undefined;
   let active = true;
   let sending = false;
+  let attempted = false;
   const windows = new Map<string, ReplyWindow>();
   const dispatcher = setInterval(() => {
     if (!active || sending) return;
@@ -71,15 +73,20 @@ export function startDingTalk(store: TaskStore, owner: string, config: Connectio
     }).catch(() => { if (active) console.error('DingTalk callback was not committed'); });
   });
   void client.connect().then(() => {
+    attempted = true;
     if (!active) client.disconnect();
   }).catch(() => {
+    attempted = true;
     if (active) console.error('DingTalk connection failed');
   });
-  return () => {
-    active = false;
-    stop.abort();
-    clearInterval(dispatcher);
-    client.disconnect();
+  return {
+    health: (): StreamHealth => client.connected && client.registered ? 'available' : attempted ? 'unavailable' : 'starting',
+    stop() {
+      active = false;
+      stop.abort();
+      clearInterval(dispatcher);
+      client.disconnect();
+    },
   };
 }
 

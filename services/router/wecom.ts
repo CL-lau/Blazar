@@ -1,3 +1,4 @@
+import type { StreamHealth } from './metrics.ts';
 import { WSClient } from '@wecom/aibot-node-sdk';
 import { createWeComAttachmentReader, parseWeCom, parseWeComAttachment, type WeComConfig } from '../../packages/channels/wecom.ts';
 import type { TaskAttachment } from '../../packages/protocol/task.ts';
@@ -37,10 +38,14 @@ export function startWeCom(store: TaskStore, owner: string, config: WeComConfig,
   });
   let active = true;
   let authenticated = false;
+  let observed = false;
   let delivering = false;
-  client.on('authenticated', () => { authenticated = true; });
-  client.on('disconnected', () => { authenticated = false; });
-  client.on('error', () => console.error('WeCom could not process a connection event'));
+  client.on('authenticated', () => { authenticated = true; observed = true; });
+  client.on('disconnected', () => { authenticated = false; observed = true; });
+  client.on('error', () => {
+    observed = true;
+    console.error('WeCom could not process a connection event');
+  });
   const stop = new AbortController();
   const download = config.mediaHosts?.size ? createWeComAttachmentReader(config.mediaHosts) : undefined;
   const receive = (frame: { body?: unknown }) => {
@@ -65,10 +70,13 @@ export function startWeCom(store: TaskStore, owner: string, config: WeComConfig,
   dispatcher.unref();
   client.connect();
 
-  return () => {
-    active = false;
-    stop.abort();
-    clearInterval(dispatcher);
-    client.disconnect();
+  return {
+    health: (): StreamHealth => authenticated && client.isConnected ? 'available' : observed ? 'unavailable' : 'starting',
+    stop() {
+      active = false;
+      stop.abort();
+      clearInterval(dispatcher);
+      client.disconnect();
+    },
   };
 }

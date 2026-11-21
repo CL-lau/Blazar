@@ -1,6 +1,8 @@
 import type { ModelTokens } from './harness.ts';
 
 const bounds = [1, 2, 5, 10, 25, 50, 100, 250, 500, 1000, 5000, 15000];
+export type StreamHealth = 'starting' | 'available' | 'unavailable';
+
 type Timing = 'event' | 'feishu' | 'lark' | 'qq' | 'model';
 
 export class RouterMetrics {

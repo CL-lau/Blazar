@@ -1,3 +1,4 @@
+import type { StreamHealth } from './metrics.ts';
 import { setTimeout as delay } from 'node:timers/promises';
 import { parseWeixin, parseWeixinAttachment, weixinTransport, type WeixinConfig } from '../../packages/channels/weixin.ts';
 import type { TaskStore } from './store.ts';
@@ -29,6 +30,7 @@ export function startWeixin(store: TaskStore, owner: string, config: WeixinConfi
   const stop = new AbortController();
   const channel = JSON.stringify(['weixin', config.botId]);
   const transport = weixinTransport(config);
+  let health: StreamHealth = 'starting';
   const poll = async () => {
     while (!stop.signal.aborted) {
       try {
@@ -41,10 +43,14 @@ export function startWeixin(store: TaskStore, owner: string, config: WeixinConfi
           }
           if (stop.signal.aborted) return;
         }
+        health = 'available';
         if (batch.cursor !== current) store.saveChannelCursor(channel, batch.cursor);
         if (batch.messages.length) continue;
       } catch {
-        if (!stop.signal.aborted) console.error('Weixin polling did not complete');
+        if (!stop.signal.aborted) {
+          health = 'unavailable';
+          console.error('Weixin polling did not complete');
+        }
       }
       await delay(2_000, undefined, { signal: stop.signal }).catch(() => {});
     }
@@ -62,5 +68,8 @@ export function startWeixin(store: TaskStore, owner: string, config: WeixinConfi
       .finally(() => { sending = false; });
   }, 1_000);
   dispatcher.unref();
-  return () => { clearInterval(dispatcher); stop.abort(); };
+  return {
+    health: () => health,
+    stop() { clearInterval(dispatcher); stop.abort(); },
+  };
 }

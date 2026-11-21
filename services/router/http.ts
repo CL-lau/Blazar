@@ -3,7 +3,7 @@ import { displayTaskStatus } from '../../packages/protocol/task.ts';
 import { artifactDiff } from './artifact-diff.ts';
 import { workerCatalog } from '../../packages/workers/registry.ts';
 import { performance } from 'node:perf_hooks';
-import { RouterMetrics } from './metrics.ts';
+import { RouterMetrics, type StreamHealth } from './metrics.ts';
 import { documentAppCatalog, documentCapabilityState, DocumentAccessDenied, DocumentUnavailable, type DocumentConnector } from '../../packages/apps/documents.ts';
 import { WebSocket, WebSocketServer } from 'ws';
 import { createQQHandler, qqChannel, type QQConfig } from '../../packages/channels/qq.ts';
@@ -617,7 +617,7 @@ function deviceOperation(store: TaskStore, bearer: string, pathname: string, dat
   return { status: accepted ? 200 : 409, body: { accepted } };
 }
 
-type StreamChannelSettings = Partial<Record<'weixin' | 'wecom' | 'dingtalk', { workspace: string }>>;
+type StreamChannelSettings = Partial<Record<'weixin' | 'wecom' | 'dingtalk', { workspace: string; health?: () => StreamHealth | undefined }>>;
 
 export function routerServer(store: TaskStore, config: { owner: string; token: string; memory?: MemoryStore; harness?: RouterHarness; feishu?: FeishuConfig; lark?: FeishuConfig; readLarkAttachment?: (messageId: string, key: string) => Promise<string | undefined>; readFeishuAttachment?: (messageId: string, key: string) => Promise<string | undefined>; qq?: QQConfig; readQQAttachment?: (url: string, name?: string) => Promise<TaskAttachment | undefined>; documents?: readonly DocumentConnector[]; answerMemory?: MemoryAnswer; pushEnabled?: boolean; streamChannels?: StreamChannelSettings }) {
   const metricsByOwner = new Map<string, RouterMetrics>();
@@ -864,6 +864,7 @@ export function routerServer(store: TaskStore, config: { owner: string; token: s
           ...ownerMetrics(owner).snapshot(), ...store.metrics(owner, Date.now()),
           channels: channels.map(([id, channel, outbound]) => ({
             id, workspace: channel?.workspace ?? null, inbound: Boolean(channel), outbound: Boolean(channel && outbound),
+            ...((channel && 'health' in channel && channel.health) && { health: channel.health() }),
           })),
         });
         return;
