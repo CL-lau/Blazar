@@ -394,8 +394,16 @@ console.log(JSON.stringify({ok:true,command,data}));
   const device = store.registerDevice('owner', 'Notes desktop', 'project');
   const phone = store.redeemPairing(store.createPairing('owner', Date.now()).code, 'Phone fixture', Date.now())!;
   let locked = false;
-  const client = new DeviceClient(base, device.token, directory, ledger, undefined,
-    { ...observation, sessionLocked: async () => locked });
+  let inputSamples = 0;
+  let takeOver = false;
+  const client = new DeviceClient(base, device.token, directory, ledger, undefined, {
+    ...observation,
+    sessionLocked: async () => locked,
+    lastInput: async () => {
+      const event = takeOver && ++inputSamples >= 3 ? 50n : 10n;
+      return { earliest: event, latest: event };
+    },
+  });
   t.after(async () => {
     client.close();
     server.closeDeviceSockets();
@@ -459,11 +467,26 @@ console.log(JSON.stringify({ok:true,command,data}));
   assert.equal((await post(commandPath, phone.token, 'retry-unlocked', { action: 'retry', expectedVersion: 1 })).status, 200);
   const secondClick = await startClick();
   assert.notEqual(secondClick.approval.id, firstClick.approval.id);
-  const approved = await post(commandPath, phone.token, 'approve-save', {
+  takeOver = true;
+  const takeoverApproval = await post(commandPath, phone.token, 'approve-during-takeover', {
     action: 'approve', expectedVersion: 2, approvalId: secondClick.approval.id,
   });
-  assert.equal(approved.status, 200);
+  assert.equal(takeoverApproval.status, 200);
   assert.equal(await secondClick.run, true);
+  assert.equal(store.get('owner', steps[1].taskId)?.status, 'waiting_user');
+  assert.match(store.get('owner', steps[1].taskId)?.result ?? '', /Local input interrupted/);
+  assert.equal(store.get('owner', steps[2].taskId)?.status, 'waiting_dependency');
+  takeOver = false;
+  assert.equal((await post(commandPath, phone.token, 'retry-after-takeover', {
+    action: 'retry', expectedVersion: 2,
+  })).status, 200);
+  const thirdClick = await startClick();
+  assert.notEqual(thirdClick.approval.id, secondClick.approval.id);
+  const approved = await post(commandPath, phone.token, 'approve-save', {
+    action: 'approve', expectedVersion: 3, approvalId: thirdClick.approval.id,
+  });
+  assert.equal(approved.status, 200);
+  assert.equal(await thirdClick.run, true);
   assert.equal(store.get('owner', steps[1].taskId)?.status, 'succeeded');
   assert.equal(await client.runOnce(signal), true);
   assert.equal(store.get('owner', steps[2].taskId)?.status, 'succeeded');

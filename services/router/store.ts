@@ -1422,9 +1422,10 @@ export class TaskStore {
         JOIN approval a ON a.id=u.id WHERE a.runId=? AND a.version=?`).get(runId, row.runVersion!));
       const desktopLocked = outcome.status === 'waiting_user' && outcome.waitingReason === 'desktop_locked' &&
         (observing || (click && !clickApproved));
-      if (outcome.waitingReason && !patchInputWait && !workerQuestion && !desktopLocked) return false;
+      const desktopInputTakenOver = click && outcome.status === 'waiting_user' && outcome.waitingReason === 'desktop_input_taken_over';
+      if (outcome.waitingReason && !desktopInputTakenOver && !patchInputWait && !workerQuestion && !desktopLocked) return false;
       if ((outcome.status === 'waiting_user' && !click && !patchInputWait && !workerQuestion && !desktopLocked) ||
-          (click && !desktopLocked && outcome.status !== 'failed' && !clickApproved)) return false;
+          (click && !desktopLocked && !desktopInputTakenOver && outcome.status !== 'failed' && !clickApproved)) return false;
       if (outcome.status === 'succeeded' && visual && outcome.artifact?.mime !== 'image/png') {
         outcome = { status: 'failed', result: 'The window screenshot was unavailable.' };
       }
@@ -1461,7 +1462,7 @@ export class TaskStore {
         this.finishInvalidInputs(runId, taskId);
         return false;
       }
-      if (outcome.status === 'waiting_user' && click && !desktopLocked) this.requireDesktopReconciliation(taskId, runId);
+      if (outcome.status === 'waiting_user' && click && !desktopLocked && !desktopInputTakenOver) this.requireDesktopReconciliation(taskId, runId);
       if (workerQuestion) {
         this.db.prepare(`INSERT INTO task_question_worker VALUES(?,?,?) ON CONFLICT(task_id)
           DO UPDATE SET device_id=excluded.device_id,revision=excluded.revision`).run(taskId, device, questionWorker!.revision!);

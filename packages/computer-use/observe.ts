@@ -18,6 +18,7 @@ export type ObservationConfig = {
   buttons?: ReadonlyMap<string, ReadonlySet<string>>;
   desktopLockPath?: string;
   sessionLocked?: (signal: AbortSignal) => Promise<boolean>;
+  lastInput?: (signal: AbortSignal) => Promise<{ earliest: bigint; latest: bigint }>;
 };
 
 const runCommand = promisify(execFile);
@@ -31,6 +32,23 @@ async function macSessionLocked(signal: AbortSignal) {
 
 export class DesktopSessionLocked extends Error {
   constructor() { super('The desktop session is locked. Unlock the computer before retrying.'); }
+}
+
+export class DesktopInputTakenOver extends Error {
+  constructor() { super('Local input interrupted the click. Retry when the desktop is available.'); }
+}
+
+async function macLastInput(signal: AbortSignal) {
+  const start = process.hrtime.bigint();
+  const { stdout } = await runCommand('/usr/sbin/ioreg', ['-r', '-c', 'IOHIDSystem', '-d', '1'], {
+    signal, timeout: 2_000, maxBuffer: 256_000,
+  });
+  const end = process.hrtime.bigint();
+  const samples = [...stdout.matchAll(/"HIDIdleTime"\s*=\s*(\d+)/g)];
+  if (samples.length !== 1) throw new Error('Local desktop input activity could not be verified.');
+  // The kernel produced the idle counter sometime during the command.
+  const idle = BigInt(samples[0][1]);
+  return { earliest: start - idle, latest: end - idle };
 }
 
 async function assertDesktopUnlocked(config: ObservationConfig, signal: AbortSignal) {
@@ -77,7 +95,8 @@ export function observationConfig(env: NodeJS.ProcessEnv, desktopLockPath?: stri
   }
   return { executable, driver: driverKind === 'cua' ? cuaDesktop(executable, cuaSocket) : agentDesktop(executable),
     apps, buttons, visualApps: new Set(visual), desktopLockPath,
-    sessionLocked: process.platform === 'darwin' ? macSessionLocked : undefined };
+    sessionLocked: process.platform === 'darwin' ? macSessionLocked : undefined,
+    lastInput: process.platform === 'darwin' ? macLastInput : undefined };
 }
 
 function describeTree(input: DesktopElement) {
@@ -255,6 +274,12 @@ export async function clickApp(config: ObservationConfig, root: string, goal: st
   const consume = await authorize(`Click "${label}" in ${app}${windowId ? ` window ${windowId}` : ''}.${expected}`, signal);
   if (!consume) throw new Error('Desktop action was not approved.');
   return withDesktopLock(config, signal, async () => {
+    const baseline = await config.lastInput?.(signal);
+    const assertNoTakeover = async () => {
+      const latest = await config.lastInput?.(signal);
+      if (baseline && latest && latest.earliest > baseline.latest) throw new DesktopInputTakenOver();
+      signal.throwIfAborted();
+    };
     if (windowId) {
       const currentWindow = await accessibleWindow(config, root, app, windowId, signal, identity);
       if (currentWindow.instance !== initialWindow?.instance) {
@@ -269,10 +294,11 @@ export async function clickApp(config: ObservationConfig, root: string, goal: st
         throw new Error('The application changed after review. Request a new action.');
       }
       await assertDesktopUnlocked(config, signal);
+      await assertNoTakeover();
       if (!await consume()) throw new Error('Desktop approval is no longer valid.');
-      signal.throwIfAborted();
       try {
         await assertDesktopUnlocked(config, signal);
+        await assertNoTakeover();
         await config.driver.click(root, latest.ref, signal, current.actionSession);
         const refreshed = await config.driver.snapshot(root, app, signal, windowId);
         if (initial.windowId !== refreshed.windowId || initial.pid !== refreshed.pid) throw new DesktopResultUnverified();
@@ -283,7 +309,8 @@ export async function clickApp(config: ObservationConfig, root: string, goal: st
         const result = describeTree(refreshed.tree);
         if (!result || result === summary || (expectedText && !result.includes(expectedText))) throw new DesktopResultUnverified();
         return result;
-      } catch {
+      } catch (error) {
+        if (error instanceof DesktopInputTakenOver) throw error;
         throw new DesktopResultUnverified();
       }
     } finally {
