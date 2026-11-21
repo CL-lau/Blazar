@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto';
-import { spawnWorker } from '../workers/process.ts';
+import { runDriverCommand } from './driver-process.ts';
 import type { ComputerDriver, DesktopElement } from './driver.ts';
 
 function element(value: unknown, depth = 0): DesktopElement {
@@ -77,34 +77,7 @@ export function agentDesktop(executable: string): ComputerDriver {
 }
 
 async function runDriver(executable: string, root: string, argv: string[], signal: AbortSignal) {
-  const active = AbortSignal.any([signal, AbortSignal.timeout(12_000)]);
-  active.throwIfAborted();
-  const { child, closed, stop } = spawnWorker({
-    executable, args: argv, label: 'Computer observation',
-  }, root);
-  const interrupted = Promise.withResolvers<void>();
-  const abort = () => interrupted.resolve();
-  active.addEventListener('abort', abort, { once: true });
-  const buffers: Buffer[] = [];
-  let size = 0;
-  child.stdout.on('data', (buffer: Buffer) => {
-    size += buffer.length;
-    if (size > 512_000) interrupted.resolve();
-    else buffers.push(buffer);
-  });
-  child.stdin.on('error', () => {});
-  child.stdin.end();
-  try {
-    active.throwIfAborted();
-    await Promise.race([closed, interrupted.promise]);
-    active.throwIfAborted();
-    if (size > 512_000) throw new Error('Application snapshot is too large.');
-    if (child.exitCode !== 0) throw new Error('Application snapshot failed. Check the app and device permissions.');
-    const envelope = JSON.parse(Buffer.concat(buffers).toString('utf8'));
-    if (envelope?.ok !== true || envelope.command !== argv[0]) throw new Error('Desktop operation was rejected by the driver.');
-    return envelope.data;
-  } finally {
-    active.removeEventListener('abort', abort);
-    await stop();
-  }
+  const envelope = JSON.parse(await runDriverCommand(executable, root, argv, signal));
+  if (envelope?.ok !== true || envelope.command !== argv[0]) throw new Error('Desktop operation was rejected by the driver.');
+  return envelope.data;
 }
