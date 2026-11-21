@@ -282,6 +282,16 @@ test('a registered JSONL extension executes a real subprocess through Router and
   assert.equal((await download(otherPhone.token)).status, 404);
   const phoneState = await (await fetch(base + '/v1/state', { headers: { Authorization: 'Bearer ' + phone.token } })).json();
   assert.equal(phoneState.tasks.find((item: { id: string }) => item.id === protectedTask.id)?.result, 'Private review template');
+  assert.equal(phoneState.tasks.find((item: { id: string }) => item.id === protectedTask.id)?.goal, 'Application-backed task');
+  const conflict = await fetch(base + '/v1/tasks/' + protectedTask.id + '/commands', {
+    method: 'POST', headers: {
+      Authorization: 'Bearer ' + phone.token, 'Content-Type': 'application/json', 'Idempotency-Key': 'protected-conflict',
+    }, body: JSON.stringify({ action: 'pause', expectedVersion: 999 }),
+  });
+  assert.equal(conflict.status, 409);
+  const conflictTask = (await conflict.json()).task;
+  assert.equal(conflictTask.goal, 'Application-backed task');
+  assert.equal(conflictTask.result, null);
   assert.equal((await fetch(base + '/v1/tasks/' + protectedTask.id + '/timeline', {
     headers: { Authorization: 'Bearer ' + phone.token },
   })).status, 404);
@@ -379,7 +389,7 @@ test('a registered JSONL extension executes a real subprocess through Router and
     body: JSON.stringify({
       workspace: 'project', appMemory: { query: 'review', sources: [workflowConnection] },
       steps: [
-        { key: 'draft', goal: 'Use the review template', needs: [] },
+        { key: 'draft', goal: 'Use the review template', needs: [], acceptanceCriteria: ['Use the private review format'] },
         { key: 'review', goal: 'Review the preceding draft', needs: ['draft'] },
         { key: 'finalize', goal: 'Review the preceding draft', needs: ['review'] },
       ],
@@ -391,6 +401,16 @@ test('a registered JSONL extension executes a real subprocess through Router and
   const appWorkflow = await workflowResponse.json();
   assert.deepEqual(await (await workflowRequest('local')).json(), appWorkflow);
   const workflowTasks = appWorkflow.steps.map((step: { taskId: string }) => step.taskId);
+  const readState = async (token: string) => (await (await fetch(base + '/v1/state', {
+    headers: { Authorization: 'Bearer ' + token },
+  })).json());
+  const protectedWorkflowState = await readState(phone.token);
+  assert.ok(protectedWorkflowState.tasks.filter((item: { id: string }) => workflowTasks.includes(item.id))
+    .every((item: { goal: string }) => item.goal === 'Application-backed task'));
+  assert.ok(!protectedWorkflowState.criteria.some((item: { taskId: string }) => workflowTasks.includes(item.taskId)));
+  assert.ok(!protectedWorkflowState.workflowSteps.some((item: { taskId: string }) => workflowTasks.includes(item.taskId)));
+  const adminWorkflowState = await readState('local');
+  assert.ok(adminWorkflowState.criteria.some((item: { criterion: string }) => item.criterion === 'Use the private review format'));
   assert.equal(await client.runOnce(AbortSignal.timeout(5_000)), true);
   assert.equal(await client.runOnce(AbortSignal.timeout(5_000)), true);
   const workflowArtifacts = store.snapshot('owner').artifacts.filter(item => workflowTasks.includes(item.taskId));

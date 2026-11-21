@@ -1,4 +1,4 @@
-import type { DesktopAppControls, RunOutcome, TaskAttachment, WorkerConfiguration } from '../../packages/protocol/task.ts';
+import type { DesktopAppControls, RunOutcome, Task, TaskAttachment, WorkerConfiguration } from '../../packages/protocol/task.ts';
 import { displayTaskStatus } from '../../packages/protocol/task.ts';
 import { artifactDiff } from './artifact-diff.ts';
 import { workerCatalog } from '../../packages/workers/registry.ts';
@@ -751,6 +751,10 @@ export function routerServer(store: TaskStore, config: { owner: string; token: s
             !store.canReadSharedResult(mobile.id, taskId, resultVersion))) return false;
         return Boolean(task && config.memory?.resolveAppEvidence(owner, task.workspace, refs));
       };
+      const protectedTaskLabel = 'Application-backed task';
+      const taskResponse = (task: Task) => canReadTask(task.id) ? task : {
+        ...task, ...(admin ? {} : { goal: protectedTaskLabel }), result: null,
+      };
       if (!admin && (url.pathname.startsWith('/v1/admin/') || url.pathname === '/v1/pairings' ||
           url.pathname.startsWith('/v1/app-connections') || url.pathname.startsWith('/v1/memory'))) {
         throw new RequestError(403, 'Administrator required');
@@ -991,11 +995,15 @@ export function routerServer(store: TaskStore, config: { owner: string; token: s
         reply(response, 200, { ...snapshot,
           tasks: snapshot.tasks.map(task => protectedTasks.has(task.id)
             ? { ...task, usesAppMemory: true,
+                ...(!admin && { goal: protectedTaskLabel }),
                 ...(admin && restricted.has(task.id) && { appMemoryUnavailable: true }),
                 ...(restricted.has(task.id) && !canReadTask(task.id, task.version) && { result: null }),
               } : task),
           artifacts: snapshot.artifacts.filter(item => !restricted.has(String(item.taskId)) ||
             canReadTask(String(item.taskId), typeof item.version === 'number' ? item.version : undefined)),
+          criteria: snapshot.criteria.filter(item => admin || !protectedTasks.has(String(item.taskId))),
+          workflowSteps: snapshot.workflowSteps.filter(item => admin ||
+            (!protectedTasks.has(String(item.taskId)) && !protectedTasks.has(String(item.predecessorId)))),
           attachments: snapshot.attachments.filter(item => !restricted.has(String(item.taskId))),
           progress: snapshot.progress.filter(item => !restricted.has(String(item.taskId))),
           approvals: snapshot.approvals.filter(item => !restricted.has(String(item.taskId))),
@@ -1155,7 +1163,7 @@ export function routerServer(store: TaskStore, config: { owner: string; token: s
           const attachments = data.attachments === undefined ? undefined : textAttachments(data.attachments);
           const task = store.create(owner, 'desktop-api', key, workspace, goal, desktopDevice, memoryInputs, appEvidence, attachments);
           metrics.observe('event', performance.now() - started);
-          reply(response, 202, canReadTask(task.id) ? task : { ...task, result: null });
+          reply(response, 202, taskResponse(task));
           return;
         }
         const taskId = taskCommand[1];
@@ -1182,11 +1190,11 @@ export function routerServer(store: TaskStore, config: { owner: string; token: s
         const result = store.command(owner, taskId, version, command, key);
         if (result) {
           if (action === 'pause' || action === 'cancel' || action === 'append') notifyStop(owner, taskId);
-          reply(response, 200, canReadTask(taskId) ? result : { ...result, result: null });
+          reply(response, 200, taskResponse(result));
         } else {
           const task = store.get(owner, taskId);
           reply(response, 409, { error: 'Task state changed or command unavailable',
-            task: task && !canReadTask(taskId) ? { ...task, result: null } : task });
+            task: task && taskResponse(task) });
         }
         return;
       }
