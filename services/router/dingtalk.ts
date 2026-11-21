@@ -21,10 +21,9 @@ export async function receiveDingTalkEvent(store: TaskStore, owner: string, chan
   if (!download) return undefined;
   const file = parseDingTalkAttachment(raw, config);
   if (!file) return undefined;
-  const intent = store.channelAttachmentIntent(owner, channel, file.chat, file.sender, Date.now());
+  const intent = store.bindChannelAttachment(owner, channel, config.workspace, file, Date.now());
   if (!intent) return undefined;
   const message = { ...file, taskId: intent.taskId };
-  if (!store.channelAttachmentTask(owner, channel, config.workspace, message)) return undefined;
   const text = await download(file.code);
   if (!signal?.aborted && text !== undefined) {
     store.addChannelAttachment(owner, channel, config.workspace, intent.taskId, message, { name: file.name, text },

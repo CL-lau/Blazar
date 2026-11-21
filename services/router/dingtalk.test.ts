@@ -92,6 +92,7 @@ test('a DingTalk private file consumes only its sender’s pending task attachme
   const [task] = store.snapshot('owner').tasks;
   await sendFile('before-selection');
   await sendText('select', '/blazar follow ' + task.id + ' /attach');
+  await sendFile('before-selection');
   await sendFile('other-sender', { senderStaffId: 'other' });
   await sendFile('other-chat', { conversationId: 'other-chat' });
   await sendFile('group', { conversationType: '2' });
@@ -104,4 +105,24 @@ test('a DingTalk private file consumes only its sender’s pending task attachme
   assert.equal(store.get('owner', task.id)?.version, 2);
   assert.deepEqual({ ...store.taskAttachment('owner', task.id, 0) }, { name: 'notes.txt', text: 'DingTalk fixture text' });
   assert.equal(store.taskAttachment('owner', task.id, 1), undefined);
+
+  await sendText('another-root', '/blazar Summarize a different file');
+  const another = store.snapshot('owner').tasks.find(item => item.id !== task.id)!;
+  await sendText('select-first', '/blazar follow ' + task.id + ' /attach');
+  const pending = Promise.withResolvers<string>();
+  const racingFile = JSON.stringify({
+    robotCode: 'robot', senderStaffId: 'sender', conversationType: '1', conversationId: 'chat',
+    msgId: 'in-flight', msgtype: 'file', content: { fileName: 'notes.txt', downloadCode: 'fixture-code' },
+  });
+  const received = receiveDingTalkEvent(store, 'owner', channel, config, racingFile, () => pending.promise);
+  await sendText('select-second', '/blazar follow ' + another.id + ' /attach');
+  pending.resolve('First task input');
+  await received;
+  await sendFile('in-flight');
+  assert.equal(requests.length, 3);
+  assert.equal(store.taskAttachment('owner', task.id, 1), undefined);
+  assert.equal(store.taskAttachment('owner', another.id, 0), undefined);
+  await sendFile('fresh');
+  assert.equal(requests.length, 5);
+  assert.equal(store.taskAttachment('owner', another.id, 0)?.text, 'DingTalk fixture text');
 });

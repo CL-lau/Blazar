@@ -141,6 +141,10 @@ export class TaskStore {
         task_id TEXT NOT NULL REFERENCES task(id), command_id TEXT NOT NULL, expires INTEGER NOT NULL,
         PRIMARY KEY(owner,channel,chat,sender)
       );
+      CREATE TABLE IF NOT EXISTS channel_attachment_receipt (
+        owner TEXT NOT NULL, channel TEXT NOT NULL, message TEXT NOT NULL, command_id TEXT NOT NULL,
+        PRIMARY KEY(owner,channel,message)
+      );
       CREATE TABLE IF NOT EXISTS task_attachment (
         task_id TEXT NOT NULL REFERENCES task(id) ON DELETE CASCADE,
         position INTEGER NOT NULL, name TEXT NOT NULL, text TEXT NOT NULL,
@@ -626,6 +630,23 @@ export class TaskStore {
     return row && { taskId: String(row.task_id), commandId: String(row.command_id) };
   }
 
+  bindChannelAttachment(owner: string, channel: string, workspace: string,
+                        file: { id: string; chat: string; thread: string; sender: string }, now: number) {
+    return this.transaction(() => {
+      const intent = this.channelAttachmentIntent(owner, channel, file.chat, file.sender, now);
+      const prior = this.db.prepare(`SELECT command_id FROM channel_attachment_receipt
+        WHERE owner=? AND channel=? AND message=?`).get(owner, channel, file.id);
+      if (prior && prior.command_id !== intent?.commandId) return undefined;
+      if (!intent || !this.channelAttachmentTask(owner, channel, workspace, { ...file, taskId: intent.taskId })) {
+        if (!prior) this.db.prepare('INSERT OR IGNORE INTO channel_message VALUES(?,?,?)').run(owner, channel, file.id);
+        return undefined;
+      }
+      if (!prior) this.db.prepare('INSERT INTO channel_attachment_receipt VALUES(?,?,?,?)')
+        .run(owner, channel, file.id, intent.commandId);
+      return intent;
+    });
+  }
+
   addChannelAttachment(owner: string, channel: string, workspace: string, taskId: string,
                        message: { id: string; chat: string; thread: string; taskId?: string }, attachment: TaskAttachment,
                        intent?: { sender: string; commandId: string }) {
@@ -642,8 +663,12 @@ export class TaskStore {
       const size = Buffer.byteLength(attachment.text);
       if (Number(totals.count) >= 4 || Number(totals.bytes) + size > 16_384) return false;
       this.db.prepare('INSERT INTO channel_message VALUES(?,?,?)').run(owner, channel, message.id);
-      if (intent) this.db.prepare('DELETE FROM channel_attachment_intent WHERE owner=? AND channel=? AND chat=? AND sender=?')
-        .run(owner, channel, message.chat, intent.sender);
+      if (intent) {
+        this.db.prepare('DELETE FROM channel_attachment_intent WHERE owner=? AND channel=? AND chat=? AND sender=?')
+          .run(owner, channel, message.chat, intent.sender);
+        this.db.prepare('DELETE FROM channel_attachment_receipt WHERE owner=? AND channel=? AND message=?')
+          .run(owner, channel, message.id);
+      }
       this.db.prepare('INSERT INTO task_attachment VALUES(?,?,?,?)').run(taskId, totals.count!, attachment.name, attachment.text);
       const run = this.db.prepare('SELECT id FROM run WHERE taskId=?').get(taskId);
       if (run) this.db.prepare('DELETE FROM run_steering WHERE run_id=?').run(run.id!);
