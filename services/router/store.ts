@@ -1372,6 +1372,7 @@ export class TaskStore {
         outcome.status, outcome.result, outcome.artifact?.name, outcome.artifact?.text,
         ...(outcome.artifact?.mime ? [outcome.artifact.mime] : []),
         ...(outcome.waitingReason ? [outcome.waitingReason] : []),
+        ...(outcome.additionalArtifacts?.length ? [outcome.additionalArtifacts.map(file => [file.name, file.text])] : []),
       ])).digest('hex');
       const receipt = this.db.prepare('SELECT outcome_hash FROM run_receipt WHERE id=? AND device=?')
         .get(runId, device);
@@ -1438,8 +1439,11 @@ export class TaskStore {
       this.db.prepare('DELETE FROM run WHERE id=?').run(runId);
       const finalStatus = pendingReview ? 'waiting_review' : outcome.status;
       this.db.prepare('UPDATE task SET status=?,result=? WHERE id=?').run(finalStatus, outcome.result, taskId);
-      if (outcome.status === 'succeeded' && outcome.artifact) {
-        const { name, text, mime } = outcome.artifact;
+      const artifacts = outcome.status === 'succeeded' && outcome.artifact
+        ? [...(outcome.additionalArtifacts ?? []), outcome.artifact] : [];
+      for (const artifact of artifacts) {
+        const { name, text } = artifact;
+        const mime = 'mime' in artifact ? artifact.mime : undefined;
         const content = Buffer.from(text, mime ? 'base64' : 'utf8');
         const id = randomUUID();
         const sha256 = createHash('sha256').update(content).digest('hex');

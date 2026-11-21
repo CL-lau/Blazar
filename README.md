@@ -123,8 +123,10 @@ For a JSONL extension, set `"protocol": "jsonl"` in the same manifest. Blazar wr
 
 ```jsonl
 {"version":1,"type":"progress","message":"Read the input"}
-{"version":1,"type":"completed","result":"Task summary"}
+{"version":1,"type":"completed","result":"Task summary","artifact":{"name":"report.md","text":"# Report"}}
 ```
+
+The optional text artifact is stored separately from the task summary. It must use a plain filename and contain at most 32,000 UTF-8 bytes. For Git worktree runs, the task also retains its Git change report, which remains the primary predecessor artifact.
 
 To wait for a clarification, send `{"version":1,"type":"question","message":"Which format should I use?"}` as the terminal line and exit with status zero. Blazar stores the question and releases the run lease. When the user adds an instruction, the next run receives the question as `previousQuestion` and the reply in `instructions`. The reply waits for the original device and Worker configuration to be available.
 

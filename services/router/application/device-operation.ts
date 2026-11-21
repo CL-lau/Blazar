@@ -1,3 +1,4 @@
+import { maxTextArtifactBytes, textArtifact } from '../../../packages/protocol/artifact.ts';
 import { type DesktopAppControls, type RunOutcome, type WorkerCapability, type WorkerConfiguration } from '../../../packages/protocol/task.ts';
 import type { TaskStore } from '../store.ts';
 import type { MemoryStore } from '../memory.ts';
@@ -212,17 +213,30 @@ export function deviceOperation(store: DeviceTasks, bearer: string, pathname: st
       }
       artifact = { name, text: file.text, mime: file.mime };
     } else {
-      if (file.mime !== undefined || Buffer.byteLength(file.text) > 32_000) {
+      if (file.mime !== undefined || Buffer.byteLength(file.text) > maxTextArtifactBytes) {
         throw new RequestError(400, 'Invalid artifact content');
       }
       artifact = { name, text: file.text };
+    }
+  }
+  let additionalArtifacts: RunOutcome['additionalArtifacts'];
+  if (data.additionalArtifacts !== undefined) {
+    if (data.status !== 'succeeded' || !artifact || artifact.mime || !Array.isArray(data.additionalArtifacts) ||
+        data.additionalArtifacts.length > 4) throw new RequestError(400, 'Invalid additional artifacts');
+    additionalArtifacts = [];
+    const names = new Set([artifact.name]);
+    for (const input of data.additionalArtifacts) {
+      const file = textArtifact(input);
+      if (!file || names.has(file.name)) throw new RequestError(400, 'Invalid or duplicate additional artifact');
+      names.add(file.name);
+      additionalArtifacts.push(file);
     }
   }
   const accepted = store.finish(run[1], device.id, now, {
     status: data.status,
     ...(data.waitingReason && { waitingReason: data.waitingReason }),
     result: requiredText(data.result, 'result', data.waitingReason === 'worker_question' ? 1_000 : 32_000),
-    artifact,
+    artifact, ...(additionalArtifacts?.length && { additionalArtifacts }),
   });
   return { status: accepted ? 200 : 409, body: { accepted } };
 }

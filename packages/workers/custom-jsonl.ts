@@ -1,5 +1,6 @@
 import { createInterface } from 'node:readline';
 import { spawnWorker, type WorkerCommand } from './process.ts';
+import { textArtifact, type TextArtifact } from '../protocol/artifact.ts';
 import { jobPrompt, type JobContext } from './prompt.ts';
 
 export type CustomJsonlWorker = WorkerCommand & { protocol: 'jsonl'; includeFullInputArtifacts?: boolean };
@@ -28,11 +29,12 @@ export async function runCustomJsonl(
 
   async function readResult() {
     let result: string | undefined;
+    let artifact: TextArtifact | undefined;
     let failure: string | undefined;
     let question: string | undefined;
     for await (const line of lines) {
       active.throwIfAborted();
-      if (line.length > 32_000) throw new Error('JSONL worker event exceeded the limit');
+      if (Buffer.byteLength(line) > 224_000) throw new Error('JSONL worker event exceeded the limit');
       let event;
       try { event = JSON.parse(line); }
       catch { throw new Error('Invalid JSONL worker event'); }
@@ -45,6 +47,10 @@ export async function runCustomJsonl(
       } else if (event.type === 'completed' && typeof event.result === 'string' &&
           event.result.trim() && event.result.length <= 4_000) {
         result = event.result.toWellFormed();
+        if (event.artifact !== undefined) {
+          artifact = textArtifact(event.artifact);
+          if (!artifact || artifact.name === 'git-changes.json') throw new Error('Invalid JSONL Worker artifact');
+        }
       } else if (event.type === 'question' && typeof event.message === 'string' &&
           event.message.trim() && event.message.length <= 1_000) {
         question = event.message.trim().toWellFormed();
@@ -59,7 +65,7 @@ export async function runCustomJsonl(
     if (failure) throw new Error(failure);
     if (question && child.exitCode === 0) throw new WorkerQuestion(question);
     if (child.exitCode !== 0 || !result) throw new Error('JSONL worker exited without a successful result');
-    return result;
+    return { result, artifact };
   }
 
   try {

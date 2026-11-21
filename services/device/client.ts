@@ -205,7 +205,7 @@ export class DeviceClient {
               assignment.predecessors, prefix, active, true);
             await applyGitPatchInputs(root, assignment.predecessors, active);
           }
-          const { result, checkpoint: session } = await executeWorker({
+          const { result, artifact: workerArtifact, checkpoint: session } = await executeWorker({
             root, scope: this.scope, workspaceIdentity: this.worktrees ? root : this.workspaceIdentity,
             revision: this.workerConfiguration?.revision, ledger: this.ledger,
             post: (path, data, signal) => this.post(path, data, signal),
@@ -217,7 +217,7 @@ export class DeviceClient {
             acceptanceCriteria: assignment.acceptanceCriteria, memoryInputs: assignment.memoryInputs, attachments: assignment.attachments,
           }, stop, active, assignment.fullInputRequired);
           checkpoint = this.worktrees ? undefined : session;
-          let artifact = { name: 'worker-result.txt', text: result };
+          let artifact = workerArtifact ?? { name: 'worker-result.txt', text: result };
           if (this.worktrees) {
             try {
               artifact = await this.worktrees.artifact(assignment.run.id, active);
@@ -226,7 +226,8 @@ export class DeviceClient {
               throw new Error('The Worker finished but its Git evidence is unavailable. Inspect the retained checkout.');
             }
           }
-          outcome = { status: 'succeeded', result, artifact };
+          outcome = { status: 'succeeded', result, artifact,
+            ...(this.worktrees && workerArtifact && { additionalArtifacts: [workerArtifact] }) };
         } else {
           if (assignment.instructions.length) throw new Error('Submit a new preview to change the document path.');
           const document = await preview(this.root, assignment.task.goal, active);

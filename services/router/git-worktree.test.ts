@@ -44,7 +44,8 @@ test('isolated Worker runs keep their changes in independent retained worktrees'
       if (original !== expected) process.exit(1);
       fs.writeFileSync('notes.txt', input.goal);
       function finish() {
-        process.stdout.write(JSON.stringify({ version: 1, type: 'completed', result: input.goal }) + '\n');
+        process.stdout.write(JSON.stringify({ version: 1, type: 'completed', result: input.goal,
+          artifact: { name: 'report.md', text: '# ' + input.goal } }) + '\n');
       }
       if (!input.goal.startsWith('Parallel ')) finish();
       else {
@@ -131,6 +132,10 @@ test('isolated Worker runs keep their changes in independent retained worktrees'
   const receiver = store.claim('owner', 'project', 'reviewer', Date.now(), 45_000)!;
   assert.equal(receiver.task.goal, 'Review changes');
   assert.deepEqual(receiver.predecessors.map(input => input.result), ['Parallel A', 'Parallel B']);
+  for (const input of receiver.predecessors) {
+    assert.deepEqual(store.snapshot('owner').artifacts.filter(item => item.taskId === input.taskId).map(item => item.name).sort(),
+      ['git-changes.json', 'report.md']);
+  }
   const checkouts = [];
   for (const input of receiver.predecessors) {
     assert.equal(input.artifact?.name, 'git-changes.json');

@@ -27,7 +27,8 @@ test('a registered JSONL extension executes a real subprocess through Router and
       }
       if (request.input.previousQuestion !== question || request.input.instructions[0] !== 'Use Markdown' ||
           request.input.previousRuns?.[0]?.outcome !== 'worker_question') process.exit(10);
-      console.log(JSON.stringify({version:1,type:'completed',result:'Formatted summary ready'}));
+      console.log(JSON.stringify({version:1,type:'completed',result:'Formatted summary ready',
+        artifact:{name:'summary.md',text:'# Actual report'}}));
       return;
     }
     if (request.input.goal === 'Recover a failed attempt') {
@@ -256,6 +257,12 @@ test('a registered JSONL extension executes a real subprocess through Router and
 
   assert.equal(await client.runOnce(AbortSignal.timeout(5_000)), true);
   assert.equal(store.get('owner', questionTask.id)?.result, 'Formatted summary ready');
+  const reportArtifact = store.snapshot('owner').artifacts.find(item => item.taskId === questionTask.id)!;
+  assert.equal(reportArtifact.name, 'summary.md');
+  const output = await fetch('http://127.0.0.1:' + address.port + '/v1/artifacts/' + reportArtifact.id,
+    { headers: { Authorization: 'Bearer local' } });
+  assert.equal(await output.text(), '# Actual report');
+
 
   const connection = memory.connect('owner', 'github', 'Handbook', 'project');
   const source = { connection, resource: 'guide.md', revision: '1' };
@@ -634,5 +641,7 @@ test('JSONL rejects duplicate terminal events and stops a cancelled subprocess',
     const line = JSON.stringify({version:1,type:'completed',result:'done'});
     console.log(line); console.log(line);
   `, AbortSignal.timeout(3000)), /event sequence/);
+  await assert.rejects(run(`console.log(JSON.stringify({version:1,type:'completed',result:'done',
+    artifact:{name:'../escape.md',text:'no'}}))`, AbortSignal.timeout(3000)), /Invalid JSONL Worker artifact/);
   await assert.rejects(run('setInterval(() => {}, 1000)', AbortSignal.timeout(150)), /aborted|timeout/i);
 });

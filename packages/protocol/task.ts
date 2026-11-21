@@ -1,3 +1,5 @@
+import type { TextArtifact } from './artifact.ts';
+
 export type TaskStatus = 'queued' | 'running' | 'cancelling' | 'cancelled' | 'succeeded' | 'failed' | 'waiting_user' | 'waiting_dependency' | 'waiting_device' | 'pausing' | 'paused' | 'waiting_review';
 
 const chineseTaskStates: Record<TaskStatus, string> = {
@@ -40,7 +42,8 @@ export interface RunOutcome {
   status: 'succeeded' | 'failed' | 'waiting_user';
   waitingReason?: 'git_patch_inputs' | 'worker_question';
   result: string;
-  artifact?: { name: string; text: string; mime?: 'image/png' };
+  artifact?: TextArtifact & { mime?: 'image/png' };
+  additionalArtifacts?: TextArtifact[];
 }
 
 export type DesktopWindowReference = { windowId: string; windowIdentity: string };

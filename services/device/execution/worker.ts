@@ -8,6 +8,7 @@ import { runCustomJsonl } from '../../../packages/workers/custom-jsonl.ts';
 import { runPi } from '../../../packages/workers/pi.ts';
 import type { JobContext, WorkerSteer } from '../../../packages/workers/prompt.ts';
 import type { Worker } from '../../../packages/workers/registry.ts';
+import type { TextArtifact } from '../../../packages/protocol/artifact.ts';
 import { completeInputArtifacts, type ArtifactPost } from './input-artifacts.ts';
 import type { DeviceLedger, SessionCheckpoint } from '../ledger.ts';
 
@@ -26,7 +27,7 @@ interface WorkerExecution {
 export async function executeWorker(
   context: WorkerExecution, worker: Worker, prefix: string, taskId: string, job: JobContext,
   stop: AbortController, active: AbortSignal, fullInputRequired = false,
-): Promise<{ result: string; checkpoint?: SessionCheckpoint }> {
+): Promise<{ result: string; artifact?: TextArtifact; checkpoint?: SessionCheckpoint }> {
   let sequence = 1;
   const report = async (message: string, signal: AbortSignal) => {
     const reply = await context.post(prefix + 'progress', { seq: ++sequence, message }, signal);
@@ -36,7 +37,7 @@ export async function executeWorker(
   switch (worker.protocol) {
     case 'jsonl':
       if (worker.includeFullInputArtifacts) await completeInputArtifacts(context.post, job.predecessors, prefix, active, fullInputRequired);
-      return { result: await runCustomJsonl(worker, context.root, job, active, report) };
+      return runCustomJsonl(worker, context.root, job, active, report);
     case 'pi':
     case 'codex':
       return { result: await runSteerableWorker(context, worker, prefix, job, stop, active) };

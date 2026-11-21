@@ -2,6 +2,7 @@ import { execFile } from 'node:child_process';
 import { lstat, mkdir, mkdtemp, readFile, realpath, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { isAbsolute, join, relative, sep } from 'node:path';
+import { maxTextArtifactBytes } from '../../../packages/protocol/artifact.ts';
 import type { PredecessorInput } from '../../../packages/protocol/task.ts';
 import { promisify } from 'node:util';
 
@@ -65,10 +66,10 @@ export async function gitRunWorktrees(workspace: string, stateDirectory: string,
       }
       const withPatch = patch === undefined ? undefined :
         JSON.stringify({ ...evidence, patch: patch ? patch + '\n' : '' }, null, 2);
-      text = withPatch !== undefined && Buffer.byteLength(withPatch) <= 32_000 ? withPatch :
+      text = withPatch !== undefined && Buffer.byteLength(withPatch) <= maxTextArtifactBytes ? withPatch :
         JSON.stringify({ ...evidence, patchOmitted: 'size_limit' }, null, 2);
     }
-    if (Buffer.byteLength(text) > 32_000) throw new Error('Run checkout evidence exceeds the artifact limit');
+    if (Buffer.byteLength(text) > maxTextArtifactBytes) throw new Error('Run checkout evidence exceeds the artifact limit');
     return { name: 'git-changes.json', text };
   };
   return { prepare, artifact, includePatch, applyInputs };
