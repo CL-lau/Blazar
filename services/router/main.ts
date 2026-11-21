@@ -50,7 +50,11 @@ const instance = lockRouter(process.env.BLAZAR_DB ?? 'blazar.sqlite');
 const memory = new MemoryStore(instance.path);
 const store = new TaskStore(instance.path,
   (owner, workspace, refs) => Boolean(memory.resolveAppEvidence(owner, workspace, refs)));
-const server = routerServer(store, { feishu, qq, documents, owner: 'local', token, memory, harness, answerMemory, pushEnabled: Boolean(push) });
+const feishuSecret = process.env.BLAZAR_FEISHU_APP_SECRET;
+const feishuSender = feishu && feishuSecret
+  ? createFeishuSender(feishu.appId, feishuSecret, process.env.BLAZAR_FEISHU_REGION === 'lark' ? 'lark' : 'feishu')
+  : undefined;
+const server = routerServer(store, { feishu, readFeishuAttachment: feishuSender?.readAttachment, qq, documents, owner: 'local', token, memory, harness, answerMemory, pushEnabled: Boolean(push) });
 const stopPush = push && startPushDelivery(store, push);
 const documentSyncShutdown = new AbortController();
 let documentSync: Promise<unknown> | undefined;
@@ -68,10 +72,6 @@ const watchdog = setInterval(() => {
   server.flushStopNotifications();
 }, 1_000);
 
-const feishuSecret = process.env.BLAZAR_FEISHU_APP_SECRET;
-const feishuSender = feishu && feishuSecret
-  ? createFeishuSender(feishu.appId, feishuSecret, process.env.BLAZAR_FEISHU_REGION === 'lark' ? 'lark' : 'feishu')
-  : undefined;
 let delivery: Promise<void> | undefined;
 const channelDispatcher = setInterval(() => {
   if (!feishu || !feishuSender || delivery) return;

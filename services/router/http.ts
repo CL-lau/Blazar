@@ -582,7 +582,7 @@ function deviceOperation(store: TaskStore, bearer: string, pathname: string, dat
   return { status: accepted ? 200 : 409, body: { accepted } };
 }
 
-export function routerServer(store: TaskStore, config: { owner: string; token: string; memory?: MemoryStore; harness?: RouterHarness; feishu?: FeishuConfig; qq?: QQConfig; documents?: readonly DocumentConnector[]; answerMemory?: MemoryAnswer; pushEnabled?: boolean }) {
+export function routerServer(store: TaskStore, config: { owner: string; token: string; memory?: MemoryStore; harness?: RouterHarness; feishu?: FeishuConfig; readFeishuAttachment?: (messageId: string, key: string) => Promise<string | undefined>; qq?: QQConfig; documents?: readonly DocumentConnector[]; answerMemory?: MemoryAnswer; pushEnabled?: boolean }) {
   const metrics = new RouterMetrics();
   const stopSubscribers = new Map<string, Set<WebSocket>>();
   function sendStop(device: string, runId: string) {
@@ -651,6 +651,24 @@ export function routerServer(store: TaskStore, config: { owner: string; token: s
           store.receiveChannelMessage(config.owner, channel, config.feishu.workspace, event);
           flushStopNotifications();
           metrics.observe('feishu', performance.now() - started);
+        }
+        if (event.kind === 'attachment' && config.readFeishuAttachment) {
+          const { workspace } = config.feishu;
+          const channel = feishuChannel(config.feishu);
+          const task = store.channelAttachmentTask(config.owner, channel, workspace, event);
+          if (task) {
+            let text;
+            try { text = await config.readFeishuAttachment(event.id, event.key); }
+            catch { throw new RequestError(503, 'Feishu attachment download failed'); }
+            if (text !== undefined) {
+              let attachment: TaskAttachment | undefined;
+              try { [attachment] = textAttachments([{ name: event.name, text }]); }
+              catch (error) { if (!(error instanceof RequestError)) throw error; }
+              if (attachment && store.addChannelAttachment(config.owner, channel, workspace, String(task.id), event, attachment)) {
+                notifyStop(config.owner, String(task.id));
+              }
+            }
+          }
         }
         reply(response, 200, {});
         return;

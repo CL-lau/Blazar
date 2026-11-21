@@ -31,7 +31,7 @@ function matches(secret: string, candidate: unknown) {
 }
 
 export function parseFeishu(body: EventRecord, config: FeishuConfig):
-  Message | { kind: 'challenge'; value: string } | { kind: 'ignore' } | { kind: 'unauthorized' } {
+  Message | { kind: 'attachment'; id: string; chat: string; thread: string; key: string; name: string } | { kind: 'challenge'; value: string } | { kind: 'ignore' } | { kind: 'unauthorized' } {
   if (body.type === 'url_verification') {
     if (!matches(config.token, body.token)) return { kind: 'unauthorized' };
     if (typeof body.challenge !== 'string' || body.challenge.length > 1024) return { kind: 'ignore' };
@@ -53,16 +53,25 @@ export function parseFeishu(body: EventRecord, config: FeishuConfig):
   if (!sender || sender.sender_type !== 'user' || typeof senderId !== 'string' ||
       !config.senders.has(senderId) || typeof chat !== 'string' || !config.chats.has(chat) ||
       typeof id !== 'string' || !id || id.length > 256) return { kind: 'ignore' };
-  if (message?.message_type !== 'text' || typeof message.content !== 'string') return { kind: 'ignore' };
-  let value: unknown;
-  try { value = object(JSON.parse(message.content))?.text; } catch { return { kind: 'ignore' }; }
-  if (typeof value !== 'string' || value.length > 32_000) return { kind: 'ignore' };
+  const root = typeof rootId !== 'string' || !rootId;
+  if (!root && rootId.length > 256) return { kind: 'ignore' };
+  if (typeof message?.content !== 'string') return { kind: 'ignore' };
+  let contents;
+  try { contents = object(JSON.parse(message.content)); } catch { return { kind: 'ignore' }; }
+  if (message.message_type === 'file' && !root) {
+    const key = contents?.file_key;
+    const name = contents?.file_name;
+    if (typeof key === 'string' && /^[a-zA-Z0-9_-]{1,256}$/.test(key) && typeof name === 'string' &&
+        name.length <= 128 && !/[\x00-\x1f\x7f/\\]/.test(name) && /\.(txt|md|csv|json|log)$/i.test(name)) {
+      return { kind: 'attachment', id, chat, thread: rootId, key, name };
+    }
+  }
+  const value = contents?.text;
+  if (message.message_type !== 'text' || typeof value !== 'string' || value.length > 32_000) return { kind: 'ignore' };
   const text = value.trim();
   if (!text.startsWith('/blazar ')) return { kind: 'ignore' };
   const goal = text.slice('/blazar '.length).trim();
   if (!goal) return { kind: 'ignore' };
-  const root = typeof rootId !== 'string' || !rootId;
-  if (!root && rootId.length > 256) return { kind: 'ignore' };
   return { kind: 'message', id, chat, thread: root ? id : rootId, root, text: goal };
 }
 
@@ -93,7 +102,7 @@ export function createFeishuSender(appId: string, appSecret: string, region: 'fe
     return data;
   }
 
-  return async (messageId: string, text: string, uuid: string) => {
+  async function token() {
     if (!access || access.expires <= Date.now()) {
       const data = await post('/open-apis/auth/v3/tenant_access_token/internal', { app_id: appId, app_secret: appSecret });
       if (typeof data.tenant_access_token !== 'string' || typeof data.expire !== 'number') {
@@ -101,8 +110,43 @@ export function createFeishuSender(appId: string, appSecret: string, region: 'fe
       }
       access = { token: data.tenant_access_token, expires: Date.now() + Math.max(0, data.expire - 60) * 1_000 };
     }
+    return access.token;
+  }
+
+  async function send(messageId: string, text: string, uuid: string) {
     await post('/open-apis/im/v1/messages/' + encodeURIComponent(messageId) + '/reply', {
       msg_type: 'text', content: JSON.stringify({ text }), uuid, reply_in_thread: true,
-    }, access.token);
-  };
+    }, await token());
+  }
+
+  async function readAttachment(messageId: string, key: string) {
+    const response = await transport(base + '/open-apis/im/v1/messages/' + encodeURIComponent(messageId) +
+      '/resources/' + encodeURIComponent(key) + '?type=file', {
+      redirect: 'error', headers: { Authorization: 'Bearer ' + await token() }, signal: AbortSignal.timeout(2_000),
+    });
+    if (!response.ok) {
+      await response.body?.cancel();
+      if (response.status === 403 || response.status === 404) return undefined;
+      throw new Error('Feishu attachment request failed');
+    }
+    if (!response.body) return undefined;
+    const reader = response.body.getReader();
+    const chunks: Uint8Array[] = [];
+    let size = 0;
+    try {
+      for (;;) {
+        const chunk = await reader.read();
+        if (chunk.done) break;
+        size += chunk.value.byteLength;
+        if (size > 8_192) return undefined;
+        chunks.push(chunk.value);
+      }
+      try { return new TextDecoder('utf-8', { fatal: true }).decode(Buffer.concat(chunks)); }
+      catch { return undefined; }
+    } finally {
+      await reader.cancel();
+    }
+  }
+
+  return Object.assign(send, { readAttachment });
 }

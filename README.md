@@ -163,3 +163,5 @@ To cancel a task from a linked IM thread, send `/blazar /cancel` as a reply. On 
 Linked conversations also accept `/status`, `/pause`, and `/resume` as follow-up text. Their Chinese equivalents are `/状态`, `/暂停`, and `/继续`. A running task can resume after the device acknowledges the pause.
 
 To continue an existing task in another supported IM conversation, open the task on desktop and create a one-time link command. Send the command as a new message in an authorized conversation for the same workspace. Reply in the linked Feishu or Lark thread, or use `/blazar follow TASK_ID your instruction` on channels that require an explicit task reference.
+
+Feishu and Lark can attach UTF-8 `.txt`, `.md`, `.csv`, `.json`, and `.log` files to a Worker task. Send the file as a reply in its linked thread. Configure the bot app secret and [message resource access](https://open.feishu.cn/document/uAjLw4CM/ukTMukTMukTM/reference/im-v1). The Router accepts up to 8 KiB per file and 16 KiB per task.

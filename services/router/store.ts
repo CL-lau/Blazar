@@ -584,6 +584,42 @@ export class TaskStore {
     });
   }
 
+  channelAttachmentTask(owner: string, channel: string, workspace: string, message: { id: string; chat: string; thread: string }) {
+    return this.db.prepare(`SELECT t.id,t.status FROM channel_thread c JOIN task t ON t.id=c.task_id
+      WHERE c.owner=? AND c.channel=? AND c.chat=? AND c.thread=? AND t.workspace=?
+      AND t.status NOT IN ('cancelled','cancelling','paused','pausing')
+      AND substr(t.goal,1,9) NOT IN ('/observe ','/preview ') AND substr(t.goal,1,7)<>'/click '
+      AND NOT EXISTS(SELECT 1 FROM channel_message m WHERE m.owner=c.owner AND m.channel=c.channel AND m.message=?)`)
+      .get(owner, channel, message.chat, message.thread, workspace, message.id);
+  }
+
+  addChannelAttachment(owner: string, channel: string, workspace: string, taskId: string,
+                       message: { id: string; chat: string; thread: string }, attachment: TaskAttachment) {
+    return this.transaction(() => {
+      const task = this.channelAttachmentTask(owner, channel, workspace, message);
+      if (task?.id !== taskId) return false;
+      const refs = this.appEvidence(taskId);
+      if (refs && this.canUseChannelAppEvidence?.(owner, workspace, refs) !== true) return false;
+      const totals = this.db.prepare(`SELECT COUNT(*) AS count,COALESCE(SUM(length(CAST(text AS BLOB))),0) AS bytes
+        FROM task_attachment WHERE task_id=?`).get(taskId)!;
+      const size = Buffer.byteLength(attachment.text);
+      if (Number(totals.count) >= 4 || Number(totals.bytes) + size > 16_384) return false;
+      this.db.prepare('INSERT INTO channel_message VALUES(?,?,?)').run(owner, channel, message.id);
+      this.db.prepare('INSERT INTO task_attachment VALUES(?,?,?,?)').run(taskId, totals.count!, attachment.name, attachment.text);
+      const run = this.db.prepare('SELECT id FROM run WHERE taskId=?').get(taskId);
+      if (run) this.db.prepare('DELETE FROM run_steering WHERE run_id=?').run(run.id!);
+      const updated = this.db.prepare('UPDATE task SET status=?,version=version+1,result=NULL WHERE id=? RETURNING version')
+        .get(run ? 'running' : 'queued', taskId)!;
+      this.event(taskId, 'task.attachment_added', {
+        channel, name: attachment.name, size, sha256: createHash('sha256').update(attachment.text).digest('hex'),
+        version: updated.version,
+      });
+      if (task.status === 'succeeded') this.invalidateCompletedDescendants(taskId);
+      this.updateWorkflowReadiness(taskId);
+      return true;
+    });
+  }
+
   receiveChannelMessage(owner: string, channel: string, workspace: string,
                         message: { id: string; chat: string; thread: string; root: boolean; text: string; taskId?: string; replyExpires?: number }, weixinContext?: string) {
     if (message.text.startsWith('/observe ') || message.text.startsWith('/click ')) return;

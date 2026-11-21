@@ -13,7 +13,19 @@ test('Feishu callbacks verify the source and link authorized thread replies', as
     token: 'verification', appId: 'app', tenant: 'tenant', workspace: 'workspace',
     senders: new Set(['person']), chats: new Set(['chat']),
   };
-  const server = routerServer(store, { owner: 'owner', token: 'admin', feishu });
+  const downloads: string[] = [];
+  const adapter = createFeishuSender('app', 'secret', 'lark', async (input, init) => {
+    const url = String(input);
+    if (url.endsWith('/tenant_access_token/internal')) {
+      return Response.json({ code: 0, tenant_access_token: 'fixture', expire: 3600 });
+    }
+    assert.equal(new Headers(init?.headers).get('Authorization'), 'Bearer fixture');
+    assert.equal(init?.redirect, 'error');
+    downloads.push(url);
+    if (url.includes('/oversized/')) return new Response('x'.repeat(8193));
+    return new Response('Approved fixture document');
+  });
+  const server = routerServer(store, { owner: 'owner', token: 'admin', feishu, readFeishuAttachment: adapter.readAttachment });
   server.listen(0, '127.0.0.1');
   await once(server, 'listening');
   t.after(async () => {
@@ -121,5 +133,37 @@ test('Feishu callbacks verify the source and link authorized thread replies', as
   assert.equal(store.get('owner', queued.id)?.version, 4);
   assert.equal(store.acknowledgeStop(current.run.id, 'device', Date.now()), true);
   assert.equal(store.get('owner', queued.id)?.status, 'cancelled');
+
+  await post(makeEvent('file-root', '/blazar Summarize attached notes'));
+  const target = store.snapshot('owner').tasks.find(item => item.goal === 'Summarize attached notes')!;
+  const fileEvent = (id: string, sender = 'person', thread = 'file-root') => {
+    const message = makeEvent(id, '', { root: thread, sender });
+    message.event.message.message_type = 'file';
+    message.event.message.content = JSON.stringify({ file_key: 'file_v2_fixture', file_name: 'notes.txt' });
+    return message;
+  };
+  await post(fileEvent('unauthorized-file', 'unlisted'));
+  await post(fileEvent('unlinked-file', 'person', 'unknown-thread'));
+  assert.deepEqual(downloads, []);
+  await post(fileEvent('oversized'));
+  assert.equal(store.get('owner', target.id)?.version, 1);
+
+  const oldAssignment = await (await socket.request('claim', { capability: 'agent.acp' }, signal)).json();
+  const oldRun = oldAssignment.assignment.run.id;
+  assert.equal(oldAssignment.assignment.task.id, target.id);
+  assert.equal((await socket.request('runs/' + oldRun + '/steer', {}, signal)).status, 200);
+  const attachmentStop = Promise.withResolvers<void>();
+  const unsubscribe = socket.onStop(oldRun, attachmentStop.resolve);
+  assert.equal((await post(fileEvent('notes-file'))).status, 200);
+  await Promise.race([attachmentStop.promise, once(signal, 'abort').then(() => signal.throwIfAborted())]);
+  unsubscribe();
+  assert.equal((await socket.request('runs/' + oldRun + '/stopped', {}, signal)).status, 200);
+  await post(fileEvent('notes-file'));
+  assert.equal(downloads.length, 2);
+  assert.equal(downloads[1], 'https://open.larksuite.com/open-apis/im/v1/messages/notes-file/resources/file_v2_fixture?type=file');
+  const nextAssignment = await (await socket.request('claim', { capability: 'agent.acp' }, signal)).json();
+  assert.deepEqual(nextAssignment.assignment.attachments, [{ name: 'notes.txt', text: 'Approved fixture document' }]);
+  assert.equal(nextAssignment.assignment.task.version, 2);
+  assert.doesNotMatch(JSON.stringify(store.timeline('owner', target.id)), /Approved fixture document/);
 
 });
