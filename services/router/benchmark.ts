@@ -37,6 +37,7 @@ const opened = new Map<string, number>();
 const accepted = new Set<string>();
 const reception: number[] = [];
 const dispatch: number[] = [];
+const cancellations: number[] = [];
 
 function p95(values: number[]) {
   return Number([...values].sort((a, b) => a - b)[Math.ceil(values.length * 0.95) - 1].toFixed(2));
@@ -82,6 +83,15 @@ try {
     reception.push(performance.now() - started);
   }
 
+  async function taskCommand(task: Task, key: string, command: { action: 'cancel' } | { action: 'approve'; approvalId: string }) {
+    const response = await fetch(new URL('/v1/tasks/' + task.id + '/commands', base), {
+      method: 'POST', headers: { ...headers, 'Idempotency-Key': key }, signal: active,
+      body: JSON.stringify({ expectedVersion: task.version, ...command }),
+    });
+    assert.equal(response.status, 200);
+    await response.arrayBuffer();
+  }
+
   const started = performance.now();
   const staging = Array.from({ length: concurrency }, (_, sender) => (async () => {
     for (let index = sender; index < jobs; index += concurrency) {
@@ -117,17 +127,29 @@ try {
         const requested = await socket.request(prefix + 'request-approval', { summary: 'Review benchmark fixture' }, active);
         assert.equal(requested.status, 200);
         const { approval } = await requested.json() as { approval: { id: string } };
-        const command = await fetch(new URL('/v1/tasks/' + task.id + '/commands', base), {
-          method: 'POST', headers: { ...headers, 'Idempotency-Key': 'approval-' + index }, signal: active,
-          body: JSON.stringify({ expectedVersion: task.version, action: 'approve', approvalId: approval.id }),
-        });
-        assert.equal(command.status, 200);
-        await command.arrayBuffer();
+        await taskCommand(task, 'approval-' + index, { action: 'approve', approvalId: approval.id });
         const consumed = await socket.request(prefix + 'consume-approval', { approvalId: approval.id }, active);
         assert.equal(consumed.status, 200);
       }
       const outcome = { status: 'succeeded', result: text };
       const finish = () => socket.request('runs/' + run.id + '/finish', outcome, active);
+      if (mixed && index % 10 === 1) {
+        const startedCancel = performance.now();
+        const stopped = Promise.withResolvers<boolean>();
+        const unwatch = socket.onStop(run.id, () => stopped.resolve(true));
+        const deadline = setTimeout(() => stopped.resolve(false), 2_000);
+        try {
+          await taskCommand(task, 'cancel-' + index, { action: 'cancel' });
+          assert.equal(await stopped.promise, true, 'Cancellation stop did not reach the device');
+          assert.equal((await socket.request('runs/' + run.id + '/stopped', {}, active)).status, 200);
+          cancellations.push(performance.now() - startedCancel);
+          assert.equal((await finish()).status, 409);
+        } finally {
+          clearTimeout(deadline);
+          unwatch();
+        }
+        continue;
+      }
       assert.equal((await finish()).status, 200);
       if (accepted.size % 10 === 0) assert.equal((await finish()).status, 200);
     }
@@ -143,7 +165,12 @@ try {
   }
   const state = store.snapshot('benchmark');
   assert.equal(state.tasks.length, jobs);
-  assert(state.tasks.every(task => task.status === 'succeeded'));
+  const expectedCancelled = mixed ? jobs / 10 : 0;
+  assert.equal(cancellations.length, expectedCancelled);
+  for (const task of state.tasks) {
+    assert.equal(task.status, mixed && Number(task.goal.slice('Review fixture '.length)) % 10 === 1
+      ? 'cancelled' : 'succeeded');
+  }
   let cursor = 0;
   let finishes = 0;
   let approvals = 0;
@@ -154,7 +181,7 @@ try {
     approvals += events.filter(event => event.type === 'approval.decided').length;
     cursor = events.at(-1)!.seq;
   }
-  assert.equal(finishes, jobs);
+  assert.equal(finishes, jobs - expectedCancelled);
   assert.equal(approvals, mixed ? jobs / 10 : 0);
   const notices = new Set<string>();
   for (;;) {
@@ -174,9 +201,10 @@ try {
   const receiptP95Ms = p95(reception);
   const claimP95Ms = p95(dispatch);
   console.log(JSON.stringify({
-    workload: mixed ? 'mock-worker-with-approvals' : 'document-preview',
+    workload: mixed ? 'mock-worker-with-approvals-and-cancellations' : 'document-preview',
     approvals, cpu: cpus()[0]?.model, node: process.version, concurrency, submitted: reception.length,
-    completed: jobs, duplicateTasks: 0, duplicateOutboundNotices: 0, unexpectedAssignments: 0,
+    completed: finishes, cancelled: cancellations.length,
+    cancelToStopP95Ms: cancellations.length ? p95(cancellations) : null, duplicateTasks: 0, duplicateOutboundNotices: 0, unexpectedAssignments: 0,
     modelRequests: serverMetrics.routing.model, receiptP95Ms, claimP95Ms,
     elapsedMs: Math.round(performance.now() - started),
   }, null, 2));
