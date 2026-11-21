@@ -158,6 +158,8 @@ export BLAZAR_APP_MANIFESTS='[{"version":1,"id":"custom.handbook","label":"Team 
 
 Restart the Router, then connect `custom.handbook` with account `Production` in the desktop app. Credentials and endpoints stay on the Router. The catalog exposes the manifest name, account label, and document capabilities.
 
+Router administrators can invoke a catalog capability with `POST /v1/app-connections/{connection-id}/capabilities/{capability-id}`. Supported document capabilities are `document.test`, `document.import`, and `document.refresh`. The JSON body includes `workspace`, plus `document` for test and import or an optional `after` cursor for refresh.
+
 In **Apps and memory**, choose a source account and workspace to refresh previously imported documents. You can also save an automatic refresh interval for that account and workspace.
 
 In the desktop task view, **Create task with selected apps** lets a Worker use matching knowledge from source accounts you select. Access is rechecked when the task is assigned and when the Worker submits a result. Administrators can share a completed result version with an individual paired phone while each referenced version remains authorized.

@@ -22,6 +22,12 @@ const appCapabilities = [
   { id: 'document.refresh', label: 'Refresh imported documents', input: ['workspace'], effect: 'local_write' },
 ] as const;
 
+export type DocumentCapabilityId = typeof appCapabilities[number]['id'];
+
+export function isDocumentCapability(value: string): value is DocumentCapabilityId {
+  return appCapabilities.some(capability => capability.id === value);
+}
+
 export function documentAppCatalog(connectors: readonly DocumentConnector[]) {
   const apps = new Map([...documentApps].map(([id, label]) => [id, { label, version: 1 }]));
   for (const connector of connectors) {

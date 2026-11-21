@@ -1,6 +1,6 @@
-import { DocumentAccessDenied, DocumentUnavailable, type DocumentConnector } from '../../../packages/apps/documents.ts';
+import { DocumentAccessDenied, DocumentUnavailable, type DocumentConnector, type DocumentCapabilityId } from '../../../packages/apps/documents.ts';
 import type { MemoryStore } from '../memory.ts';
-import { RequestError } from '../protocol/request.ts';
+import { RequestError, requiredText } from '../protocol/request.ts';
 
 type DocumentMemory = Pick<MemoryStore, 'connection' | 'documentSyncActive' | 'documentsToRefresh' |
   'finishAppUsage' | 'finishDocumentSync' | 'importDocument' | 'leaseDocumentSync' |
@@ -51,6 +51,22 @@ export async function refreshDocumentPage(store: DocumentMemory, owner: string, 
     accessDocument(store, owner, workspace, connection, reader, document, 'refresh', signal, permitted)));
   const refreshed = results.filter(result => result.status === 'fulfilled').length;
   return { refreshed, unavailable: results.length - refreshed, after: documents.length > page.length ? page.at(-1)! : null };
+}
+
+export async function invokeDocumentCapability(store: DocumentMemory, owner: string, connectionId: string,
+                                               readers: readonly DocumentConnector[], capability: DocumentCapabilityId,
+                                               input: Record<string, unknown>) {
+  const workspace = requiredText(input.workspace, 'workspace', 128);
+  const connection = store.connection(owner, connectionId, workspace);
+  if (!connection) throw new RequestError(404, 'Active connection not found');
+  const reader = readers.find(candidate => candidate.app === connection.app && candidate.account === connection.account);
+  if (!reader) throw new RequestError(409, 'No document reader is configured for this connection');
+  if (capability === 'document.refresh') {
+    const after = input.after === undefined ? '' : requiredText(input.after, 'document cursor', 128);
+    return refreshDocumentPage(store, owner, workspace, connectionId, reader, after);
+  }
+  const document = requiredText(input.document, 'document ID', 128);
+  return accessDocument(store, owner, workspace, connectionId, reader, document, capability === 'document.test' ? 'test' : 'import');
 }
 
 export async function runDueDocumentSync(store: DocumentMemory, readers: readonly DocumentConnector[],

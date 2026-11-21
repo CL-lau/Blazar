@@ -1,11 +1,17 @@
 import type { IncomingMessage, ServerResponse } from 'node:http';
-import { documentAppCatalog, documentCapabilityState, type DocumentConnector } from '../../../packages/apps/documents.ts';
-import { accessDocument, refreshDocumentPage } from '../application/document-sync.ts';
+import { documentAppCatalog, documentCapabilityState, isDocumentCapability, type DocumentConnector } from '../../../packages/apps/documents.ts';
+import { invokeDocumentCapability } from '../application/document-sync.ts';
 import { requestMemoryDraft } from '../application/memory-draft.ts';
 import type { MemoryAnswer, MemoryDraft } from '../harness.ts';
 import type { MemoryStore, ResourceRef } from '../memory.ts';
 import { RequestError, requiredText } from '../protocol/request.ts';
 import { jsonObject, reply } from './json.ts';
+
+const legacyDocumentCapabilities = new Map([
+  ['import-document', 'document.import'],
+  ['test-document', 'document.test'],
+  ['refresh-documents', 'document.refresh'],
+]);
 
 export async function handleMemory(
   request: IncomingMessage, response: ServerResponse, url: URL, owner: string, store: MemoryStore, documents?: readonly DocumentConnector[], answerMemory?: MemoryAnswer, draftMemory?: MemoryDraft,
@@ -64,23 +70,14 @@ export async function handleMemory(
     return true;
   }
 
-  const documentPath = /^\/v1\/app-connections\/([a-f0-9-]{36})\/(import-document|test-document|refresh-documents)$/.exec(pathname);
-  if (documentPath && method === 'POST') {
-    const data = await jsonObject(request);
-    const workspace = requiredText(data.workspace, 'workspace', 128);
-    const connectionId = documentPath[1];
-    const connection = store.connection(owner, connectionId, workspace);
-    if (!connection) throw new RequestError(404, 'Active connection not found');
-    const reader = readerFor(connection);
-    if (!reader) throw new RequestError(409, 'No document reader is configured for this connection');
-    if (documentPath[2] === 'refresh-documents') {
-      const after = data.after === undefined ? '' : requiredText(data.after, 'document cursor', 128);
-      reply(response, 200, await refreshDocumentPage(store, owner, workspace, connectionId, reader, after));
-      return true;
-    }
-    const document = requiredText(data.document, 'document ID', 128);
-    reply(response, 200, await accessDocument(store, owner, workspace, connectionId, reader, document,
-      documentPath[2] === 'test-document' ? 'test' : 'import'));
+  const capabilityPath = /^\/v1\/app-connections\/([a-f0-9-]{36})\/capabilities\/([a-z0-9.-]{1,128})$/.exec(pathname);
+  const legacyDocumentPath = /^\/v1\/app-connections\/([a-f0-9-]{36})\/(import-document|test-document|refresh-documents)$/.exec(pathname);
+  const invocation = capabilityPath ?? legacyDocumentPath;
+  if (invocation && method === 'POST') {
+    const [, connectionId, requested] = invocation;
+    const capability = legacyDocumentPath ? legacyDocumentCapabilities.get(requested) ?? requested : requested;
+    if (!isDocumentCapability(capability)) throw new RequestError(404, 'Application capability not found');
+    reply(response, 200, await invokeDocumentCapability(store, owner, connectionId, documents ?? [], capability, await jsonObject(request)));
     return true;
   }
 

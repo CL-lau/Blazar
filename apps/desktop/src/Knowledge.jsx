@@ -207,7 +207,7 @@ export function Knowledge({ token }) {
             void perform(async () => {
               setUsage(null);
               try {
-                await request('/app-connections/' + connection + (testAccess ? '/test-document' : '/import-document'), {
+                await request('/app-connections/' + connection + (testAccess ? '/capabilities/document.test' : '/capabilities/document.import'), {
                   method: 'POST', body: { workspace, document },
                 });
               } finally {
@@ -246,7 +246,7 @@ export function Knowledge({ token }) {
                 let refreshed = 0;
                 let unavailable = 0;
                 do {
-                  const page = await request('/app-connections/' + connection + '/refresh-documents', {
+                  const page = await request('/app-connections/' + connection + '/capabilities/document.refresh', {
                     method: 'POST', body: { workspace, ...(after && { after }) },
                   });
                   refreshed += page.refreshed;

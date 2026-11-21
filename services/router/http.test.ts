@@ -128,9 +128,12 @@ test('Router authenticates, deduplicates commands and replays task changes over 
   });
   assert.equal(scoped.status, 201);
   const { id: scopedConnection } = await scoped.json();
-  const scopedImport = '/v1/app-connections/' + scopedConnection + '/import-document';
-  const scopedTest = '/v1/app-connections/' + scopedConnection + '/test-document';
+  const scopedImport = '/v1/app-connections/' + scopedConnection + '/capabilities/document.import';
+  const scopedTest = '/v1/app-connections/' + scopedConnection + '/capabilities/document.test';
   assert.equal((await post(scopedTest, 'test-wrong-scope', { workspace: 'demo', document: 'doc123' })).status, 404);
+  const unknown = await post('/v1/app-connections/' + scopedConnection + '/capabilities/document.publish',
+    'unknown-capability', { workspace: 'private', document: 'doc123' });
+  assert.equal(unknown.status, 404);
   const access = await post(scopedTest, 'test-right-scope', { workspace: 'private', document: 'doc123' });
   assert.equal(access.status, 200);
   assert.deepEqual(await access.json(), { readable: true });
@@ -290,7 +293,7 @@ test('Router authenticates, deduplicates commands and replays task changes over 
   githubStatus = 200;
   assert.equal((await post(repoImport, 'restored-github', { workspace: 'demo', document: 'docs/review.md' })).status, 200);
   assert.equal(memory.recall('test', 'demo', 'findings', [github]).length, 1);
-  const refreshPath = '/v1/app-connections/' + github + '/refresh-documents';
+  const refreshPath = '/v1/app-connections/' + github + '/capabilities/document.refresh';
   const otherWorkspace = await post(refreshPath, 'other-workspace-refresh', { workspace: 'other' });
   assert.deepEqual(await otherWorkspace.json(), { refreshed: 0, unavailable: 0, after: null });
   githubBody = 'Updated engineering guidance';
