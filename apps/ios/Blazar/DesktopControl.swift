@@ -30,6 +30,17 @@ enum DesktopOperation: String, CaseIterable, Identifiable {
 }
 
 struct DesktopControl: View {
+    private struct Target: Equatable {
+        let workspace: String
+        let device: String?
+        let alias: String
+    }
+
+    private struct Inventory {
+        let taskId: String
+        let target: Target
+    }
+
     private struct Window: Decodable, Identifiable {
         let id: String
         let title: String
@@ -53,10 +64,17 @@ struct DesktopControl: View {
     @State private var window = ""
     @State private var button = ""
     @State private var requestKey = UUID()
-    @State private var inventoryId: String?
+    @State private var targetGeneration = UUID()
+    @State private var inventory: Inventory?
+
+    private var target: Target {
+        Target(workspace: workspace.trimmingCharacters(in: .whitespacesAndNewlines),
+               device: targetDevice, alias: alias)
+    }
 
     private var inventoryTask: RouterSnapshot.Task? {
-        tasks.first { $0.id == inventoryId }
+        guard let inventory, inventory.target == target else { return nil }
+        return tasks.first { $0.id == inventory.taskId }
     }
 
     private var windows: [Window]? {
@@ -65,6 +83,7 @@ struct DesktopControl: View {
     }
 
     private var command: String? {
+        if operation != .windows, !window.isEmpty, let inventory, inventory.target != target { return nil }
         if operation == .visual && appControls?.visual == false { return nil }
         if operation == .click, let appControls, !appControls.buttons.contains(button) { return nil }
         let identity = windows?.first { $0.id == window }?.identity
@@ -172,17 +191,19 @@ struct DesktopControl: View {
             }
             Button(operation.rawValue) {
                 guard let command else { return }
-                let targetWorkspace = workspace
+                let submittedTarget = target
+                let submittedGeneration = targetGeneration
                 let key = requestKey
-                let computer = targetDevice
                 let listing = operation == .windows
                 sending = true
                 Task {
                     defer { sending = false }
                     do {
-                        let task = try await client.submit(workspace: targetWorkspace, goal: command, key: key, desktopDevice: computer)
+                        let task = try await client.submit(workspace: submittedTarget.workspace, goal: command, key: key,
+                                                           desktopDevice: submittedTarget.device)
+                        guard submittedGeneration == targetGeneration else { return }
                         if listing {
-                            inventoryId = task.id
+                            inventory = Inventory(taskId: task.id, target: submittedTarget)
                             window = ""
                         }
                         requestKey = UUID()
@@ -198,20 +219,14 @@ struct DesktopControl: View {
         }
         .disabled(sending)
         .onChange(of: command) { _, _ in requestKey = UUID() }
-        .onChange(of: workspace) { _, _ in
+        .onChange(of: target) { previous, updated in
+            targetGeneration = UUID()
             requestKey = UUID()
-            inventoryId = nil
+            inventory = nil
             window = ""
-        }
-        .onChange(of: targetDevice) { _, _ in
-            requestKey = UUID()
-            inventoryId = nil
-            window = ""
-        }
-        .onChange(of: alias) { _, _ in
-            inventoryId = nil
-            window = ""
-            button = ""
+            if previous.alias != updated.alias || previous.device != updated.device {
+                button = ""
+            }
         }
         .onChange(of: appControls?.buttons) { _, next in
             if let next, !next.contains(button) { button = "" }
