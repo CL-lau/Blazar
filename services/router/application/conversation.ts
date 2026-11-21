@@ -165,7 +165,10 @@ export function createConversationRouter(store: ConversationTasks, config: Conve
                 },
                 ...(admin && { workspaceCapabilities: () => ({
                   desktopTargets: store.desktopTargets(owner).filter(target => target.workspace === input.workspace)
-                    .slice(0, 16).map(target => ({ alias: String(target.alias), deviceId: String(target.deviceId), textFields: target.controls?.textFields })),
+                    .slice(0, 16).map(target => ({
+                      alias: String(target.alias), deviceId: String(target.deviceId),
+                      ...(target.controls?.textFields?.length && { textFields: target.controls.textFields }),
+                    })),
                   devices: store.devices(owner).filter(device => device.workspace === input.workspace && !device.revoked)
                     .slice(0, 16).map(device => ({
                       name: String(device.name), capability: String(device.capability ?? 'unreported'),
