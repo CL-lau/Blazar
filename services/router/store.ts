@@ -92,6 +92,10 @@ export class TaskStore {
         id TEXT PRIMARY KEY, owner TEXT NOT NULL, name TEXT NOT NULL, token_hash TEXT UNIQUE NOT NULL,
         expires INTEGER NOT NULL, state TEXT NOT NULL CHECK(state IN ('pending','approved','denied'))
       );
+      CREATE TABLE IF NOT EXISTS mobile_pairing_receipt (
+        code_hash TEXT PRIMARY KEY,
+        request_id TEXT NOT NULL REFERENCES mobile_pairing_request(id) ON DELETE CASCADE
+      );
       CREATE TABLE IF NOT EXISTS mobile_client (
         id TEXT PRIMARY KEY, owner TEXT NOT NULL, name TEXT NOT NULL, token_hash TEXT UNIQUE NOT NULL
       );
@@ -916,6 +920,10 @@ export class TaskStore {
     return this.transaction(() => {
       const hash = createHash('sha256').update(code).digest('hex');
       const tokenHash = createHash('sha256').update(token).digest('hex');
+      const replay = this.db.prepare(`SELECT p.id,p.expires FROM mobile_pairing_receipt r
+        JOIN mobile_pairing_request p ON p.id=r.request_id
+        WHERE r.code_hash=? AND p.token_hash=? AND p.name=? AND p.expires>?`).get(hash, tokenHash, name, now);
+      if (replay) return { id: String(replay.id), expires: Number(replay.expires) };
       if (this.db.prepare('SELECT 1 FROM mobile_client WHERE token_hash=?').get(tokenHash)) return undefined;
       const prior = this.db.prepare('SELECT 1 FROM mobile_pairing_request WHERE token_hash=? AND expires>?').get(tokenHash, now);
       if (prior) return undefined;
@@ -926,6 +934,7 @@ export class TaskStore {
       const id = randomUUID();
       this.db.prepare("INSERT INTO mobile_pairing_request VALUES(?,?,?,?,?,'pending')")
         .run(id, pairing.owner!, name, tokenHash, pairing.expires!);
+      this.db.prepare('INSERT INTO mobile_pairing_receipt VALUES(?,?)').run(hash, id);
       return { id, expires: Number(pairing.expires) };
     });
   }

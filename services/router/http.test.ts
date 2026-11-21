@@ -377,15 +377,19 @@ test('Router authenticates, deduplicates commands and replays task changes over 
   const { code } = await codeResponse.json();
   const mobileToken = randomBytes(32).toString('base64url');
   const mobileHeaders = { Authorization: `Bearer ${mobileToken}` };
-  const redeem = () => fetch(url + '/v1/pairings/redeem', {
+  const redeem = (token = mobileToken, name = 'iPhone') => fetch(url + '/v1/pairings/redeem', {
     method: 'POST', headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ code, name: 'iPhone', token: mobileToken }),
+    body: JSON.stringify({ code, name, token }),
   });
   const paired = await redeem();
   assert.equal(paired.status, 202);
   const mobile = await paired.json();
   assert.equal(mobile.token, undefined);
-  assert.equal((await redeem()).status, 404);
+  const replay = await redeem();
+  assert.equal(replay.status, 202);
+  assert.deepEqual(await replay.json(), mobile);
+  assert.equal((await redeem(randomBytes(32).toString('base64url'))).status, 404);
+  assert.equal((await redeem(mobileToken, 'Different name')).status, 404);
   const pendingPath = '/v1/admin/mobile-pairings';
   const decision = pendingPath + '/' + mobile.id;
   const pairingStatus = () => fetch(url + '/v1/pairings/status?id=' + mobile.id, { headers: mobileHeaders });
@@ -401,6 +405,7 @@ test('Router authenticates, deduplicates commands and replays task changes over 
   assert.equal((await post(decision, 'approve', { approve: true })).status, 200);
   assert.equal((await post(decision, 'approved-twice', { approve: true })).status, 404);
   assert.deepEqual(await (await pairingStatus()).json(), { state: 'approved' });
+  assert.deepEqual(await (await redeem()).json(), mobile);
   assert.equal((await fetch(url + '/v1/state', { headers: mobileHeaders })).status, 200);
   const pushRegistration = (auth: object, deviceToken: string | null) => fetch(url + '/v1/mobile/push', {
     method: 'POST', headers: { ...auth, 'Content-Type': 'application/json' },

@@ -96,11 +96,13 @@ struct RouterClient: Equatable {
             .replacingOccurrences(of: "/", with: "_")
             .replacingOccurrences(of: "=", with: "")
         let pending = RouterClient(base: base, token: token)
-        let data = try await pending.request("v1/pairings/redeem", body: ["code": code, "name": name, "token": token])
-        let pairing = try JSONDecoder().decode(PairingRequest.self, from: data)
         let deadline = ContinuousClock.now + .seconds(300)
+        let data = try await pending.pairingRequest("v1/pairings/redeem",
+            body: ["code": code, "name": name, "token": token], deadline: deadline)
+        let pairing = try JSONDecoder().decode(PairingRequest.self, from: data)
         repeat {
-            let data = try await pending.request("v1/pairings/status", query: [.init(name: "id", value: pairing.id)])
+            let data = try await pending.pairingRequest("v1/pairings/status",
+                query: [.init(name: "id", value: pairing.id)], deadline: deadline)
             let status = try JSONDecoder().decode(PairingStatus.self, from: data)
             switch status.state {
             case "approved": return pending
@@ -109,6 +111,21 @@ struct RouterClient: Equatable {
             default: throw RouterError(error: "The Router returned an invalid pairing state.")
             }
         } while ContinuousClock.now < deadline
+        throw RouterError(error: "This pairing request expired.")
+    }
+
+    private func pairingRequest(_ path: String, body: [String: Any]? = nil, query: [URLQueryItem] = [],
+                                deadline: ContinuousClock.Instant) async throws -> Data {
+        let transient: Set<URLError.Code> = [.notConnectedToInternet, .networkConnectionLost, .timedOut,
+                                             .cannotConnectToHost, .cannotFindHost, .dnsLookupFailed]
+        while ContinuousClock.now < deadline {
+            try Task.checkCancellation()
+            do {
+                return try await request(path, body: body, query: query)
+            } catch let error as URLError where transient.contains(error.code) {
+                try await Task.sleep(for: .seconds(2))
+            }
+        }
         throw RouterError(error: "This pairing request expired.")
     }
 
