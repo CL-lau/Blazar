@@ -1,0 +1,47 @@
+export type ApplicationAction = Readonly<{
+  connectionId: string;
+  capability: string;
+  invocationId: string;
+  effect: 'read' | 'write';
+  input: Readonly<Record<string, unknown>>;
+}>;
+
+export type ActionResult =
+  | { status: 'succeeded'; output: unknown }
+  | { status: 'unavailable-before-dispatch' }
+  | { status: 'denied' }
+  | { status: 'outcome-unknown'; backendId: string };
+
+export interface ActionBackend {
+  readonly id: string;
+  readonly connectionId: string;
+  readonly capability: string;
+  readonly effect: ApplicationAction['effect'];
+  invoke(action: ApplicationAction, signal: AbortSignal): Promise<Exclude<ActionResult, { status: 'outcome-unknown' }>>;
+}
+
+// The caller supplies backends in policy order and authorizes each separately.
+export async function invokeApplicationAction(
+  action: ApplicationAction,
+  backends: readonly ActionBackend[],
+  authorized: (backend: ActionBackend, action: ApplicationAction) => Promise<boolean>,
+  signal: AbortSignal,
+): Promise<ActionResult> {
+  signal.throwIfAborted();
+  for (const backend of backends) {
+    if (backend.connectionId !== action.connectionId || backend.capability !== action.capability ||
+        backend.effect !== action.effect) continue;
+    if (!await authorized(backend, action)) return { status: 'denied' };
+    signal.throwIfAborted();
+    let result: Awaited<ReturnType<ActionBackend['invoke']>>;
+    try {
+      result = await backend.invoke(action, signal);
+    } catch (error) {
+      if (action.effect === 'write') return { status: 'outcome-unknown', backendId: backend.id };
+      throw error;
+    }
+    if (result.status !== 'unavailable-before-dispatch') return result;
+    signal.throwIfAborted();
+  }
+  return { status: 'unavailable-before-dispatch' };
+}
