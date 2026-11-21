@@ -529,7 +529,7 @@ function App() {
                       ? `Click ${step.action.button} in ${step.action.alias}, window ${step.action.windowFrom?.title ?? step.action.windowId}`
                       : `${step.action.mode === 'windows' ? 'List windows for' : 'Observe'} ${step.action.alias}`} on device {step.action.deviceId}</p>}
                     {step.runLimitSeconds && <p>Time limit: {step.runLimitSeconds} seconds</p>}
-                    {step.workerCapability && <p>Requires {step.workerCapability === 'steer' ? 'live instructions' : 'full input artifacts'}</p>}
+                    {step.workerCapability && <p>Requires {({ steer: 'live instructions', 'full-input-artifacts': 'full input artifacts', 'git-worktree': 'an isolated Git checkout', 'read-only': 'a read-only Worker' })[step.workerCapability] ?? step.workerCapability}</p>}
                     {step.workerProtocols?.length > 0 && <p>Worker protocols: {step.workerProtocols.join(', ')}</p>}
                     {step.action?.expectedText && <p>Expected text: {step.action.expectedText}</p>}
                     {step.acceptanceCriteria?.length > 0 && <ul>{step.acceptanceCriteria.map(criterion =>

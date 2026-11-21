@@ -231,7 +231,12 @@ private struct TaskScreen: View {
                                         Text("Time limit: \(limit) seconds").font(.caption)
                                     }
                                     if let capability = step.workerCapability {
-                                        Text(capability == "steer" ? "Requires live instructions" : "Requires full input artifacts")
+                                        Text([
+                                            "steer": "Requires live instructions",
+                                            "full-input-artifacts": "Requires full input artifacts",
+                                            "git-worktree": "Requires an isolated Git checkout",
+                                            "read-only": "Requires a read-only Worker"
+                                        ][capability] ?? capability)
                                             .font(.caption)
                                     }
                                     if let protocols = step.workerProtocols {

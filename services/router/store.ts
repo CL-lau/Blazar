@@ -1185,6 +1185,7 @@ export class TaskStore {
     const required = this.db.prepare('SELECT capability FROM task_worker_capability WHERE task_id=?').get(run.taskId)?.capability;
     return { run, task, instructions, predecessors, acceptanceCriteria,
       ...(required === 'full-input-artifacts' && { fullInputRequired: true }),
+      ...(required === 'read-only' && { readOnlyRequired: true }),
       ...(typeof expected === 'string' && { clickExpectedText: expected }),
       ...(attachments.length && { attachments }),
       ...(memoryInputs.length && { memoryInputs }),

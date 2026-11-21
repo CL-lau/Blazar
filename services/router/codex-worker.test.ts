@@ -15,11 +15,14 @@ test('Codex correlates stream events with the started turn even before the RPC r
       const { createInterface } = require('node:readline');
       const send = packet => process.stdout.write(JSON.stringify(packet) + '\n');
       createInterface({ input: process.stdin }).on('line', line => {
-        const { id, method } = JSON.parse(line);
+        const { id, method, params } = JSON.parse(line);
         const reply = result => send({ id, result });
         const notify = (method, params) => send({ method, params: { threadId: 'thread', ...params } });
         if (method === 'initialize') reply({});
-        if (method === 'thread/start') reply({ thread: { id: 'thread' } });
+        if (method === 'thread/start') {
+          if (params.sandbox !== 'read-only' || params.approvalPolicy !== 'never') process.exit(2);
+          reply({ thread: { id: 'thread' } });
+        }
         if (method === 'turn/start') {
           notify('item/agentMessage/delta', { turnId: 'other', delta: 'Unrelated' });
           notify('turn/completed', { turn: { id: 'other', status: 'completed' } });
@@ -44,7 +47,11 @@ const steeringWorker = {
       const { id, method, params } = JSON.parse(line);
       const reply = result => send({ id, result });
       if (method === 'initialize') reply({});
-      if (method === 'thread/start') reply({ thread: { id: 'thread' } });
+      if (method === 'thread/start') {
+        assert.equal(params.sandbox, 'read-only');
+        assert.equal(params.approvalPolicy, 'never');
+        reply({ thread: { id: 'thread' } });
+      }
       if (method === 'turn/start') reply({ turn: { id: 'active' } });
       if (method === 'turn/steer') {
         assert.equal(params.threadId, 'thread');
@@ -93,7 +100,13 @@ test('Router delivers an appended instruction to an active Codex turn and accept
     ledger.close();
     store.close();
   });
-  const task = store.create('owner', 'fixture', 'steer', 'project', 'Review the notes');
+  store.createWorkflow('owner', 'steer', 'project', [
+    { key: 'review', goal: 'Review the notes', needs: [], workerCapability: 'read-only' },
+  ]);
+  const task = store.snapshot('owner').tasks.find(task => task.goal === 'Review the notes')!;
+  assert(task);
+  assert.equal(store.claim('owner', 'project', 'alternate', Date.now(), 45_000, '', '/preview ', undefined,
+    { protocol: 'jsonl', label: 'Alternative' }), undefined);
   const signal = AbortSignal.timeout(5_000);
   const running = client.runOnce(signal);
   void running.catch(() => {});

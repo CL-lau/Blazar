@@ -14,7 +14,7 @@ import { executeDesktopAction } from './execution/desktop.ts';
 import type { gitRunWorktrees } from './execution/git-worktree.ts';
 import { executeWorker } from './execution/worker.ts';
 
-type Assignment = { clickExpectedText?: string; fullInputRequired?: boolean; run: Run; task: Task; instructions: string[]; predecessors: PredecessorInput[]; acceptanceCriteria?: string[]; memoryInputs?: TaskMemoryInput[]; attachments?: TaskAttachment[] };
+type Assignment = { clickExpectedText?: string; fullInputRequired?: boolean; readOnlyRequired?: boolean; run: Run; task: Task; instructions: string[]; predecessors: PredecessorInput[]; acceptanceCriteria?: string[]; memoryInputs?: TaskMemoryInput[]; attachments?: TaskAttachment[] };
 
 export class DeviceClient {
   private socket: DeviceSocket;
@@ -52,6 +52,7 @@ export class DeviceClient {
       ])).digest('hex');
       const capabilities: WorkerCapability[] = [];
       if (worktrees) capabilities.push('git-worktree');
+      if (protocol === 'codex') capabilities.push('read-only');
       if (protocol === 'codex' || protocol === 'pi') capabilities.push('steer');
       if (worker.protocol === 'jsonl' && worker.includeFullInputArtifacts) capabilities.push('full-input-artifacts');
       this.workerConfiguration = { label: worker.label, protocol, adapterVersion, revision,
@@ -176,6 +177,9 @@ export class DeviceClient {
       let outcome: RunOutcome;
       let checkpoint: SessionCheckpoint | undefined;
       try {
+        if (assignment.readOnlyRequired && this.worker?.protocol !== 'codex') {
+          throw new Error('This device cannot enforce the read-only Worker requirement');
+        }
         if (this.observation) {
           outcome = await executeDesktopAction(this.observation, this.root, assignment.task.goal, active,
             async (summary, signal) => {
