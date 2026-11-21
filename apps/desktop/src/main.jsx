@@ -355,18 +355,18 @@ function App() {
                   {preview.png ? <img className="window-image" src={'data:image/png;base64,' + preview.png} alt="Captured window" /> :
                     <pre>{preview.text}</pre>}
                 </section>}
-                {task.status === 'waiting_review' && <section className="approval" aria-label="Result review">
+                {(task.status === 'waiting_review' || task.desktopReconciliationRequired) && <section className="approval" aria-label="Result review">
                   <h3>Review result</h3>
-                  <button disabled={busy} onClick={() => command('accept_result')}>Accept result</button>
-                  <button disabled={busy} onClick={() => command('reject_result')}>Reject result</button>
+                  <button disabled={busy} onClick={() => command('accept_result')}>{task.desktopReconciliationRequired ? 'Confirm click took effect' : 'Accept result'}</button>
+                  <button disabled={busy} onClick={() => command('reject_result')}>{task.desktopReconciliationRequired ? 'Confirm click did not take effect' : 'Reject result'}</button>
                 </section>}
                 <ChannelLinks key={task.id} taskId={task.id} token={connected} cursor={snapshot.cursor} />
                 {!memoryUnavailable && <Timeline key={task.id} taskId={task.id} token={connected} cursor={snapshot.cursor} />}
-                {['queued', 'running', 'waiting_user', 'waiting_dependency', 'waiting_device'].includes(task.status) &&
+                {!task.desktopReconciliationRequired && ['queued', 'running', 'waiting_user', 'waiting_dependency', 'waiting_device'].includes(task.status) &&
                   <button disabled={busy} onClick={() => command('pause')}>Pause task</button>}
                 {task.status === 'paused' &&
                   <button disabled={busy || memoryUnavailable} onClick={() => command('resume')}>Resume task</button>}
-                {(task.status === 'failed' || (task.status === 'waiting_user'
+                {(task.status === 'failed' || (task.status === 'waiting_user' && !task.desktopReconciliationRequired
                   && !snapshot.approvals.some(approval => approval.taskId === task.id))) &&
                   <button disabled={busy || memoryUnavailable} onClick={() => {
                     if (window.confirm('Retry this task as a new run? Review any effects of the previous run first.')) command('retry');

@@ -929,4 +929,12 @@ test('a click with no confirmed result holds dependent steps for reconciliation'
   assert.equal(db.get('owner', task.id)?.status, 'waiting_user');
   assert.equal(db.get('owner', String(workflow.steps[1].taskId))?.status, 'waiting_dependency');
   assert.equal(db.claim('owner', 'project', device.id, now, 45_000, '/observe '), undefined);
+  assert.equal(db.snapshot('owner').tasks.find(item => item.id === task.id)?.desktopReconciliationRequired, true);
+  assert.equal(db.command('owner', task.id, task.version, { action: 'retry' }), undefined);
+  assert.equal(db.command('owner', task.id, task.version + 1, { action: 'accept_result' }), undefined);
+  assert.equal(db.command('owner', task.id, task.version, { action: 'accept_result' })?.status, 'succeeded');
+  assert.equal(db.snapshot('owner').tasks.find(item => item.id === task.id)?.desktopReconciliationRequired, undefined);
+  const downstream = db.claim('owner', 'project', 'worker', now, 45_000)!;
+  assert.equal(downstream.task.id, String(workflow.steps[1].taskId));
+  assert.match(downstream.predecessors[0].result ?? '', /confirmed that the click took effect/);
 });

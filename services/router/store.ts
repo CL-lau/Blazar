@@ -103,6 +103,9 @@ export class TaskStore {
         workflow_id TEXT NOT NULL REFERENCES workflow(id), step_key TEXT NOT NULL,
         task_id TEXT NOT NULL UNIQUE REFERENCES task(id), PRIMARY KEY(workflow_id,step_key)
       );
+      CREATE TABLE IF NOT EXISTS desktop_reconciliation (
+        task_id TEXT PRIMARY KEY REFERENCES task(id) ON DELETE CASCADE, inputs TEXT NOT NULL
+      );
       CREATE TABLE IF NOT EXISTS workflow_observation (
         task_id TEXT PRIMARY KEY REFERENCES task(id) ON DELETE CASCADE,
         recovery_count INTEGER NOT NULL DEFAULT 0
@@ -506,8 +509,13 @@ export class TaskStore {
       const rows = this.db.prepare('SELECT * FROM task WHERE owner=? ORDER BY rowid DESC').all(owner) as unknown as Task[];
       const pendingStops = new Set(this.db.prepare(`SELECT s.task_id FROM expired_approval_stop s
         JOIN task t ON t.id=s.task_id WHERE t.owner=? AND s.expires>?`).all(owner, Date.now()).map(row => row.task_id));
-      const tasks = rows.map(task => pendingStops.has(task.id) && ['queued', 'waiting_device'].includes(task.status)
-        ? { ...task, waitingForPreviousRun: true } : task);
+      const reconciliation = new Set(this.db.prepare(`SELECT r.task_id FROM desktop_reconciliation r
+        JOIN task t ON t.id=r.task_id WHERE t.owner=?`).all(owner).map(row => row.task_id));
+      const tasks = rows.map(task => ({
+        ...task,
+        ...(pendingStops.has(task.id) && ['queued', 'waiting_device'].includes(task.status) && { waitingForPreviousRun: true }),
+        ...(task.status === 'waiting_user' && reconciliation.has(task.id) && { desktopReconciliationRequired: true }),
+      }));
       const cursor = this.eventCursor();
       const artifacts = this.db.prepare(`SELECT a.id,a.taskId,a.runId,a.name,a.sha256,a.size,
         CASE WHEN i.artifact_id IS NOT NULL THEN 'image/png' END AS mime,i.expires,v.task_version AS version
@@ -935,22 +943,33 @@ export class TaskStore {
   }
 
   private reviewResult(task: Task, accepted: boolean, metadata: Record<string, string> = {}, reply?: ChannelReply) {
-    if (task.status !== 'waiting_review' || this.db.prepare('SELECT 1 FROM run WHERE taskId=?').get(task.id)) return false;
     const { id: taskId, version } = task;
+    const reconciliation = task.status === 'waiting_user' && this.db.prepare(
+      'SELECT inputs FROM desktop_reconciliation WHERE task_id=?').get(taskId);
+    if ((!reconciliation && task.status !== 'waiting_review') || (reconciliation && metadata.channel) ||
+        this.db.prepare('SELECT 1 FROM run WHERE taskId=?').get(taskId)) return false;
+    if (accepted && reconciliation && this.db.prepare(`SELECT 1 FROM json_each(?) i
+      LEFT JOIN task p ON p.id=json_extract(i.value,'$[0]')
+      WHERE p.status IS NOT 'succeeded' OR p.version IS NOT json_extract(i.value,'$[1]')`).get(reconciliation.inputs!)) return false;
     if (accepted && this.db.prepare(`SELECT 1 FROM review_input i JOIN task p ON p.id=i.predecessor
       WHERE i.task_id=? AND (p.status!='succeeded' OR p.version<>i.version)`).get(taskId)) return false;
     const status = accepted ? 'succeeded' : 'failed';
-    this.db.prepare('UPDATE task SET status=?,version=version+1 WHERE id=?').run(status, taskId);
+    const result = reconciliation
+      ? accepted ? 'The user confirmed that the click took effect.' : 'The user confirmed that the click did not take effect.'
+      : task.result;
+    this.db.prepare('UPDATE task SET status=?,version=version+1,result=? WHERE id=?').run(status, result, taskId);
     if (accepted) {
       this.db.prepare(`UPDATE artifact_version SET task_version=? WHERE task_version=?
         AND artifact_id IN (SELECT id FROM artifact WHERE taskId=?)`).run(version + 1, version, taskId);
     }
+    if (reconciliation) this.db.prepare('DELETE FROM desktop_reconciliation WHERE task_id=?').run(taskId);
     this.db.prepare('DELETE FROM review_input WHERE task_id=?').run(taskId);
     this.event(taskId, accepted ? 'task.result_accepted' : 'task.result_rejected', { status, ...metadata }, reply);
     return true;
   }
 
   private pauseTask(taskId: string, previousStatus: string, metadata: Record<string, string> = {}) {
+    if (this.db.prepare('SELECT 1 FROM desktop_reconciliation WHERE task_id=?').get(taskId)) return false;
     if (!['queued', 'running', 'waiting_user', 'waiting_dependency', 'waiting_device'].includes(previousStatus)) return false;
     const live = this.db.prepare('SELECT 1 FROM run WHERE taskId=?').get(taskId);
     const status = live ? 'pausing' : 'paused';
@@ -960,6 +979,7 @@ export class TaskStore {
   }
 
   private requeueTask(taskId: string, previousStatus: string, action: 'resume' | 'retry', metadata: Record<string, string> = {}) {
+    if (this.db.prepare('SELECT 1 FROM desktop_reconciliation WHERE task_id=?').get(taskId)) return false;
     const allowed = action === 'resume' ? previousStatus === 'paused'
       : previousStatus === 'failed' || previousStatus === 'waiting_user';
     if (!allowed || this.db.prepare('SELECT 1 FROM run WHERE taskId=?').get(taskId)) return false;
@@ -1946,9 +1966,16 @@ export class TaskStore {
     this.event(taskId, 'run.superseded', { runId });
   }
 
+  private requireDesktopReconciliation(taskId: string, runId: string) {
+    this.db.prepare(`INSERT OR REPLACE INTO desktop_reconciliation VALUES(?,(
+      SELECT json_group_array(json_array(predecessor,version)) FROM run_dependency WHERE run_id=?
+    ))`).run(taskId, runId);
+  }
+
   private finishStoppedRun(runId: string, taskId: string, paused: boolean) {
     const clickMayHaveExecuted = this.db.prepare(`SELECT 1 FROM task t JOIN approval a ON a.taskId=t.id
       JOIN approval_use u ON u.id=a.id WHERE t.id=? AND a.runId=? AND substr(t.goal,1,7)='/click '`).get(taskId, runId);
+    if (clickMayHaveExecuted && paused) this.requireDesktopReconciliation(taskId, runId);
     this.db.prepare('DELETE FROM run WHERE id=?').run(runId);
     if (clickMayHaveExecuted) {
       this.db.prepare('UPDATE task SET status=?,result=? WHERE id=?').run(paused ? 'waiting_user' : 'cancelled',
@@ -1995,6 +2022,7 @@ export class TaskStore {
         this.finishSupersededRun(runId, taskId);
         return false;
       }
+      if (outcome.status === 'waiting_user') this.requireDesktopReconciliation(taskId, runId);
       this.db.prepare('DELETE FROM run WHERE id=?').run(runId);
       if (row.staleInputs) {
         this.db.prepare("UPDATE task SET status='waiting_user',result=? WHERE id=?")
@@ -2125,6 +2153,7 @@ export class TaskStore {
           continue;
         }
         const status = row.status === 'cancelling' ? 'cancelled' : 'waiting_user';
+        if (status === 'waiting_user' && row.clickMayHaveExecuted) this.requireDesktopReconciliation(taskId, String(row.id));
         this.db.prepare('DELETE FROM run WHERE id=?').run(row.id!);
         this.db.prepare('UPDATE task SET status=? WHERE id=?').run(status, taskId);
         const inputsChanged = row.staleInputs && status === 'waiting_user';

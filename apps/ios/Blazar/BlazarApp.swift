@@ -515,14 +515,14 @@ private struct TaskDetails: View {
                     if !Task.isCancelled { imagePreview = nil }
                 }
             }
-            if ["queued", "running", "waiting_user", "waiting_dependency", "waiting_device"].contains(task.status) {
+            if task.desktopReconciliationRequired != true, ["queued", "running", "waiting_user", "waiting_dependency", "waiting_device"].contains(task.status) {
                 Button("Pause task") { send("pause") }
             }
             if task.status == "paused" {
                 Button("Resume task") { send("resume") }
                     .disabled(task.personalMemoryUnavailable == true)
             }
-            if task.status == "failed" || (task.status == "waiting_user" && approvals.isEmpty) {
+            if task.status == "failed" || (task.status == "waiting_user" && approvals.isEmpty && task.desktopReconciliationRequired != true) {
                 Button("Retry task") { confirmingRetry = true }
                     .disabled(task.personalMemoryUnavailable == true)
                     .confirmationDialog("Retry this task as a new run?", isPresented: $confirmingRetry) {
@@ -531,10 +531,10 @@ private struct TaskDetails: View {
                         Text("Review any effects of the previous run first.")
                     }
             }
-            if task.status == "waiting_review" {
+            if task.status == "waiting_review" || task.desktopReconciliationRequired == true {
                 Section("Review result") {
-                    Button("Accept result") { send("accept_result") }
-                    Button("Reject result", role: .destructive) { send("reject_result") }
+                    Button(task.desktopReconciliationRequired == true ? "Confirm click took effect" : "Accept result") { send("accept_result") }
+                    Button(task.desktopReconciliationRequired == true ? "Confirm click did not take effect" : "Reject result", role: .destructive) { send("reject_result") }
                 }
             }
             if ["paused", "pausing", "waiting_review"].contains(task.status) {
