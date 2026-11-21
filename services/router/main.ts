@@ -74,7 +74,8 @@ const documentSyncTimer = setInterval(() => {
 }, 5_000);
 documentSyncTimer.unref();
 let nextProgressCleanup = 0;
-const progressCleanupBatch = 1_000;
+let nextMemoryCleanup = 0;
+const cleanupBatch = 1_000;
 const watchdog = setInterval(() => {
   const now = Date.now();
   store.expire(now);
@@ -82,8 +83,12 @@ const watchdog = setInterval(() => {
   store.updateDeviceReadiness(now);
   server.flushStopNotifications();
   if (progressRetentionMs !== undefined && now >= nextProgressCleanup) {
-    const removed = store.pruneProgressEvents(now - progressRetentionMs, progressCleanupBatch);
-    nextProgressCleanup = now + (removed < progressCleanupBatch ? 60 * 60_000 : 1_000);
+    const removed = store.pruneProgressEvents(now - progressRetentionMs, cleanupBatch);
+    nextProgressCleanup = now + (removed < cleanupBatch ? 60 * 60_000 : 1_000);
+  }
+  if (now >= nextMemoryCleanup) {
+    const removed = memory.pruneExpired(now, cleanupBatch);
+    nextMemoryCleanup = now + (removed < cleanupBatch ? 60 * 60_000 : 1_000);
   }
 }, 1_000);
 

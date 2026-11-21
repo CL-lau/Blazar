@@ -71,10 +71,12 @@ export function Knowledge({ token }) {
   function saveMemory(event) {
     event.preventDefault();
     const form = event.currentTarget;
-    const { workspace, body, resource, revision } = Object.fromEntries(new FormData(form));
+    const { workspace, body, resource, revision, expires } = Object.fromEntries(new FormData(form));
     const source = selected ? { connection: selected, resource, revision } : undefined;
     void perform(async () => {
-      await request('/memory', { method: 'POST', body: { workspace, body, source } });
+      await request('/memory', { method: 'POST', body: {
+        workspace, body, source, ...(expires && { expires: new Date(expires).getTime() }),
+      } });
       form.reset();
       setSelected('');
       setResults(null);
@@ -294,6 +296,7 @@ export function Knowledge({ token }) {
             <label>Resource ID<input name="resource" required maxLength={512} /></label>
             <label>Revision<input name="revision" required maxLength={256} /></label>
           </>}
+          <label>Expires at <input type="datetime-local" name="expires" /></label>
           <button>Save memory</button>
         </form>
       </fieldset>
@@ -326,6 +329,7 @@ export function Knowledge({ token }) {
             <p>{item.body}</p>
             <small>{source ? `${accountName(source)} · ${item.resource} · ${item.revision}` :
               item.taskId ? `Task ${item.taskId} · version ${item.taskVersion}` : 'Personal note'}</small>
+            {item.expires && <small> · Expires {new Date(item.expires).toLocaleString()}</small>}
             {editing === item.id ? <form onSubmit={event => {
               event.preventDefault();
               const body = new FormData(event.currentTarget).get('body');

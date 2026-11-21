@@ -83,6 +83,7 @@ export class MemoryStore {
       );
       CREATE INDEX IF NOT EXISTS memory_scope ON memory(owner,workspace,created);
       CREATE INDEX IF NOT EXISTS memory_connection ON memory(connection);
+      CREATE INDEX IF NOT EXISTS memory_expiry ON memory(expires) WHERE expires IS NOT NULL;
     `);
     if (!this.db.prepare("SELECT 1 FROM pragma_table_info('memory_state') WHERE name='disabled'").get()) {
       this.db.exec('ALTER TABLE memory_state ADD COLUMN disabled INTEGER NOT NULL DEFAULT 0');
@@ -374,7 +375,7 @@ export class MemoryStore {
         SELECT 1 FROM app_connection a WHERE a.id=m.connection AND a.owner=m.owner AND a.active=1 AND (a.workspace IS NULL OR a.workspace=m.workspace)
         AND a.id IN (SELECT value FROM json_each(?))
       ))`;
-    const fields = `m.id,m.body,m.connection,m.resource,m.revision,m.created,o.task_id AS taskId,o.task_version AS taskVersion,
+    const fields = `m.id,m.body,m.connection,m.resource,m.revision,m.created,m.expires,o.task_id AS taskId,o.task_version AS taskVersion,
       COALESCE(s.version,1) AS version,COALESCE(s.pinned,0) AS pinned,COALESCE(s.disabled,0) AS disabled`;
     const state = 'LEFT JOIN memory_state s ON s.id=m.id LEFT JOIN memory_task_origin o ON o.id=m.id';
     const values = [owner, workspace, Number(disabled), Date.now(), Number(includePersonal), allowed] as const;
@@ -497,6 +498,12 @@ export class MemoryStore {
       this.db.exec('ROLLBACK');
       throw error;
     }
+  }
+
+  pruneExpired(now: number, limit: number) {
+    return Number(this.db.prepare(`DELETE FROM memory WHERE rowid IN(
+      SELECT rowid FROM memory WHERE expires IS NOT NULL AND expires<=? ORDER BY expires,rowid LIMIT ?
+    )`).run(now, limit).changes);
   }
 
   remove(owner: string, id: string): boolean {

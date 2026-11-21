@@ -59,6 +59,31 @@ test('memory recall matches separated Chinese keywords within the authorized wor
   assert.deepEqual(recalls('评审 风险', [feishu, github]), [second]);
 });
 
+test('expired memory cleanup removes bounded batches and clears derived indexes and revisions', t => {
+  const root = mkdtempSync(join(tmpdir(), 'blazar-memory-expiry-'));
+  const path = join(root, 'memory.sqlite');
+  const store = new MemoryStore(path);
+  const db = new DatabaseSync(path);
+  t.after(() => { db.close(); store.close(); rmSync(root, { recursive: true, force: true }); });
+  const now = Date.now();
+  const expired = store.remember('owner', 'work', 'First forecast', undefined, now + 10_000)!;
+  assert.deepEqual(store.revise('owner', expired, 1, { body: 'Updated forecast' })?.version, 2);
+  const connection = store.connect('owner', 'github', 'guide', 'work');
+  const source = store.remember('owner', 'work', 'Source forecast', { connection, resource: 'guide', revision: '1' }, now + 20_000)!;
+  const permanent = store.remember('owner', 'work', 'Permanent forecast')!;
+  const future = store.remember('owner', 'work', 'Future forecast', undefined, now + 60_000)!;
+  assert.equal(store.pruneExpired(now + 20_000, 1), 1);
+  assert.equal(db.prepare('SELECT 1 FROM memory_revision WHERE id=?').get(expired), undefined);
+  assert.ok(db.prepare('SELECT 1 FROM memory WHERE id=?').get(source));
+  assert.equal(store.pruneExpired(now + 20_000, 1), 1);
+  assert.equal(store.pruneExpired(now + 20_000, 1), 0);
+  assert.deepEqual(new Set(store.recall('owner', 'work', 'forecast', [connection]).map(item => item.id)),
+    new Set([permanent, future]));
+  if (db.prepare("SELECT sqlite_compileoption_used('ENABLE_FTS5') AS enabled").get()?.enabled === 1) {
+    assert.equal(db.prepare("SELECT COUNT(*) AS count FROM memory_search WHERE memory_search MATCH 'forecast'").get()?.count, 2);
+  }
+});
+
 test('workspace scope changes update the derived full-text index', t => {
   const directory = mkdtempSync(join(tmpdir(), 'blazar-memory-index-'));
   const path = join(directory, 'memory.sqlite');
