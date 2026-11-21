@@ -1,7 +1,7 @@
 import { workflowSteps } from './workflow.ts';
 import type { WorkflowStep } from '../../packages/protocol/task.ts';
 import { Agent, type AgentTool } from '@earendil-works/pi-agent-core';
-import { createModels } from '@earendil-works/pi-ai';
+import { createModels, type Usage } from '@earendil-works/pi-ai';
 import { anthropicProvider } from '@earendil-works/pi-ai/providers/anthropic';
 import { openaiProvider } from '@earendil-works/pi-ai/providers/openai';
 
@@ -15,7 +15,9 @@ export type RouterHarness = (input: RouteRequest & {
   recent: ConversationTurn[];
   personalMemory?: string[];
   findTasks?: (query: string) => RouterTaskSummary[];
-}, signal: AbortSignal) => Promise<Decision>;
+}, signal: AbortSignal, reportUsage?: (usage: ModelTokens) => void) => Promise<Decision>;
+
+export type ModelTokens = Pick<Usage, 'input' | 'output' | 'cacheRead' | 'cacheWrite' | 'totalTokens'>;
 
 const instructions = [
   'You are Blazar. Classify the user request. Respond with one JSON object only.',
@@ -66,7 +68,8 @@ function piCompletion(provider: string, modelId: string, systemPrompt: string) {
   else throw new Error('Unsupported Router model provider');
   const model = models.getModel(provider, modelId);
   if (!model) throw new Error('Unknown Router model');
-  return async (input: unknown, signal: AbortSignal, tools: AgentTool[] = []) => {
+  return async (input: unknown, signal: AbortSignal, tools: AgentTool[] = [],
+                reportUsage?: (usage: ModelTokens) => void) => {
     signal.throwIfAborted();
     let modelCalls = 0;
     const agent = new Agent({
@@ -88,13 +91,18 @@ function piCompletion(provider: string, modelId: string, systemPrompt: string) {
       return response.content.flatMap(part => part.type === 'text' ? [part.text] : []).join('');
     } finally {
       signal.removeEventListener('abort', abort);
+      if (reportUsage) {
+        for (const message of agent.state.messages) {
+          if (message.role === 'assistant' && message.usage.totalTokens > 0) reportUsage(message.usage);
+        }
+      }
     }
   };
 }
 
 export function piHarness(provider: string, modelId: string): RouterHarness {
   const complete = piCompletion(provider, modelId, instructions);
-  return async ({ findTasks, ...input }, signal) => {
+  return async ({ findTasks, ...input }, signal, reportUsage) => {
     let calls = 0;
     const tools: AgentTool[] = findTasks ? [{
       name: 'find_tasks', label: 'Find workspace tasks',
@@ -109,7 +117,7 @@ export function piHarness(provider: string, modelId: string): RouterHarness {
         return { content: [{ type: 'text', text: JSON.stringify(findTasks(query.trim())) }], details: undefined };
       },
     }] : [];
-    return parseDecision(await complete(input, signal, tools));
+    return parseDecision(await complete(input, signal, tools, reportUsage));
   };
 }
 

@@ -43,7 +43,8 @@ test('Router authenticates, deduplicates commands and replays task changes over 
       if (question === 'Revoke now' && revokeDuringAnswer) memory.disconnect('test', revokeDuringAnswer);
       return 'The document contains design review findings.';
     },
-    async harness(input) {
+    async harness(input, _signal, reportUsage) {
+      reportUsage?.({ input: 10, output: 4, cacheRead: 2, cacheWrite: 0, totalTokens: 16 });
       decisions++;
       if (input.text === 'Add tests to the review') {
         const [task] = input.findTasks!('Draft the review');
@@ -542,6 +543,9 @@ test('Router authenticates, deduplicates commands and replays task changes over 
   const measurement = await metrics.json();
   assert.deepEqual(measurement.routing, { deterministic: 1, model: 4, replayed: 1, modelErrors: 0 });
   assert.equal(measurement.latencyMs.model.count, 4);
+  assert.deepEqual(measurement.modelTokens, {
+    samples: 4, input: 40, output: 16, cacheRead: 8, cacheWrite: 0, totalTokens: 64,
+  });
   assert.ok(measurement.latencyMs.event.count > 0);
   assert.ok(measurement.devices.active > 0);
   assert.equal(Object.values(measurement.tasks).reduce((sum, count) => Number(sum) + Number(count), 0),

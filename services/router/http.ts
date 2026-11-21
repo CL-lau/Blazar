@@ -613,7 +613,15 @@ function deviceOperation(store: TaskStore, bearer: string, pathname: string, dat
 }
 
 export function routerServer(store: TaskStore, config: { owner: string; token: string; memory?: MemoryStore; harness?: RouterHarness; feishu?: FeishuConfig; readFeishuAttachment?: (messageId: string, key: string) => Promise<string | undefined>; qq?: QQConfig; readQQAttachment?: (url: string, name?: string) => Promise<TaskAttachment | undefined>; documents?: readonly DocumentConnector[]; answerMemory?: MemoryAnswer; pushEnabled?: boolean }) {
-  const metrics = new RouterMetrics();
+  const metricsByOwner = new Map<string, RouterMetrics>();
+  function ownerMetrics(owner: string) {
+    let metrics = metricsByOwner.get(owner);
+    if (!metrics) {
+      metrics = new RouterMetrics();
+      metricsByOwner.set(owner, metrics);
+    }
+    return metrics;
+  }
   const stopSubscribers = new Map<string, Set<WebSocket>>();
   function sendStop(device: string, runId: string) {
     for (const peer of stopSubscribers.get(device) ?? []) {
@@ -684,7 +692,7 @@ export function routerServer(store: TaskStore, config: { owner: string; token: s
             store.receiveChannelMessage(config.owner, qqChannel(config.qq),
               config.qq.workspace, event.message);
             flushStopNotifications();
-            metrics.observe('qq', performance.now() - started);
+            ownerMetrics(config.owner).observe('qq', performance.now() - started);
           }
           if (event.kind === 'attachment' && config.readQQAttachment) {
             const read = config.readQQAttachment;
@@ -705,7 +713,7 @@ export function routerServer(store: TaskStore, config: { owner: string; token: s
           const channel = feishuChannel(config.feishu);
           store.receiveChannelMessage(config.owner, channel, config.feishu.workspace, event);
           flushStopNotifications();
-          metrics.observe('feishu', performance.now() - started);
+          ownerMetrics(config.owner).observe('feishu', performance.now() - started);
         }
         if (event.kind === 'attachment' && config.readFeishuAttachment) {
           const read = config.readFeishuAttachment;
@@ -831,7 +839,7 @@ export function routerServer(store: TaskStore, config: { owner: string; token: s
         return;
       }
       if (url.pathname === '/v1/admin/metrics' && request.method === 'GET') {
-        reply(response, 200, { ...metrics.snapshot(), ...store.metrics(owner, Date.now()) });
+        reply(response, 200, { ...ownerMetrics(owner).snapshot(), ...store.metrics(owner, Date.now()) });
         return;
       }
       if (url.pathname === '/v1/pairings' && request.method === 'POST') {
@@ -1095,9 +1103,10 @@ export function routerServer(store: TaskStore, config: { owner: string; token: s
           reply(response, 200, { kind: 'reply', text: tasks.length ? tasks.map(task =>
             `${displayTaskStatus(task.status, status[1] === '状态')} · ${task.goal.replace(/\s+/g, ' ')}`
           ).join('\n') : status[1] === '状态' ? '没有找到匹配的任务。' : 'No matching tasks.' });
-          metrics.route('deterministic');
+          ownerMetrics(owner).route('deterministic');
           return;
         }
+        const metrics = ownerMetrics(owner);
         let decision = store.routingDecision(owner, key, input);
         if (decision) metrics.route('replayed');
         else {
@@ -1122,7 +1131,7 @@ export function routerServer(store: TaskStore, config: { owner: string; token: s
                   return tasks;
                 },
                 ...(evidence.length ? { personalMemory: evidence.map(item => item.body) } : {}),
-              }, AbortSignal.timeout(15_000));
+              }, AbortSignal.timeout(15_000), usage => metrics.recordModelUsage(usage));
             } catch {
               metrics.route('modelErrors');
               throw new RequestError(503, 'Blazar could not make a routing decision. Please retry.');
@@ -1208,7 +1217,7 @@ export function routerServer(store: TaskStore, config: { owner: string; token: s
           }
           const task = store.create(owner, 'desktop-api', key, workspace, goal, desktopDevice, memoryInputs,
             appEvidence, attachments, copiedFromTask);
-          metrics.observe('event', performance.now() - started);
+          ownerMetrics(owner).observe('event', performance.now() - started);
           reply(response, 202, taskResponse(task));
           return;
         }

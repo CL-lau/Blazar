@@ -13,7 +13,8 @@ function providerStream(text: string) {
     { type: 'response.output_item.added', output_index: 0, item: { ...item, content: [] } },
     { type: 'response.output_text.delta', output_index: 0, delta: text },
     { type: 'response.output_item.done', output_index: 0, item },
-    { type: 'response.completed', response: { id: 'resp_fixture', status: 'completed', output: [item] } },
+    { type: 'response.completed', response: { id: 'resp_fixture', status: 'completed', output: [item],
+      usage: { input_tokens: 12, input_tokens_details: { cached_tokens: 2 }, output_tokens: 4, total_tokens: 16 } } },
   ];
   return new Response(events.map(event => 'event: ' + event.type + '\ndata: ' + JSON.stringify(event) + '\n\n').join(''), {
     headers: { 'Content-Type': 'text/event-stream' },
@@ -29,7 +30,8 @@ function lookupStream() {
     { type: 'response.created', response: { id: 'resp_lookup' } },
     { type: 'response.output_item.added', output_index: 0, item: { ...call, arguments: '' } },
     { type: 'response.output_item.done', output_index: 0, item: call },
-    { type: 'response.completed', response: { id: 'resp_lookup', status: 'completed', output: [call] } },
+    { type: 'response.completed', response: { id: 'resp_lookup', status: 'completed', output: [call],
+      usage: { input_tokens: 9, output_tokens: 3, total_tokens: 12 } } },
   ];
   return new Response(events.map(event => 'event: ' + event.type + '\ndata: ' + JSON.stringify(event) + '\n\n').join(''), {
     headers: { 'Content-Type': 'text/event-stream' },
@@ -63,7 +65,9 @@ test('Pi Core looks up task status without receiving results from other owners o
     workspace: 'project', text: 'What is the status of the decision?', recent: [],
     findTasks: (query: string) => store.findRouterTasks('local', 'project', query),
   };
-  const answer = await route(input, AbortSignal.timeout(3_000));
+  const usage: number[] = [];
+  const answer = await route(input, AbortSignal.timeout(3_000), sample => usage.push(sample.totalTokens));
+  assert.deepEqual(usage, [12, 16]);
   assert.deepEqual(answer, { kind: 'reply', text: 'The task is queued.' });
   assert.equal(requests, 2);
   requests = 0;
