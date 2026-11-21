@@ -1,5 +1,6 @@
 import { jsonBody, jsonObject, reply } from './transport/json.ts';
 import { handleMemory } from './transport/memory-routes.ts';
+import { StaleRoutingEvidence } from './domain/idempotency.ts';
 import { deviceOperation } from './application/device-operation.ts';
 import { workerMemoryAvailable } from './application/task-memory.ts';
 import { RequestError, requiredText } from './protocol/request.ts';
@@ -693,7 +694,7 @@ export function routerServer(store: TaskStore, config: { owner: string; token: s
         reply(response, error.status, { error: error.message });
       } else if (error instanceof InvalidWorkflow) {
         reply(response, 400, { error: error.message });
-      } else if (error instanceof IdempotencyConflict) {
+      } else if (error instanceof IdempotencyConflict || error instanceof StaleRoutingEvidence) {
         reply(response, 409, { error: error.message });
       } else {
         reply(response, 500, { error: 'Internal server error' });

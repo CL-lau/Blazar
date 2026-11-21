@@ -67,13 +67,13 @@ export function createConversationRouter(store: ConversationTasks, config: Conve
       } else {
         const route = async () => {
           let decision: Decision;
+          const evidenceVersions = new Map<string, number>();
           if (input.text.startsWith('/preview ') || input.text.startsWith('/observe ') || input.text.startsWith('/click ')) {
             decision = { kind: 'create_task' };
             metrics.route('deterministic');
           }
           else if (!config.harness) throw new ConversationError(503, 'Blazar has no Router model configured');
           else {
-            const evidenceVersions = new Map<string, number>();
             const findOne = (query: string) => {
               const exact = /^[a-f0-9-]{36}$/.test(query);
               const candidates = exact ? [store.get(owner, query)].filter(task => task?.workspace === input.workspace)
@@ -94,8 +94,12 @@ export function createConversationRouter(store: ConversationTasks, config: Conve
             modelRoutesByCaller.set(modelScope, callerRoutes + 1);
             metrics.route('model');
             try {
+              const recent = store.recentConversation(owner, input.workspace, caller).map(({ taskEvidence, ...turn }) => {
+                for (const [taskId, version] of taskEvidence ?? []) evidenceVersions.set(taskId, version);
+                return turn;
+              });
               decision = await config.harness({
-                ...input, recent: store.recentConversation(owner, input.workspace, caller),
+                ...input, recent,
                 findTasks: query => {
                   const tasks = store.findRouterTasks(owner, input.workspace, query).filter(task => canReadTask(task.id));
                   for (const task of tasks) foundVersions.set(task.id, task.version);
@@ -111,6 +115,8 @@ export function createConversationRouter(store: ConversationTasks, config: Conve
                   const task = candidate && store.get(owner, candidate.id);
                   if (!task || task.status !== 'succeeded' || !canReadTask(task.id) ||
                       store.appEvidence(task.id) || store.personalEvidence(task.id).length) return undefined;
+                  const priorVersion = evidenceVersions.get(task.id);
+                  if (priorVersion !== undefined && priorVersion !== task.version) return undefined;
                   evidenceVersions.set(task.id, task.version);
                   return { taskId: task.id, version: task.version, result: task.result?.slice(0, 1200).toWellFormed() ?? null,
                     artifact: store.latestTaskText(task.id, task.version) };
@@ -172,7 +178,7 @@ export function createConversationRouter(store: ConversationTasks, config: Conve
               /^\/(observe|click) /.test(decision.goal)) {
             throw new ConversationError(400, 'Application observation requires an explicit command');
           }
-          return store.persistRoutingDecision(owner, caller, key, input, decision);
+          return store.persistRoutingDecision(owner, caller, key, input, decision, evidenceVersions);
         };
         const routed = route();
         pendingRoutes.set(pendingKey, { fingerprint, decision: routed });

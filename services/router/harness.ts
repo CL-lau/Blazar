@@ -9,7 +9,7 @@ export type Decision = { kind: 'reply' | 'clarify'; text: string } | { kind: 'cr
   | { kind: 'propose_workflow'; text: string; steps: WorkflowStep[] }
   | { kind: 'append_task'; text: string; taskId: string; instruction: string; expectedVersion?: number };
 export type RouteRequest = { workspace: string; text: string; usePersonalMemory?: true };
-export type ConversationTurn = { text: string; decision: Decision };
+export type ConversationTurn = { text: string; decision: Decision; taskEvidence?: [string, number][] };
 type RouterTaskSummary = { id: string; goal: string; status: string; version: number };
 export type RouterHarness = (input: RouteRequest & {
   recent: ConversationTurn[];

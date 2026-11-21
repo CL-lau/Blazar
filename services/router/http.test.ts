@@ -943,4 +943,6 @@ test('Router decisions can consume versioned text results without crossing works
   });
   assert.deepEqual(await (await ask('What was visible?')).json(), { kind: 'reply', text: 'A draft is visible.' });
   assert.equal((await ask('Change during routing')).status, 409);
+  assert.equal((await ask('What was visible?')).status, 409);
+  assert.deepEqual(store.recentConversation('owner', 'project'), []);
 });

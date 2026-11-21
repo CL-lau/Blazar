@@ -3,7 +3,7 @@ import { DispatchRepository } from './persistence/dispatch-repository.ts';
 import { DeviceRepository } from './persistence/device-repository.ts';
 import { TaskReadRepository } from './persistence/task-read-repository.ts';
 import { initializeTaskSchema } from './persistence/task-schema.ts';
-import { IdempotencyConflict } from './domain/idempotency.ts';
+import { IdempotencyConflict, StaleRoutingEvidence } from './domain/idempotency.ts';
 import { MobileRepository } from './persistence/mobile-repository.ts';
 import { orderWorkflow, workflowActionGoal } from './domain/workflow.ts';
 import type { Decision, RouteRequest } from './harness.ts';
@@ -202,12 +202,21 @@ export class TaskStore {
     const row = this.db.prepare('SELECT request,decision FROM routing_decision WHERE owner=? AND caller=? AND key=?').get(owner, caller, key);
     if (!row) return undefined;
     if (row.request !== fingerprint) throw new IdempotencyConflict();
+    if (this.db.prepare(`SELECT 1 FROM routing_task_evidence e LEFT JOIN task t ON t.id=e.task_id
+      WHERE e.owner=? AND e.caller=? AND e.request_key=?
+      AND (t.status IS NOT 'succeeded' OR t.version IS NOT e.version)`).get(owner, caller, key)) {
+      throw new StaleRoutingEvidence();
+    }
     return JSON.parse(String(row.decision)) as Decision;
   }
 
-  persistRoutingDecision(owner: string, caller: string, key: string, request: RouteRequest, decision: Decision) {
+  persistRoutingDecision(owner: string, caller: string, key: string, request: RouteRequest, decision: Decision, taskEvidence: ReadonlyMap<string, number> = new Map()) {
     return this.transaction(() => {
       const saved = this.routingDecision(owner, key, request, decision, caller)!;
+      for (const [taskId, version] of taskEvidence) {
+        this.db.prepare('INSERT OR IGNORE INTO routing_task_evidence VALUES(?,?,?,?,?)')
+          .run(owner, caller, key, taskId, version);
+      }
       if (saved.kind === 'create_task') {
         this.createTask(owner, caller === 'admin' ? 'conversation' : 'conversation:' + caller,
           key, request.workspace, saved.goal ?? request.text);

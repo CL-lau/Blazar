@@ -299,6 +299,10 @@ export function initializeTaskSchema(db: DatabaseSync, runLimitMs: number) {
       owner TEXT NOT NULL, caller TEXT NOT NULL, key TEXT NOT NULL, request TEXT NOT NULL, decision TEXT NOT NULL,
       PRIMARY KEY(owner,caller,key)
     );
+    CREATE TABLE IF NOT EXISTS routing_task_evidence (
+      owner TEXT NOT NULL, caller TEXT NOT NULL, request_key TEXT NOT NULL, task_id TEXT NOT NULL, version INTEGER NOT NULL,
+      PRIMARY KEY(owner,caller,request_key,task_id)
+    );
     CREATE TABLE IF NOT EXISTS command_receipt (
       owner TEXT NOT NULL, caller TEXT NOT NULL, key TEXT NOT NULL, fingerprint TEXT NOT NULL,
       response TEXT NOT NULL, PRIMARY KEY(owner,caller,key)

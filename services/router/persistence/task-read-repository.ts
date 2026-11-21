@@ -120,8 +120,14 @@ export class TaskReadRepository {
   }
 
   recentConversation(owner: string, workspace: string, caller = 'admin'): ConversationTurn[] {
-    return this.db.prepare(`SELECT json_extract(request,'$[1]') AS text,decision FROM routing_decision
-      WHERE owner=? AND caller=? AND json_extract(request,'$[0]')=? AND json_array_length(request)=2
+    return this.db.prepare(`SELECT json_extract(request,'$[1]') AS text,decision,(
+        SELECT json_group_array(json_array(e.task_id,e.version)) FROM routing_task_evidence e
+        WHERE e.owner=r.owner AND e.caller=r.caller AND e.request_key=r.key
+      ) AS evidence FROM routing_decision r
+      WHERE r.owner=? AND r.caller=? AND json_extract(request,'$[0]')=? AND json_array_length(request)=2
+      AND NOT EXISTS(SELECT 1 FROM routing_task_evidence e LEFT JOIN task t ON t.id=e.task_id
+        WHERE e.owner=r.owner AND e.caller=r.caller AND e.request_key=r.key
+        AND (t.status IS NOT 'succeeded' OR t.version IS NOT e.version))
       AND NOT (
         json_extract(request,'$[1]') IN ('/status','/状态')
         OR json_extract(request,'$[1]') GLOB '/status *' OR json_extract(request,'$[1]') GLOB '/状态 *'
@@ -136,7 +142,8 @@ export class TaskReadRepository {
           decision.instruction = decision.instruction.slice(0, 2_000);
         } else if (decision.kind !== 'create_task') decision.text = decision.text.slice(0, 2_000);
         else if (decision.goal) decision.goal = decision.goal.slice(0, 2_000);
-        return { text: String(row.text).slice(0, 2_000), decision };
+        const taskEvidence = JSON.parse(String(row.evidence)) as [string, number][];
+        return { text: String(row.text).slice(0, 2_000), decision, ...(taskEvidence.length && { taskEvidence }) };
       });
   }
 }
