@@ -78,6 +78,10 @@ export class TaskStore {
         token TEXT NOT NULL, expires INTEGER NOT NULL, PRIMARY KEY(owner,channel,chat)
       );
       CREATE INDEX IF NOT EXISTS weixin_reply_context_expiry ON weixin_reply_context(expires);
+      CREATE TABLE IF NOT EXISTS channel_cancel_reply (
+        task_id TEXT PRIMARY KEY REFERENCES task(id) ON DELETE CASCADE,
+        channel TEXT NOT NULL, chat TEXT NOT NULL, thread TEXT NOT NULL, message_id TEXT NOT NULL
+      );
       CREATE TABLE IF NOT EXISTS channel_reply_window (
         channel TEXT NOT NULL, chat TEXT NOT NULL, message_id TEXT NOT NULL, expires INTEGER NOT NULL,
         PRIMARY KEY(channel,chat,message_id)
@@ -440,6 +444,11 @@ export class TaskStore {
     };
     const notice = notices[status];
     if (!notice) return;
+    if (status === 'cancelled') {
+      const target = this.db.prepare(`DELETE FROM channel_cancel_reply WHERE task_id=?
+        RETURNING channel,chat,thread,message_id AS messageId`).get(taskId) as ChannelReply | undefined;
+      reply ??= target;
+    }
     const routes = this.db.prepare('SELECT channel,chat,thread FROM channel_thread WHERE task_id=?').all(taskId);
     const now = Date.now();
     this.queuePush(taskId, 'task_update', now);
@@ -817,12 +826,13 @@ export class TaskStore {
           .run(owner, channel, message.chat, weixinContext, Date.now() + 10 * 60_000);
       }
       const key = [owner, channel, message.chat, message.thread] as const;
+      const cancel = message.text === '/cancel';
       const statusQuery = message.text === '/status' || message.text === '/状态';
       const pause = message.text === '/pause' || message.text === '/暂停';
       const resume = message.text === '/resume' || message.text === '/继续';
       const retry = message.text === '/retry' || message.text === '/重试';
       const review = /^\/(accept|reject|验收|退回)(?:\s+(.*))?$/.exec(message.text);
-      if ((message.text === '/cancel' || statusQuery || pause || resume || retry || review) && message.root) return;
+      if ((cancel || statusQuery || pause || resume || retry || review) && message.root) return;
       const linking = message.text === '/link' || message.text.startsWith('/link ');
       if (linking || message.root) {
         let taskId: string;
@@ -861,7 +871,7 @@ export class TaskStore {
         const refs = this.appEvidence(taskId);
         return !refs || this.canUseChannelAppEvidence?.(owner, workspace, refs) === true;
       };
-      if (statusQuery || pause || resume || retry || review) {
+      if (cancel || statusQuery || pause || resume || retry || review) {
         const previous = String(link.status);
         if (pause) this.pauseTask(taskId, previous, { channel });
         if ((resume || retry) && canContinue()) this.requeueTask(taskId, previous, retry ? 'retry' : 'resume', { channel });
@@ -874,6 +884,7 @@ export class TaskStore {
             .run(channel, message.chat, message.id, message.replyExpires);
           reply = { channel, chat: message.chat, thread, messageId: message.id };
         }
+        if (cancel && this.cancelTask(taskId, previous, { channel }, reply)) return;
         if (review && /^[1-9]\d*$/.test(review[2] ?? '') && Number(review[2]) === current.version) {
           const accepted = review[1] === 'accept' || review[1] === '验收';
           if ((!accepted || canContinue()) && this.reviewResult(current, accepted, { channel }, reply)) return;
@@ -885,10 +896,6 @@ export class TaskStore {
         const text = chinese ? `Blazar 任务${state}。版本 ${current.version}。任务 ID ${link.id}`
           : `Blazar task status: ${state}. Version: ${current.version}. Task: ${link.id}`;
         this.queueChannelNotice(owner, channel, message.chat, thread, replyId, text, now);
-        return;
-      }
-      if (message.text === '/cancel') {
-        this.cancelTask(String(link.id), String(link.status), { channel });
         return;
       }
       if (['cancelled', 'cancelling', 'paused', 'pausing'].includes(String(link.status)) || !canContinue()) return;
@@ -933,11 +940,15 @@ export class TaskStore {
     return true;
   }
 
-  private cancelTask(taskId: string, priorStatus: string, metadata: Record<string, string> = {}) {
+  private cancelTask(taskId: string, priorStatus: string, metadata: Record<string, string> = {}, reply?: ChannelReply) {
     if (!['queued', 'running', 'waiting_user', 'waiting_dependency', 'waiting_device', 'pausing', 'paused', 'waiting_review'].includes(priorStatus)) {
       return false;
     }
     const liveRun = this.db.prepare('SELECT 1 FROM run WHERE taskId=?').get(taskId);
+    if (reply) this.db.prepare(`INSERT INTO channel_cancel_reply VALUES(?,?,?,?,?)
+      ON CONFLICT(task_id) DO UPDATE SET channel=excluded.channel,chat=excluded.chat,
+        thread=excluded.thread,message_id=excluded.message_id`)
+      .run(taskId, reply.channel, reply.chat, reply.thread, reply.messageId);
     const status = liveRun ? 'cancelling' : 'cancelled';
     this.db.prepare('UPDATE task SET status=?,version=version+1 WHERE id=?').run(status, taskId);
     this.event(taskId, 'task.cancel_requested', { status, ...metadata });

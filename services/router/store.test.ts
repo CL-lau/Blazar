@@ -858,3 +858,23 @@ test('IM review result uses the fresh passive reply window after the linked wind
   assert.doesNotMatch(notice?.text ?? '', /Private draft/);
   assert.equal(db.leasePassiveNotice('qq', Date.now(), ['chat']), undefined);
 });
+
+test('IM cancellation confirmation uses the stop request reply window after device acknowledgement', t => {
+  const db = new TaskStore(':memory:');
+  t.after(() => db.close());
+  const now = Date.now();
+  db.receiveChannelMessage('owner', 'qq', 'project', {
+    id: 'root', chat: 'chat', thread: 'root', root: true, text: 'Review notes', replyExpires: now - 1,
+  });
+  const { task, run } = db.claim('owner', 'project', 'device', now, 45_000)!;
+  db.receiveChannelMessage('owner', 'qq', 'project', {
+    id: 'cancel', chat: 'chat', thread: 'root', root: false, text: '/cancel', replyExpires: now + 60_000,
+  });
+  assert.equal(db.get('owner', task.id)?.status, 'cancelling');
+  assert.equal(db.leasePassiveNotice('qq', Date.now(), ['chat']), undefined);
+  assert.ok(db.acknowledgeStop(run.id, run.device, now + 1));
+  const notice = db.leasePassiveNotice('qq', Date.now(), ['chat']);
+  assert.equal(notice?.messageId, 'cancel');
+  assert.match(notice?.text ?? '', /cancelled/);
+  assert.equal(db.leasePassiveNotice('qq', Date.now(), ['chat']), undefined);
+});
