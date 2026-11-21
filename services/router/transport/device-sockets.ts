@@ -63,6 +63,9 @@ export function createDeviceSocketTransport(store: SocketDevices) {
           const peers = workSubscribers.get(scope) ?? new Map<WebSocket, string>();
           peers.set(connection, token);
           workSubscribers.set(scope, peers);
+          if (request.headers['x-blazar-device-queue-ack'] === '1') {
+            connection.send(JSON.stringify({ type: 'queue.ready' }));
+          }
           connection.once('close', () => {
             peers.delete(connection);
             if (!peers.size) workSubscribers.delete(scope);

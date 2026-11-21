@@ -12,6 +12,7 @@ export class DeviceSocket {
   private stopListeners = new Map<string, () => void>();
   private pendingStops = new Set<string>();
   private workAvailable = false;
+  private queueReady = false;
   private wake?: () => void;
 
   constructor(base: URL, token: string) {
@@ -24,7 +25,9 @@ export class DeviceSocket {
     if (this.socket?.readyState === WebSocket.OPEN) return Promise.resolve(this.socket);
     if (this.opening) return this.opening;
     const socket = new WebSocket(this.endpoint, {
-      headers: { Authorization: `Bearer ${this.token}`, 'X-Blazar-Device-Stop-Push': '1', 'X-Blazar-Device-Queue-Push': '1' }, handshakeTimeout: 4_000,
+      headers: { Authorization: `Bearer ${this.token}`, 'X-Blazar-Device-Stop-Push': '1',
+        'X-Blazar-Device-Queue-Push': '1', 'X-Blazar-Device-Queue-Ack': '1' },
+      handshakeTimeout: 4_000,
       followRedirects: false, maxPayload: 8 * 1024 * 1024, perMessageDeflate: false,
     });
     this.socket = socket;
@@ -40,6 +43,9 @@ export class DeviceSocket {
       if (this.socket === socket) {
         this.socket = undefined;
         this.opening = undefined;
+        this.queueReady = false;
+        this.workAvailable = false;
+        this.wake?.();
       }
       for (const [id, pending] of this.pending) {
         if (pending.socket !== socket) continue;
@@ -51,6 +57,10 @@ export class DeviceSocket {
       if (this.socket !== socket) return;
       try {
         const reply = JSON.parse(data.toString());
+        if (reply.type === 'queue.ready') {
+          this.queueReady = true;
+          return;
+        }
         if (reply.type === 'queue.changed') {
           this.workAvailable = true;
           this.wake?.();
@@ -103,7 +113,7 @@ export class DeviceSocket {
     }
   }
 
-  async waitForWork(signal: AbortSignal, milliseconds = 1_000) {
+  async waitForWork(signal: AbortSignal, milliseconds = this.queueReady ? 5_000 : 1_000) {
     signal.throwIfAborted();
     if (!this.workAvailable) {
       const ready = Promise.withResolvers<void>();

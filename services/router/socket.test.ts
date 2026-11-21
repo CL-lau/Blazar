@@ -4,6 +4,7 @@ import { once } from 'node:events';
 import test from 'node:test';
 import { DeviceSocket } from '../device/socket.ts';
 import { routerServer } from './http.ts';
+import { WebSocket } from 'ws';
 import { TaskStore } from './store.ts';
 
 test('device WebSocket reconnects under the existing lease and enforces revocation', async t => {
@@ -181,7 +182,12 @@ test('an idle device wakes when its workspace receives a task', async t => {
   const base = new URL('http://127.0.0.1:' + address.port);
   const matching = new DeviceSocket(base, store.registerDevice('owner', 'Matching', 'work').token);
   const other = new DeviceSocket(base, store.registerDevice('owner', 'Other workspace', 'other').token);
+  const legacy = new WebSocket(base.href.replace(/^http:/, 'ws:') + 'v1/devices/connect', {
+    headers: { Authorization: 'Bearer ' + store.registerDevice('owner', 'Legacy', 'other').token,
+      'X-Blazar-Device-Queue-Push': '1' },
+  });
   t.after(async () => {
+    legacy.terminate();
     matching.close();
     other.close();
     server.closeDeviceSockets();
@@ -189,6 +195,11 @@ test('an idle device wakes when its workspace receives a task', async t => {
     store.close();
   });
   const signal = AbortSignal.timeout(3_000);
+  const legacyReply = once(legacy, 'message', { signal });
+  await once(legacy, 'open', { signal });
+  legacy.send(JSON.stringify({ id: 1, path: 'claim', body: { capability: 'document.preview' } }));
+  const first = JSON.parse(String((await legacyReply)[0]));
+  assert.equal(first.id, 1);
   for (const connection of [matching, other]) {
     const response = await connection.request('claim', { capability: 'document.preview' }, signal);
     assert.deepEqual(await response.json(), { assignment: null });
@@ -204,6 +215,11 @@ test('an idle device wakes when its workspace receives a task', async t => {
     const claim = await matching.request('claim', { capability: 'document.preview' }, signal);
     assert.equal((await claim.json()).assignment.task.id, task.id);
     assert.equal(unrelatedWoke, false);
+    server.closeDeviceSockets();
+    await Promise.race([unrelated, new Promise<never>((_, reject) => {
+      signal.addEventListener('abort', () => reject(signal.reason), { once: true });
+    })]);
+    assert.equal(unrelatedWoke, true);
   } finally {
     cancelled.abort();
     await unrelated;
