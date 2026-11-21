@@ -1,15 +1,16 @@
 import { sqliteTransaction } from '../../packages/storage/sqlite.ts';
+import { RunInputRepository } from './persistence/run-input-repository.ts';
 import { DispatchRepository } from './persistence/dispatch-repository.ts';
 import { DeviceRepository } from './persistence/device-repository.ts';
 import { TaskReadRepository } from './persistence/task-read-repository.ts';
 import { initializeTaskSchema } from './persistence/task-schema.ts';
 import { IdempotencyConflict, StaleRoutingEvidence } from './domain/idempotency.ts';
 import { MobileRepository } from './persistence/mobile-repository.ts';
-import { orderWorkflow, resolveWorkflowWindow, workflowActionGoal, workflowSteps } from './domain/workflow.ts';
+import { orderWorkflow, workflowActionGoal, workflowSteps } from './domain/workflow.ts';
 import type { Decision, RouteRequest } from './harness.ts';
 import { createHash, randomBytes, randomUUID } from 'node:crypto';
 import { DatabaseSync } from 'node:sqlite';
-import type { PredecessorInput, Run, RunOutcome, Task, TaskAttachment, TaskMemoryInput, WorkerConfiguration, WorkflowAction, WorkflowStep } from '../../packages/protocol/task.ts';
+import type { Run, RunOutcome, Task, TaskAttachment, TaskMemoryInput, WorkerConfiguration, WorkflowStep } from '../../packages/protocol/task.ts';
 import { displayTaskStatus, windowImageLifetimeMs } from '../../packages/protocol/task.ts';
 
 const runLimitMs = 10 * 60_000;
@@ -28,6 +29,7 @@ export class TaskStore {
   private readonly mobileRepository: MobileRepository;
   private readonly dispatch: DispatchRepository;
   private readonly taskReads: TaskReadRepository;
+  private readonly runInputs: RunInputRepository;
   private readonly canUseChannelAppEvidence?: (owner: string, workspace: string, refs: AppEvidence['refs']) => boolean;
 
   constructor(path: string, canUseChannelAppEvidence?: TaskStore['canUseChannelAppEvidence']) {
@@ -36,6 +38,7 @@ export class TaskStore {
     this.deviceRepository = new DeviceRepository(this.db);
     this.mobileRepository = new MobileRepository(this.db);
     this.taskReads = new TaskReadRepository(this.db);
+    this.runInputs = new RunInputRepository(this.db);
     this.dispatch = new DispatchRepository(this.db);
     try {
       initializeTaskSchema(this.db, runLimitMs);
@@ -1083,24 +1086,17 @@ export class TaskStore {
       });
       if (!selection) return undefined;
       if (selection.kind === 'replay') {
-        return { ...(selection.assignment as ReturnType<TaskStore['assignment']>), replayed: true };
+        return { ...(selection.assignment as ReturnType<RunInputRepository['assignment']>), replayed: true };
       }
       const { task, fingerprint, workerLimitSeconds, requireReadOnly } = selection;
-      const action = /^\/(observe|click) /.test(task.goal) ? this.workflowDesktopAction(task.id) : undefined;
-      let resolvedGoal: string | undefined;
-      if (action && 'windowFrom' in action) {
-        const input = this.db.prepare(`SELECT p.result FROM workflow_dependency d JOIN task p ON p.id=d.predecessor
-          JOIN workflow_step source ON source.task_id=p.id WHERE d.task_id=? AND source.step_key=? AND p.status='succeeded'`)
-          .get(task.id, action.windowFrom.step);
-        const target = typeof input?.result === 'string' && resolveWorkflowWindow(input.result, action.windowFrom.title);
-        if (!target) {
-          this.db.prepare("UPDATE task SET status='waiting_user',result=? WHERE id=?")
-            .run('The observation did not identify one accessible window with the requested title.', task.id);
-          this.event(task.id, 'workflow.window_unresolved', { status: 'waiting_user' });
-          if (requestId) this.dispatch.saveReceipt(device, requestId, fingerprint, null, now);
-          return undefined;
-        }
-        resolvedGoal = workflowActionGoal(action, target);
+      const action = this.runInputs.desktopAction(task);
+      const resolvedGoal = this.runInputs.resolveDesktopGoal(task, action);
+      if (resolvedGoal === undefined) {
+        this.db.prepare("UPDATE task SET status='waiting_user',result=? WHERE id=?")
+          .run('The observation did not identify one accessible window with the requested title.', task.id);
+        this.event(task.id, 'workflow.window_unresolved', { status: 'waiting_user' });
+        if (requestId) this.dispatch.saveReceipt(device, requestId, fingerprint, null, now);
+        return undefined;
       }
       const workerTask = !/^\/(observe|click|preview) /.test(task.goal);
       const workspaceLimitMs = workerTask && workerLimitSeconds !== undefined ? workerLimitSeconds * 1_000 : runLimitMs;
@@ -1111,7 +1107,7 @@ export class TaskStore {
       this.db.prepare('INSERT INTO run_deadline VALUES(?,?)').run(run.id, now + limitMs);
       this.db.prepare('INSERT INTO run_activity(run_id,last_output) VALUES(?,?)').run(run.id, now);
       this.db.prepare("UPDATE task SET status='running' WHERE id=?").run(task.id);
-      const predecessors = this.predecessorInputs(task.id);
+      const predecessors = this.runInputs.predecessorInputs(task.id);
       if (predecessors.length) {
         this.db.prepare(`INSERT INTO run_dependency(run_id,predecessor,version)
           SELECT ?,p.id,p.version FROM workflow_dependency d JOIN task p ON p.id=d.predecessor
@@ -1131,82 +1127,15 @@ export class TaskStore {
         })),
       });
       this.dispatch.markDispatched(owner, workspace, goalPrefix, excludingPrefix, task.origin_channel, this.eventCursor());
-      const assignment = this.assignment(owner, run, predecessors, workerTask && requireReadOnly);
-      if (resolvedGoal) assignment.task = { ...assignment.task, goal: resolvedGoal };
+      const assignedTask = { ...this.get(owner, run.taskId)!, goal: resolvedGoal };
+      const assignment = this.runInputs.assignment(assignedTask, run, predecessors, workerTask && requireReadOnly, action);
       if (requestId) this.dispatch.saveReceipt(device, requestId, fingerprint, JSON.stringify(assignment), now);
       return { ...assignment, replayed: false };
     });
   }
 
-  private workflowDesktopAction(taskId: string) {
-    const row = this.db.prepare(`SELECT json_extract(data,'$.action') AS action FROM event
-      WHERE taskId=? AND type='task.created' ORDER BY seq LIMIT 1`).get(taskId);
-    return typeof row?.action === 'string' ? JSON.parse(row.action) as WorkflowAction : undefined;
-  }
-
-  private predecessorInputs(taskId: string): PredecessorInput[] {
-    const rows = this.db.prepare(`SELECT p.id AS taskId,p.version,p.result,a.id AS artifactId,a.name,a.sha256,a.size,a.content
-      FROM workflow_dependency d JOIN task p ON p.id=d.predecessor
-      LEFT JOIN artifact a ON a.rowid=(
-        SELECT a.rowid FROM artifact a JOIN artifact_version v ON v.artifact_id=a.id
-        WHERE a.taskId=p.id AND v.task_version=p.version
-          AND NOT EXISTS(SELECT 1 FROM artifact_image image WHERE image.artifact_id=a.id)
-          ORDER BY a.rowid DESC LIMIT 1
-      )
-      WHERE d.task_id=? ORDER BY p.rowid`).all(taskId);
-    let budget = 16_000;
-    return rows.map(row => {
-      const input: PredecessorInput = {
-        taskId: String(row.taskId), version: Number(row.version), result: row.result === null ? null : String(row.result),
-      };
-      if (!row.artifactId || !(row.content instanceof Uint8Array)) return input;
-      const text = Buffer.from(row.content).toString('utf8');
-      const excerpt = text.slice(0, Math.min(2000, budget)).toWellFormed();
-      budget -= excerpt.length;
-      input.artifact = {
-        id: String(row.artifactId), name: String(row.name), sha256: String(row.sha256),
-        excerpt, truncated: excerpt.length < text.length, size: Number(row.size),
-      };
-      return input;
-    });
-  }
-
-  private assignment(owner: string, run: Run, predecessors: PredecessorInput[], requireReadOnly: boolean) {
-    const instructions = this.db.prepare(`SELECT data FROM event WHERE taskId=?
-      AND type='task.instruction_added' ORDER BY seq`).all(run.taskId)
-      .map(row => JSON.parse(String(row.data)).text as string);
-    const acceptanceCriteria = this.db.prepare('SELECT criterion FROM task_criterion WHERE task_id=? ORDER BY position')
-      .all(run.taskId).map(row => String(row.criterion));
-    const memoryInputs = this.db.prepare(`SELECT memory_id AS id,version,'' AS body FROM task_memory_input WHERE task_id=? ORDER BY position`)
-      .all(run.taskId) as unknown as TaskMemoryInput[];
-    const attachments = this.db.prepare('SELECT name,text FROM task_attachment WHERE task_id=? ORDER BY position')
-      .all(run.taskId) as unknown as TaskAttachment[];
-    const task = this.get(owner, run.taskId)!;
-    const action = /^\/(observe|click) /.test(task.goal) ? this.workflowDesktopAction(task.id) : undefined;
-    const expected = action && 'expectedText' in action ? action.expectedText : undefined;
-    const observationWaitSeconds = action?.kind === 'desktop.observe' && action.mode === 'window' ? action.waitSeconds : undefined;
-    const required = this.db.prepare('SELECT capability FROM task_worker_capability WHERE task_id=?').get(run.taskId)?.capability;
-    return { run, task, instructions, predecessors, acceptanceCriteria,
-      ...(required === 'full-input-artifacts' && { fullInputRequired: true }),
-      ...(required === 'git-patch-inputs' && { gitPatchInputsRequired: true }),
-      ...((required === 'read-only' || requireReadOnly) && { readOnlyRequired: true }),
-      ...(typeof expected === 'string' && (task.goal.startsWith('/click ')
-        ? { clickExpectedText: expected } : { observationExpectedText: expected })),
-      ...(observationWaitSeconds !== undefined && { observationWaitSeconds }),
-      ...(attachments.length && { attachments }),
-      ...(memoryInputs.length && { memoryInputs }),
-    };
-  }
-
-  runInputArtifact(runId: string, device: string, artifactId: string, now: number) {
-    return this.db.prepare(`SELECT a.id,a.name,a.sha256,a.content FROM run r JOIN task t ON t.id=r.taskId
-      JOIN run_dependency d ON d.run_id=r.id JOIN artifact a ON a.taskId=d.predecessor
-      JOIN artifact_version v ON v.artifact_id=a.id AND v.task_version=d.version
-      WHERE a.id=? AND NOT EXISTS(SELECT 1 FROM artifact_image image WHERE image.artifact_id=a.id)
-      AND r.id=? AND r.device=? AND r.expires>? AND t.status='running' AND r.version=t.version
-      AND NOT EXISTS(SELECT 1 FROM invalid_workflow_run i WHERE i.id=r.id)`)
-      .get(artifactId, runId, device, now) as
-      { id: string; name: string; sha256: string; content: Uint8Array } | undefined;
+  runInputArtifact(...args: Parameters<RunInputRepository['runInputArtifact']>) {
+    return this.runInputs.runInputArtifact(...args);
   }
 
   requestApproval(runId: string, device: string, summary: string, now: number) {
@@ -1421,7 +1350,7 @@ export class TaskStore {
       if (!row || (row.status === 'waiting_user' && !row.staleInputs)) return false;
       const taskId = String(row.taskId);
       const observing = String(row.goal).startsWith('/observe ');
-      const observation = observing ? this.workflowDesktopAction(taskId) : undefined;
+      const observation = observing ? this.runInputs.desktopAction({ id: taskId, goal: String(row.goal) }) : undefined;
       const visual = observation?.kind === 'desktop.observe' && observation.mode === 'visual';
       if (outcome.artifact?.mime && !visual && !/^\/observe [a-z0-9_-]{1,32} --window w-[0-9]{1,20} --instance [a-f0-9]{64} --visual$/.test(String(row.goal))) return false;
       if (row.status === 'cancelling' || row.status === 'pausing') {
