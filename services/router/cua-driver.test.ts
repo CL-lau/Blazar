@@ -1,12 +1,18 @@
+import { once } from 'node:events';
+import { setTimeout as delay } from 'node:timers/promises';
 import assert from 'node:assert/strict';
 import { mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
+import { DeviceClient } from '../device/client.ts';
+import { DeviceLedger } from '../device/ledger.ts';
+import { routerServer } from './http.ts';
+import { TaskStore } from './store.ts';
 import { cuaDesktop } from '../../packages/computer-use/cua.ts';
 import { clickApp, observeApp, observeWindowWithImage, setAppText } from '../../packages/computer-use/observe.ts';
 
-test('CUA scopes hybrid observations and approved clicks to the configured window', { skip: process.platform !== 'darwin' }, async t => {
+test('CUA verifies window-scoped edits before a workflow can advance', { skip: process.platform !== 'darwin' }, async t => {
   const root = realpathSync(mkdtempSync(join(tmpdir(), 'blazar-cua-')));
   t.after(() => rmSync(root, { recursive: true, force: true }));
   const executable = join(root, 'driver.cjs');
@@ -94,4 +100,77 @@ console.log('Human-readable output');
   }), 'Verified text in "Title".');
   assert.equal(readFileSync(join(root, 'edited'), 'utf8'), 'New title');
   assert.equal(readFileSync(join(root, 'ended'), 'utf8'), readFileSync(join(root, 'action-session'), 'utf8'));
+
+  rmSync(join(root, 'clicked'));
+  rmSync(join(root, 'approved'));
+  const store = new TaskStore(':memory:');
+  const ledger = new DeviceLedger(':memory:');
+  const device = store.registerDevice('owner', 'Mac fixture', 'project');
+  const phone = store.redeemPairing(store.createPairing('owner', Date.now()).code, 'Phone fixture', Date.now())!;
+  const server = routerServer(store, { owner: 'owner', token: 'admin' });
+  server.listen(0, '127.0.0.1');
+  await once(server, 'listening');
+  const address = server.address();
+  assert(address && typeof address !== 'string');
+  const base = new URL('http://127.0.0.1:' + address.port);
+  const client = new DeviceClient(base, device.token, root, ledger, undefined, config);
+  t.after(async () => {
+    client.close();
+    server.closeDeviceSockets();
+    await new Promise<void>(resolve => server.close(() => resolve()));
+    ledger.close();
+    store.close();
+  });
+  const live = AbortSignal.timeout(15_000);
+  const post = (path: string, token: string, key: string, data: object) => fetch(new URL(path, base), {
+    method: 'POST', signal: live,
+    headers: { Authorization: 'Bearer ' + token, 'Content-Type': 'application/json', 'Idempotency-Key': key },
+    body: JSON.stringify(data),
+  });
+  assert.equal(await client.runOnce(live), false);
+  const app = { alias: 'notes', deviceId: device.id };
+  const windowFrom = { step: 'windows', title: 'Draft' };
+  const workflow = await post('/v1/workflows', 'admin', 'text-workflow', {
+    workspace: 'project', steps: [
+      { key: 'windows', goal: 'Find the draft', needs: [], action: { ...app, kind: 'desktop.observe', mode: 'windows' } },
+      { key: 'edit', goal: 'Edit the title', needs: ['windows'], action: {
+        ...app, kind: 'desktop.write', field: 'Title', value: 'Workflow title', windowFrom,
+      } },
+      { key: 'save', goal: 'Save the draft', needs: ['windows', 'edit'], action: {
+        ...app, kind: 'desktop.click', button: 'Save', expectedText: 'Saved', windowFrom,
+      } },
+    ],
+  });
+  assert.equal(workflow.status, 202, await workflow.clone().text());
+  const { steps } = await workflow.json();
+  assert.equal(await client.runOnce(live), true);
+
+  async function runApproved(taskId: string, check: () => void) {
+    const run = client.runOnce(live);
+    void run.catch(() => {});
+    let approval;
+    while (!(approval = store.snapshot('owner').approvals.find(item => item.taskId === taskId))) {
+      live.throwIfAborted();
+      assert.notEqual(store.get('owner', taskId)?.status, 'failed');
+      await delay(20, undefined, { signal: live });
+    }
+    check();
+    const approved = await post('/v1/tasks/' + taskId + '/commands', phone.token, taskId, {
+      action: 'approve', expectedVersion: 1, approvalId: approval.id,
+    });
+    assert.equal(approved.status, 200);
+    assert.equal(await run, true);
+    assert.equal(store.get('owner', taskId)?.status, 'succeeded');
+  }
+
+  await runApproved(steps[1].taskId, () => {
+    assert.equal(readFileSync(join(root, 'edited'), 'utf8'), 'New title');
+    assert.equal(store.get('owner', steps[2].taskId)?.status, 'waiting_dependency');
+  });
+  assert.equal(readFileSync(join(root, 'edited'), 'utf8'), 'Workflow title');
+  await runApproved(steps[2].taskId, () => {
+    writeFileSync(join(root, 'approved'), '');
+  });
+  assert.equal(readFileSync(join(root, 'clicked'), 'utf8'), 'yes');
+
 });
