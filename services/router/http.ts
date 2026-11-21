@@ -174,7 +174,10 @@ async function handleMemory(
       throw new RequestError(400, 'Invalid source filter');
     }
     const selected = data.sources as string[];
-    const recall = () => store.recall(owner, workspace, query, selected).slice(0, 6);
+    if (data.includePersonal !== undefined && typeof data.includePersonal !== 'boolean') {
+      throw new RequestError(400, 'Invalid personal memory option');
+    }
+    const recall = () => store.recall(owner, workspace, query, selected, false, data.includePersonal !== false).slice(0, 6);
     const sources = recall();
     if (!sources.length) {
       reply(response, 200, { answer: null, sources: [] });

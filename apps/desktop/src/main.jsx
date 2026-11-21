@@ -19,6 +19,10 @@ function App() {
   const [goal, setGoal] = useState('');
   const [usePersonalMemory, setUsePersonalMemory] = useState(false);
   const [answer, setAnswer] = useState('');
+  const [memoryAnswer, setMemoryAnswer] = useState(null);
+  const [memoryQuery, setMemoryQuery] = useState('');
+  const [memoryAccounts, setMemoryAccounts] = useState([]);
+  const [memorySources, setMemorySources] = useState([]);
   const [plan, setPlan] = useState(null);
   const [instruction, setInstruction] = useState('');
   const [key, setKey] = useState(() => crypto.randomUUID());
@@ -63,6 +67,15 @@ function App() {
     return () => stop.abort();
   }, [connected]);
 
+  useEffect(() => {
+    if (!connected || settings !== 'tasks') return;
+    const stop = new AbortController();
+    callRouter(connected, '/app-connections', { signal: stop.signal })
+      .then(data => { if (!stop.signal.aborted) setMemoryAccounts(data.connections); })
+      .catch(() => {});
+    return () => stop.abort();
+  }, [connected, settings]);
+
   async function submit(action) {
     setBusy(true);
     setError('');
@@ -78,6 +91,9 @@ function App() {
   const artifacts = snapshot?.artifacts.filter(item => item.taskId === selected) ?? [];
   const criteria = snapshot?.criteria?.filter(item => item.taskId === selected) ?? [];
   const progress = snapshot?.progress?.find(item => item.taskId === selected);
+  const availableSources = memoryAccounts.filter(account =>
+    account.active && (!account.workspace || account.workspace === workspace.trim()));
+  const chosenSources = availableSources.filter(account => memorySources.includes(account.id));
   const api = (path, options) => callRouter(connected, path, options);
   const reload = () => refreshSnapshot(connected);
   const command = (action, extra = {}) => submit(async () => {
@@ -95,7 +111,7 @@ function App() {
         {connected && (
           <nav aria-label="Workspace views">
             <button onClick={() => setSettings('tasks')}>Tasks</button>
-            <button onClick={() => setSettings('knowledge')}>Apps and memory</button>
+            <button onClick={() => { setMemoryAnswer(null); setSettings('knowledge'); }}>Apps and memory</button>
             <button onClick={() => setSettings('devices')}>Execution devices</button>
             <button onClick={() => submit(async () => {
               setClients((await api('/admin/mobile-clients')).clients);
@@ -217,8 +233,20 @@ function App() {
             ) : (
               <form onSubmit={event => {
                 event.preventDefault();
-                const ask = event.nativeEvent.submitter?.value === 'ask';
+                const action = event.nativeEvent.submitter?.value;
+                const ask = action === 'ask';
                 submit(async () => {
+                  setMemoryAnswer(null);
+                  if (action === 'app-memory') {
+                    if (!chosenSources.length || !memoryQuery.trim()) return;
+                    setPlan(null);
+                    setAnswer('');
+                    setMemoryAnswer(await api('/memory/answer', { method: 'POST', body: {
+                      workspace, question: goal, query: memoryQuery, sources: chosenSources.map(account => account.id),
+                      includePersonal: usePersonalMemory,
+                    } }));
+                    return;
+                  }
                   const result = await api(ask ? '/conversation' : '/events', { method: 'POST', key, body: { workspace, text: goal, ...(ask && { usePersonalMemory }) } });
                   if (ask && result.kind !== 'create_task') {
                     setAnswer(result.text);
@@ -236,14 +264,46 @@ function App() {
                 });
               }}>
                 <h2>New task</h2>
-                <label>Workspace<input value={workspace} onChange={event => { setWorkspace(event.target.value); setKey(crypto.randomUUID()); }} required /></label>
-                <label>Task<textarea value={goal} onChange={event => { setGoal(event.target.value); setKey(crypto.randomUUID()); }} required /></label>
+                <label>Workspace<input value={workspace} onChange={event => {
+                  setWorkspace(event.target.value);
+                  setMemorySources([]);
+                  setMemoryAnswer(null);
+                  setKey(crypto.randomUUID());
+                }} required /></label>
+                <label>Task<textarea value={goal} onChange={event => {
+                  setGoal(event.target.value);
+                  setMemoryAnswer(null);
+                  setKey(crypto.randomUUID());
+                }} required /></label>
                 <button className="primary" disabled={busy || !workspace.trim() || !goal.trim()}>Create task</button>
                 <label className="checkbox-label"><input type="checkbox" checked={usePersonalMemory} onChange={event => {
                   setUsePersonalMemory(event.target.checked);
                   setKey(crypto.randomUUID());
                 }} /> Use personal memory when asking Blazar</label>
                 <button type="submit" value="ask" disabled={busy || !workspace.trim() || !goal.trim()}>Ask Blazar</button>
+                {availableSources.length > 0 && <details>
+                  <summary>Ask with app memory</summary>
+                  <label>Search terms<input value={memoryQuery} maxLength={256} onChange={event => {
+                    setMemoryQuery(event.target.value);
+                    setMemoryAnswer(null);
+                  }} /></label>
+                  {availableSources.map(account => <label className="checkbox-label" key={account.id}>
+                    <input type="checkbox" checked={memorySources.includes(account.id)} onChange={event => {
+                      setMemorySources(event.target.checked ? [...memorySources, account.id] :
+                        memorySources.filter(id => id !== account.id));
+                      setMemoryAnswer(null);
+                    }} /> {account.app} · {account.account}
+                  </label>)}
+                  <button type="submit" value="app-memory" disabled={busy || !goal.trim() || goal.trim().length > 4000 ||
+                    !memoryQuery.trim() || !chosenSources.length || chosenSources.length > 25}>Ask with selected apps</button>
+                </details>}
+                {memoryAnswer && <section aria-label="Answer from app memory">
+                  <p role="status">{memoryAnswer.answer ?? 'No matching memories.'}</p>
+                  <ul>{memoryAnswer.sources.map(source => {
+                    const account = chosenSources.find(item => item.id === source.connection);
+                    return <li key={source.id}>{account ? account.app + ' · ' + account.account + ' · ' + source.resource : 'Personal note'}</li>;
+                  })}</ul>
+                </section>}
                 {answer && <p role="status">{answer}</p>}
                 {plan && <section className="approval" aria-label="Proposed workflow">
                   <h3>Proposed workflow</h3>

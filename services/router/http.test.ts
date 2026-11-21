@@ -186,10 +186,15 @@ test('Router authenticates, deduplicates commands and replays task changes over 
   assert.equal((await updateImported(2, false)).status, 200);
   const emptyAnswer = await post('/v1/memory/answer', 'empty-answer', { ...answerRequest, sources: [] });
   assert.deepEqual(await emptyAnswer.json(), { answer: null, sources: [] });
-  const answer = await post('/v1/memory/answer', 'answer', { ...answerRequest, sources: [connection] });
+  const unrelatedPersonal = memory.remember('test', 'demo', 'Personal findings excluded from this request')!;
+  const answer = await post('/v1/memory/answer', 'answer', {
+    ...answerRequest, sources: [connection], includePersonal: false,
+  });
   const grounded = await answer.json();
   assert.match(grounded.answer, /design review findings/);
   assert.equal(grounded.sources[0].id, document.id);
+  assert.equal(grounded.sources.length, 1);
+  assert.equal(memory.remove('test', unrelatedPersonal), true);
   assert.equal(memoryAnswers, 1);
   assert.equal(store.recentConversation('test', 'demo').length, 0);
   const raceConnection = memory.connect('test', 'feishu', 'race account');

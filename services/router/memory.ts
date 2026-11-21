@@ -178,19 +178,20 @@ export class MemoryStore {
     return inserted.changes === 1 ? id : undefined;
   }
 
-  recall(owner: string, workspace: string, query: string, allowedSources: readonly string[], disabled = false) {
+  recall(owner: string, workspace: string, query: string, allowedSources: readonly string[],
+         disabled = false, includePersonal = true) {
     const term = query.trim();
     if (!term || term.length > 256) return [];
     const allowed = JSON.stringify(allowedSources);
     const filter = `m.owner=? AND m.workspace=? AND COALESCE(s.disabled,0)=? AND (m.expires IS NULL OR m.expires>?)
-      AND (m.connection IS NULL OR EXISTS (
+      AND ((?=1 AND m.connection IS NULL) OR EXISTS (
         SELECT 1 FROM app_connection a WHERE a.id=m.connection AND a.owner=m.owner AND a.active=1 AND (a.workspace IS NULL OR a.workspace=m.workspace)
         AND a.id IN (SELECT value FROM json_each(?))
       ))`;
     const fields = `m.id,m.body,m.connection,m.resource,m.revision,m.created,
       COALESCE(s.version,1) AS version,COALESCE(s.pinned,0) AS pinned,COALESCE(s.disabled,0) AS disabled`;
     const state = 'LEFT JOIN memory_state s ON s.id=m.id';
-    const values = [owner, workspace, Number(disabled), Date.now(), allowed] as const;
+    const values = [owner, workspace, Number(disabled), Date.now(), Number(includePersonal), allowed] as const;
     if (!this.fullText || Array.from(term).length < 3) {
       return this.db.prepare(`SELECT ${fields} FROM memory m ${state} WHERE ${filter}
         AND instr(lower(m.body),lower(?))>0 ORDER BY pinned DESC,m.created DESC,m.rowid DESC LIMIT 25`).all(...values, term);
