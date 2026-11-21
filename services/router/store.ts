@@ -8,6 +8,7 @@ import { displayTaskStatus, windowImageLifetimeMs } from '../../packages/protoco
 
 const runLimitMs = 10 * 60_000;
 const runSilenceMs = 2 * 60_000;
+const queueLatencyBounds = [1, 5, 10, 25, 50, 100, 250, 500, 1_000, 5_000, 15_000, 60_000, 300_000];
 
 export type AppEvidence = { query: string; sources: string[]; refs: { id: string; version: number }[] };
 
@@ -30,6 +31,23 @@ export class TaskStore {
         id TEXT PRIMARY KEY, owner TEXT NOT NULL, workspace TEXT NOT NULL,
         goal TEXT NOT NULL, version INTEGER NOT NULL DEFAULT 1,
         status TEXT NOT NULL DEFAULT 'queued', result TEXT
+      );
+      CREATE TABLE IF NOT EXISTS task_queue_time (
+        task_id TEXT PRIMARY KEY REFERENCES task(id) ON DELETE CASCADE, enqueued_at INTEGER NOT NULL
+      );
+      CREATE TRIGGER IF NOT EXISTS task_queue_on_create AFTER INSERT ON task WHEN NEW.status='queued'
+        BEGIN
+          INSERT INTO task_queue_time VALUES(NEW.id, CAST(unixepoch('subsec') * 1000 AS INTEGER));
+        END;
+      CREATE TRIGGER IF NOT EXISTS task_queue_on_transition AFTER UPDATE OF status ON task
+        WHEN NEW.status='queued' AND OLD.status NOT IN ('queued','waiting_device')
+        BEGIN
+          INSERT INTO task_queue_time VALUES(NEW.id, CAST(unixepoch('subsec') * 1000 AS INTEGER))
+            ON CONFLICT(task_id) DO UPDATE SET enqueued_at=excluded.enqueued_at;
+        END;
+      CREATE TABLE IF NOT EXISTS task_queue_latency (
+        owner TEXT NOT NULL, bucket INTEGER NOT NULL, count INTEGER NOT NULL, total_ms INTEGER NOT NULL,
+        PRIMARY KEY(owner,bucket)
       );
       CREATE TABLE IF NOT EXISTS channel_cursor (
         channel TEXT PRIMARY KEY, value TEXT NOT NULL
@@ -281,6 +299,8 @@ export class TaskStore {
           SELECT seq,? FROM event WHERE type='run.progress'`).run(Date.now());
       }
       this.db.prepare('INSERT OR IGNORE INTO run_deadline SELECT id,expires+? FROM run').run(runLimitMs);
+      this.db.prepare(`INSERT OR IGNORE INTO task_queue_time
+        SELECT id,? FROM task WHERE status IN ('queued','waiting_device')`).run(Date.now());
       this.db.prepare('INSERT OR IGNORE INTO run_activity(run_id,last_output) SELECT id,? FROM run').run(Date.now());
       this.updateWorkflowReadiness();
     });
@@ -1240,8 +1260,16 @@ export class TaskStore {
   metrics(owner: string, now: number) {
     const tasks = this.db.prepare('SELECT status,COUNT(*) AS count FROM task WHERE owner=? GROUP BY status').all(owner);
     const devices = this.devices(owner, now);
+    const queue = this.db.prepare('SELECT bucket,count,total_ms FROM task_queue_latency WHERE owner=? ORDER BY bucket')
+      .all(owner);
+    const count = queue.reduce((sum, row) => sum + Number(row.count), 0);
+    const total = queue.reduce((sum, row) => sum + Number(row.total_ms), 0);
+    let cumulative = 0;
+    const p95 = queue.find(row => (cumulative += Number(row.count)) >= Math.ceil(count * 0.95));
     return {
       tasks: Object.fromEntries(tasks.map(row => [row.status, row.count])),
+      queueLatencyMs: { count, mean: count ? total / count : null,
+        p95UpperBound: p95 ? queueLatencyBounds[Number(p95.bucket)] ?? null : null },
       devices: {
         active: devices.filter(device => !device.revoked).length,
         online: devices.filter(device => device.online).length,
@@ -1437,8 +1465,16 @@ export class TaskStore {
           SELECT ?,p.id,p.version FROM workflow_dependency d JOIN task p ON p.id=d.predecessor
           WHERE d.task_id=?`).run(run.id, task.id);
       }
+      const queued = this.db.prepare('DELETE FROM task_queue_time WHERE task_id=? RETURNING enqueued_at').get(task.id);
+      const queueWaitMs = queued ? Math.max(0, now - Number(queued.enqueued_at)) : undefined;
+      if (queueWaitMs !== undefined) {
+        const limit = queueLatencyBounds.findIndex(bound => queueWaitMs <= bound);
+        const bucket = limit < 0 ? queueLatencyBounds.length : limit;
+        this.db.prepare(`INSERT INTO task_queue_latency VALUES(?,?,1,?) ON CONFLICT(owner,bucket)
+          DO UPDATE SET count=count+1,total_ms=total_ms+excluded.total_ms`).run(owner, bucket, queueWaitMs);
+      }
       this.event(task.id, 'run.started', {
-        runId: run.id, ...(worker && { worker }), predecessors: predecessors.map(({ taskId, version, artifact }) => ({
+        runId: run.id, ...(queueWaitMs !== undefined && { queueWaitMs }), ...(worker && { worker }), predecessors: predecessors.map(({ taskId, version, artifact }) => ({
           taskId, version, ...(artifact && { artifactId: artifact.id }),
         })),
       });

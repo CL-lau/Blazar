@@ -124,6 +124,29 @@ test('progress requires a current run and consecutive device sequences', t => {
   assert.equal(db.events('owner', 0).filter(event => event.type === 'run.progress').length, 2);
 });
 
+test('queue latency counts each actual dispatch and survives a Router restart', t => {
+  const root = mkdtempSync(join(tmpdir(), 'blazar-queue-metrics-'));
+  const path = join(root, 'router.sqlite');
+  let store = new TaskStore(path);
+  t.after(() => { store.close(); rmSync(root, { recursive: true, force: true }); });
+  const task = store.create('owner', 'fixture', 'queued', 'project', 'Read notes');
+  const now = Date.now();
+  store.updateDeviceReadiness(now);
+  assert.equal(store.get('owner', task.id)?.status, 'waiting_device');
+  const key = 'request';
+  const assignment = store.claim('owner', 'project', 'device', now + 2_000, 45_000, '', '', key)!;
+  assert.equal(store.claim('owner', 'project', 'device', now + 2_001, 45_000, '', '', key)?.run.id, assignment.run.id);
+  const start = store.timeline('owner', task.id)?.events.find(event => event.type === 'run.started');
+  const wait = Number(start?.data.queueWaitMs);
+  assert.ok(wait >= 2_000);
+  const latency = store.metrics('owner', now).queueLatencyMs;
+  assert.deepEqual(latency, { count: 1, mean: wait, p95UpperBound: 5_000 });
+  assert.equal(store.metrics('other', now).queueLatencyMs.count, 0);
+  store.close();
+  store = new TaskStore(path);
+  assert.deepEqual(store.metrics('owner', now).queueLatencyMs, latency);
+});
+
 test('the watchdog reports silent live runs once and clears the warning after new progress', t => {
   const db = new TaskStore(':memory:');
   t.after(() => db.close());
