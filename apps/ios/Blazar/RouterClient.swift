@@ -80,6 +80,8 @@ struct TimelinePage: Decodable {
             let decision: String?
             let name: String?
             let status: String?
+            let waitingReason: String?
+            let runId: String?
             var description: String? { message ?? text ?? summary ?? decision ?? name ?? status }
         }
         let seq: Int

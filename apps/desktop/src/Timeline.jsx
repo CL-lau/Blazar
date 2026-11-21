@@ -54,6 +54,9 @@ export function Timeline({ taskId, token, cursor }) {
         return <li key={event.seq}>
           <strong>{labels[event.type] ?? event.type}</strong>
           {detail && <p>{detail}</p>}
+          {data?.waitingReason === 'git_patch_inputs' && data.runId && <p>
+            Inspect the retained Git checkout for run <code>{data.runId}</code>.
+          </p>}
           {data?.copiedFromTask && <p>Copied goal from task <code>{data.copiedFromTask}</code></p>}
         </li>;
       })}</ul>

@@ -579,6 +579,9 @@ private struct TaskDetails: View {
                         VStack(alignment: .leading) {
                             Text(entry.title)
                             if let text = entry.data.description { Text(text).font(.caption) }
+                            if entry.data.waitingReason == "git_patch_inputs", let run = entry.data.runId {
+                                Text("Retained Git checkout for run \(run)").font(.caption).textSelection(.enabled)
+                            }
                         }
                     }
                     if let before {
