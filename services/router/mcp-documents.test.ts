@@ -156,5 +156,8 @@ test('a configured MCP account reads allowlisted text resources without invoking
   const usage = store.appUsage('owner', repositoryId)?.[0];
   assert.equal(usage?.status, 'source_conflict');
   assert.deepEqual(usage?.backend, { kind: 'mcp', fallback: true });
+  assert.deepEqual(await invokeDocumentCapability(store, 'owner', repositoryId, [repository], 'document.refresh',
+    { workspace: 'project' }), { refreshed: 0, unavailable: 0, conflicts: ['review'], after: null });
+  assert.deepEqual(store.recall('owner', 'project', 'review', [repositoryId]).map(item => item.id), [primaryImport.id]);
 
 });

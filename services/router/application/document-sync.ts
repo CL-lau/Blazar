@@ -6,6 +6,12 @@ type DocumentMemory = Pick<MemoryStore, 'connection' | 'documentSyncActive' | 'd
   'finishAppUsage' | 'finishDocumentSync' | 'importDocument' | 'leaseDocumentSync' |
   'recall' | 'recordDocumentAccess' | 'resourceRevoked' | 'startAppUsage' | 'hasNewerDocumentDenial'>;
 
+class DocumentRefreshConflict extends RequestError {
+  constructor() {
+    super(409, 'The fallback returned a different revision. Preview it or retry when the primary source is available.');
+  }
+}
+
 export async function accessDocument(store: DocumentMemory, owner: string, workspace: string, connection: string,
                               reader: DocumentConnector, document: string, operation: 'test' | 'import' | 'refresh' | 'read',
                               signal?: AbortSignal, permitted = () => true) {
@@ -56,7 +62,7 @@ export async function accessDocument(store: DocumentMemory, owner: string, works
   } catch (error) {
     if (!(error instanceof DocumentRevisionConflict)) throw error;
     store.finishAppUsage(usageId, 'source_conflict', content.backend);
-    throw new RequestError(409, 'The fallback returned a different revision. Preview it or retry when the primary source is available.');
+    throw new DocumentRefreshConflict();
   }
   store.finishAppUsage(usageId, id ? 'succeeded' : 'access_changed', id ? content.backend : undefined);
   if (!id) throw new RequestError(409, 'Source access changed during import');
@@ -70,7 +76,13 @@ export async function refreshDocumentPage(store: DocumentMemory, owner: string, 
   const results = await Promise.allSettled(page.map(document =>
     accessDocument(store, owner, workspace, connection, reader, document, 'refresh', signal, permitted)));
   const refreshed = results.filter(result => result.status === 'fulfilled').length;
-  return { refreshed, unavailable: results.length - refreshed, after: documents.length > page.length ? page.at(-1)! : null };
+  const conflicts = page.filter((document, index) => {
+    const result = results[index];
+    return result.status === 'rejected' && result.reason instanceof DocumentRefreshConflict &&
+      !store.resourceRevoked(connection, document);
+  });
+  return { refreshed, unavailable: results.length - refreshed - conflicts.length,
+    ...(conflicts.length && { conflicts }), after: documents.length > page.length ? page.at(-1)! : null };
 }
 
 export async function invokeDocumentCapability(store: DocumentMemory, owner: string, connectionId: string,

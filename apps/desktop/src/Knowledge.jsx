@@ -10,6 +10,7 @@ export function Knowledge({ token }) {
   const [searchQuery, setSearchQuery] = useState('');
   const [documentMatches, setDocumentMatches] = useState(null);
   const [documentPreview, setDocumentPreview] = useState(null);
+  const [refreshConflicts, setRefreshConflicts] = useState([]);
   const [discovered, setDiscovered] = useState(null);
   const [deriving, setDeriving] = useState(null);
   const [editing, setEditing] = useState(null);
@@ -31,6 +32,7 @@ export function Knowledge({ token }) {
     setHistory(null);
     setDocumentMatches(null);
     setDocumentPreview(null);
+    setRefreshConflicts([]);
     setDiscovered(null);
     setBusy(true);
     try { await action(); }
@@ -236,7 +238,10 @@ export function Knowledge({ token }) {
       {importSource && (
         <fieldset disabled={busy}>
           <legend>Documents</legend>
-          <form onChange={() => setDocumentPreview(null)} onSubmit={event => {
+          <form onChange={() => {
+            setDocumentPreview(null);
+            setRefreshConflicts([]);
+          }} onSubmit={event => {
             event.preventDefault();
             const form = event.currentTarget;
             const { connection, workspace, document } = Object.fromEntries(new FormData(form));
@@ -311,17 +316,20 @@ export function Knowledge({ token }) {
                 let after;
                 let refreshed = 0;
                 let unavailable = 0;
+                const conflicts = [];
                 do {
                   const page = await request('/app-connections/' + connection + '/capabilities/document.refresh', {
                     method: 'POST', body: { workspace, ...(after && { after }) },
                   });
                   refreshed += page.refreshed;
                   unavailable += page.unavailable;
+                  if (page.conflicts) conflicts.push(...page.conflicts);
                   after = page.after;
                 } while (after);
                 setUsage(null);
                 setResults(null);
                 setNotice(`Refreshed ${refreshed} documents. Could not refresh ${unavailable}.`);
+                setRefreshConflicts(conflicts);
               });
             }}>Refresh imported documents</button>
             <label>Automatic refresh<select name="interval">
@@ -352,6 +360,10 @@ export function Knowledge({ token }) {
             </p>}
             <pre>{documentPreview.text}</pre>
             {documentPreview.truncated && <p>Preview truncated.</p>}
+          </section>}
+          {refreshConflicts.length > 0 && <section aria-label="Refresh conflicts">
+            <p>Kept the primary revision for these documents because the fallback returned different content.</p>
+            <ul>{refreshConflicts.map(resource => <li key={resource}>{resource}</li>)}</ul>
           </section>}
           <form key={importSource.id + (importSource.workspace ?? '')} onSubmit={event => {
             event.preventDefault();
