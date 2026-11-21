@@ -536,3 +536,33 @@ test('admin progress retention expires replay cursors and preserves durable task
   const timeline = store.timeline('test', task.id)!;
   assert.deepEqual(timeline.events.map(event => event.type), ['run.finished', 'run.started', 'task.created']);
 });
+
+test('admin audit export pages within an owner-scoped cursor range', async t => {
+  const store = new TaskStore(':memory:');
+  const server = routerServer(store, { owner: 'test', token: 'local' });
+  server.listen(0, '127.0.0.1');
+  await once(server, 'listening');
+  t.after(async () => {
+    await new Promise<void>(resolve => server.close(() => resolve()));
+    store.close();
+  });
+  const address = server.address();
+  assert.ok(address && typeof address !== 'string');
+  const endpoint = 'http://127.0.0.1:' + address.port + '/v1/admin/audit-export';
+  const unrelated = store.create('another', 'fixture', 'private', 'project', 'Unrelated task');
+  const taskIds = Array.from({ length: 101 }, (_, index) =>
+    store.create('test', 'fixture', 'audit-' + index, 'project', 'Local task').id);
+  const fetchAudit = (query = '', token = 'local') =>
+    fetch(endpoint + query, { headers: { Authorization: 'Bearer ' + token } });
+  const phone = store.redeemPairing(store.createPairing('test', Date.now()).code, 'Phone', Date.now())!;
+  assert.equal((await fetchAudit('', phone.token)).status, 403);
+  assert.equal((await fetchAudit('?after=2&through=1')).status, 400);
+  const first = await (await fetchAudit()).json();
+  assert.equal(first.events.length, 100);
+  assert.equal(first.events[0].taskId, taskIds[0]);
+  store.create('test', 'fixture', 'later', 'project', 'Later task');
+  const second = await (await fetchAudit('?after=' + first.nextAfter + '&through=' + first.through)).json();
+  assert.equal(second.nextAfter, null);
+  assert.deepEqual(second.events.map((event: { taskId: string }) => event.taskId), [taskIds[100]]);
+  assert.ok(!JSON.stringify(first).includes(unrelated.id));
+});

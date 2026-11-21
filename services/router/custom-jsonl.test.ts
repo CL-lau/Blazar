@@ -177,6 +177,11 @@ test('a registered JSONL extension executes a real subprocess through Router and
     headers: { Authorization: 'Bearer ' + token },
   });
   assert.equal(await (await download('local')).text(), 'Private review template');
+  const audit = async () => (await fetch(base + '/v1/admin/audit-export', {
+    headers: { Authorization: 'Bearer local' },
+  })).json();
+  assert.ok((await audit()).events.some((event: { taskId: string; data: { result?: string } }) =>
+    event.taskId === protectedTask.id && event.data.result === 'Private review template'));
   const pairing = store.createPairing('owner', Date.now());
   const phone = store.redeemPairing(pairing.code, 'Phone', Date.now())!;
   assert.equal((await download(phone.token)).status, 404);
@@ -223,6 +228,10 @@ test('a registered JSONL extension executes a real subprocess through Router and
   assert.equal((await download(phone.token)).status, 404);
   const hidden = await (await fetch(base + '/v1/state', { headers: { Authorization: 'Bearer local' } })).json();
   assert.equal(hidden.tasks.find((item: { id: string }) => item.id === protectedTask.id)?.result, null);
+
+  const protectedEvents = (await audit()).events.filter((event: { taskId: string }) => event.taskId === protectedTask.id);
+  assert.ok(protectedEvents.length > 0);
+  assert.ok(protectedEvents.every((event: { data: object }) => Object.keys(event.data).length === 0));
 
   const liveConnection = memory.connect('owner', 'github', 'Live handbook', 'project');
   memory.importDocument('owner', 'project', 'Private review template', { ...source, connection: liveConnection });

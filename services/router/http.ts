@@ -681,6 +681,22 @@ export function routerServer(store: TaskStore, config: { owner: string; token: s
         reply(response, 201, link);
         return;
       }
+      if (url.pathname === '/v1/admin/audit-export' && request.method === 'GET') {
+        const cursor = store.eventCursor();
+        const rawAfter = url.searchParams.get('after') ?? '0';
+        const rawThrough = url.searchParams.get('through') ?? String(cursor);
+        const after = Number(rawAfter);
+        const through = Number(rawThrough);
+        if (!/^\d+$/.test(rawAfter) || !/^\d+$/.test(rawThrough) ||
+            !Number.isSafeInteger(after) || !Number.isSafeInteger(through) || after > through || through > cursor) {
+          throw new RequestError(400, 'Invalid audit export range');
+        }
+        const page = store.events(owner, after, through);
+        reply(response, 200, { version: 1, through, nextAfter: page.length === 100 ? page.at(-1)!.seq : null,
+          events: page.map(event => ({ ...event, data: canReadTask(event.taskId) ? JSON.parse(event.data) : {} })),
+        });
+        return;
+      }
       if (url.pathname === '/v1/admin/event-retention' && request.method === 'POST') {
         const data = await jsonObject(request);
         const before = data.before;

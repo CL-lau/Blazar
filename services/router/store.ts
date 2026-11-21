@@ -401,9 +401,9 @@ export class TaskStore {
     };
   }
 
-  events(owner: string, after: number): TaskEvent[] {
+  events(owner: string, after: number, through = Number.MAX_SAFE_INTEGER): TaskEvent[] {
     return this.db.prepare(`SELECT e.* FROM event e JOIN task t ON e.taskId=t.id
-      WHERE t.owner=? AND e.seq>? ORDER BY e.seq LIMIT 100`).all(owner, after) as unknown as TaskEvent[];
+      WHERE t.owner=? AND e.seq>? AND e.seq<=? ORDER BY e.seq LIMIT 100`).all(owner, after, through) as unknown as TaskEvent[];
   }
 
   findRouterTasks(owner: string, workspace: string, query: string) {
