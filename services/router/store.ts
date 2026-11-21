@@ -1,5 +1,5 @@
 import type { PushKind, PushResult } from '../../packages/notifications/apns.ts';
-import { orderWorkflow, workflowActionGoal } from './workflow.ts';
+import { orderWorkflow, workflowActionGoal } from './domain/workflow.ts';
 import type { ConversationTurn, Decision, RouteRequest } from './harness.ts';
 import { createHash, randomBytes, randomUUID } from 'node:crypto';
 import { DatabaseSync } from 'node:sqlite';

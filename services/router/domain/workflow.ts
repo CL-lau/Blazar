@@ -1,4 +1,4 @@
-import type { WorkflowAction, WorkflowStep } from '../../packages/protocol/task.ts';
+import type { WorkflowAction, WorkflowStep } from '../../../packages/protocol/task.ts';
 
 export class InvalidWorkflow extends Error {}
 

@@ -1,4 +1,4 @@
-import { workflowSteps } from './workflow.ts';
+import { workflowSteps } from './domain/workflow.ts';
 import type { WorkflowStep } from '../../packages/protocol/task.ts';
 import { Agent, type AgentTool } from '@earendil-works/pi-agent-core';
 import { createModels, type Usage } from '@earendil-works/pi-ai';

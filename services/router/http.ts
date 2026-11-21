@@ -8,7 +8,7 @@ import { documentAppCatalog, documentCapabilityState, DocumentAccessDenied, Docu
 import { WebSocket, WebSocketServer } from 'ws';
 import { createQQHandler, qqChannel, type QQConfig } from '../../packages/channels/qq.ts';
 import { feishuChannel, parseFeishu, type FeishuConfig } from '../../packages/channels/feishu.ts';
-import { InvalidWorkflow, workflowSteps } from './workflow.ts';
+import { InvalidWorkflow, workflowSteps } from './domain/workflow.ts';
 import type { Decision, MemoryAnswer, RouteRequest, RouterHarness } from './harness.ts';
 import { timingSafeEqual } from 'node:crypto';
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http';
