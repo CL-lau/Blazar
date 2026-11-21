@@ -371,6 +371,14 @@ async function handleMemory(
     return true;
   }
 
+  const historyPath = /^\/v1\/memory\/([a-f0-9-]{36})\/history$/.exec(pathname);
+  if (historyPath && method === 'GET') {
+    const history = store.history(owner, historyPath[1]);
+    if (!history) throw new RequestError(404, 'Memory not found');
+    reply(response, 200, history);
+    return true;
+  }
+
   const remove = /^\/v1\/memory\/([a-f0-9-]{36})$/.exec(pathname);
   if (remove && method === 'PATCH') {
     const data = await jsonObject(request);

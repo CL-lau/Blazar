@@ -443,6 +443,13 @@ test('a registered JSONL extension executes a real subprocess through Router and
   assert.equal((await changeScope('project')).status, 200);
   channelMessage('resume-after-restore', '/resume');
   assert.equal(store.get('owner', recoveryTask.id)?.status, 'queued');
+  const priorVersion = store.get('owner', recoveryTask.id)?.version;
+  memory.importDocument('owner', 'project', 'New review template',
+    { ...source, connection: recoveryConnection, revision: '2' });
+  server.flushStopNotifications();
+  assert.equal(store.get('owner', recoveryTask.id)?.status, 'waiting_user');
+  assert.equal(store.get('owner', recoveryTask.id)?.version, priorVersion);
+  assert.equal(await client.runOnce(AbortSignal.timeout(5_000)), false);
 });
 
 test('JSONL rejects duplicate terminal events and stops a cancelled subprocess', async () => {

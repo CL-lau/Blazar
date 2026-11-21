@@ -426,6 +426,28 @@ export class MemoryStore {
     }));
   }
 
+  history(owner: string, id: string, now = Date.now()) {
+    const item = this.db.prepare(`SELECT m.id,m.workspace,m.connection,m.resource,m.revision,m.created,
+      COALESCE(s.version,1) AS version
+      FROM memory m LEFT JOIN memory_state s ON s.id=m.id
+      WHERE m.id=? AND m.owner=? AND (m.expires IS NULL OR m.expires>?)
+      AND (m.connection IS NULL OR EXISTS(
+        SELECT 1 FROM app_connection a WHERE a.id=m.connection AND a.owner=m.owner AND a.active=1
+        AND (a.workspace IS NULL OR a.workspace=m.workspace)))
+      AND NOT EXISTS(SELECT 1 FROM revoked_resource r WHERE r.connection=m.connection AND r.resource=m.resource)
+      AND NOT EXISTS(SELECT 1 FROM document_access d WHERE d.connection=m.connection AND d.resource=m.resource AND d.allowed=0)`)
+      .get(id, owner, now);
+    if (!item) return undefined;
+    const edits = this.db.prepare('SELECT version,changed AS replacedAt FROM memory_revision WHERE id=? ORDER BY version DESC LIMIT 50').all(id);
+    const sourceRevisions = item.connection === null ? [] : this.db.prepare(`SELECT m.id,m.revision,m.created,
+      CASE WHEN h.memory_id=m.id THEN 1 ELSE 0 END AS current
+      FROM memory m JOIN document_import i ON i.id=m.id
+      LEFT JOIN document_head h ON h.owner=m.owner AND h.workspace=m.workspace AND h.connection=m.connection AND h.resource=m.resource
+      WHERE m.owner=? AND m.workspace=? AND m.connection=? AND m.resource=? AND (m.expires IS NULL OR m.expires>?)
+      ORDER BY m.created DESC,m.rowid DESC LIMIT 50`).all(owner, item.workspace!, item.connection!, item.resource!, now);
+    return { item, edits, sourceRevisions };
+  }
+
   revise(owner: string, id: string, expectedVersion: number, change: { body?: string; pinned?: boolean; disabled?: boolean }) {
     this.db.exec('BEGIN IMMEDIATE');
     try {

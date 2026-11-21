@@ -163,6 +163,10 @@ test('Router authenticates, deduplicates commands and replays task changes over 
   assert.equal(corrected.items[0].pinned, 1);
   assert.equal(corrected.items[0].connection, connection);
   assert.equal(corrected.items[0].revision, '2');
+  const editedHistory = await (await fetch(memoryPath + '/history', { headers })).json();
+  assert.equal(editedHistory.item.version, 3);
+  assert.deepEqual(editedHistory.edits.map(item => item.version), [2]);
+  assert.doesNotMatch(JSON.stringify(editedHistory), /Corrected review guideline|"body"/);
   const importPath = '/v1/app-connections/' + connection + '/import-document';
   const imported = await post(importPath, 'import', { workspace: 'demo', document: 'doc123' });
   assert.equal(imported.status, 200);
@@ -253,6 +257,7 @@ test('Router authenticates, deduplicates commands and replays task changes over 
   assert.doesNotMatch(await revokedAnswer.text(), /design review findings/i);
   const disconnected = await fetch(url + '/v1/app-connections/' + connection, { method: 'DELETE', headers });
   assert.equal(disconnected.status, 200);
+  assert.equal((await fetch(memoryPath + '/history', { headers })).status, 404);
   const updatedConnections = await (await fetch(url + '/v1/app-connections', { headers })).json();
   const closedConnection = updatedConnections.connections.find(item => item.id === connection);
   assert.equal(closedConnection.canImportDocument, false);
@@ -280,6 +285,13 @@ test('Router authenticates, deduplicates commands and replays task changes over 
   assert.deepEqual(await refreshed.json(), { refreshed: 1, unavailable: 0, after: null });
   assert.deepEqual(memory.recall('test', 'demo', 'findings', [github]), []);
   assert.equal(memory.recall('test', 'demo', 'guidance', [github])[0]?.body, githubBody);
+  const currentSource = memory.recall('test', 'demo', 'guidance', [github])[0];
+  const sourceHistory = await (await fetch(url + '/v1/memory/' + currentSource.id + '/history', { headers })).json();
+  assert.equal(sourceHistory.sourceRevisions.length, 2);
+  assert.deepEqual(sourceHistory.sourceRevisions.map(item => item.current), [1, 0]);
+  assert.equal(sourceHistory.sourceRevisions[0].id, currentSource.id);
+  assert.doesNotMatch(JSON.stringify(sourceHistory), /Updated engineering guidance|Engineering review findings|"body"/);
+  assert.equal(memory.history('other-owner', String(currentSource.id)), undefined);
   const syncPath = '/v1/app-connections/' + github + '/document-sync';
   assert.equal((await post(syncPath, 'enable-refresh', { workspace: 'demo', intervalMinutes: 15 })).status, 200);
   const scheduledReader = githubDocuments('engineering', 'example/handbook', 'fixture', async () =>

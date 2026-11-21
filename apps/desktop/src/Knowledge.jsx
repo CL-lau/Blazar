@@ -16,6 +16,7 @@ export function Knowledge({ token }) {
   const [notice, setNotice] = useState('');
   const [answer, setAnswer] = useState(null);
   const [usage, setUsage] = useState(null);
+  const [history, setHistory] = useState(null);
 
   const request = (path, options) => callRouter(token, path, options);
 
@@ -23,6 +24,7 @@ export function Knowledge({ token }) {
     setError('');
     setNotice('');
     setAnswer(null);
+    setHistory(null);
     setBusy(true);
     try { await action(); }
     catch (failure) { setError(failure.message); }
@@ -333,6 +335,20 @@ export function Knowledge({ token }) {
               <button>Save correction</button>
               <button type="button" onClick={() => setEditing(null)}>Cancel</button>
             </form> : <button onClick={() => setEditing(item.id)}>Edit memory</button>}
+            <button type="button" onClick={() => perform(async () => {
+              setHistory(await request('/memory/' + item.id + '/history'));
+            })}>View version history</button>
+            {history?.item.id === item.id && <section aria-label="Memory version history">
+              <h3>Version history</h3>
+              <p>Current memory version {history.item.version}</p>
+              {history.edits.length > 0 && <ul>{history.edits.map(edit => <li key={edit.version}>
+                Version {edit.version} replaced {new Date(edit.replacedAt).toLocaleString()}
+              </li>)}</ul>}
+              {history.sourceRevisions.length > 0 && <ul aria-label="Source revisions">{history.sourceRevisions.map(revision =>
+                <li key={revision.id}><code>{revision.revision}</code> · {new Date(revision.created).toLocaleString()}
+                  {revision.current ? ' · Current source' : ''}
+                </li>)}</ul>}
+            </section>}
             {source && <button onClick={() => {
               if (!window.confirm('Revoke this source and delete its imported memories across all workspaces?')) return;
               void perform(async () => {
