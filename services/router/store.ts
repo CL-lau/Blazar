@@ -70,6 +70,7 @@ export class TaskStore {
         notice TEXT PRIMARY KEY REFERENCES channel_outbox(id) ON DELETE CASCADE,
         owner TEXT NOT NULL, channel TEXT NOT NULL, chat TEXT NOT NULL, thread TEXT NOT NULL
       );
+      CREATE INDEX IF NOT EXISTS channel_notice_owner ON channel_notice_binding(owner,channel,chat,thread);
       CREATE TABLE IF NOT EXISTS weixin_reply_context (
         owner TEXT NOT NULL, channel TEXT NOT NULL, chat TEXT NOT NULL,
         token TEXT NOT NULL, expires INTEGER NOT NULL, PRIMARY KEY(owner,channel,chat)
@@ -298,6 +299,11 @@ export class TaskStore {
         this.db.prepare(`INSERT OR IGNORE INTO progress_event_time
           SELECT seq,? FROM event WHERE type='run.progress'`).run(Date.now());
       }
+      this.db.exec(`INSERT OR IGNORE INTO channel_notice_binding
+        SELECT o.id,MIN(t.owner),o.channel,o.chat,o.message_id FROM channel_outbox o
+        JOIN channel_thread t ON t.channel=o.channel AND t.chat=o.chat AND t.thread=o.message_id
+        WHERE NOT EXISTS(SELECT 1 FROM channel_notice_binding b WHERE b.notice=o.id)
+        GROUP BY o.id HAVING COUNT(*)=1`);
       this.db.prepare('INSERT OR IGNORE INTO run_deadline SELECT id,expires+? FROM run').run(runLimitMs);
       this.db.prepare(`INSERT OR IGNORE INTO task_queue_time
         SELECT id,? FROM task WHERE status IN ('queued','waiting_device')`).run(Date.now());
@@ -359,6 +365,12 @@ export class TaskStore {
     if (invalidated.length) this.updateWorkflowReadiness();
   }
 
+  private queueChannelNotice(owner: string, channel: string, chat: string, thread: string, replyId: string, text: string, now: number) {
+    const id = randomUUID();
+    this.db.prepare('INSERT INTO channel_outbox VALUES(?,?,?,?,?,?,?,0)').run(id, channel, chat, replyId, text, now, now);
+    this.db.prepare('INSERT INTO channel_notice_binding VALUES(?,?,?,?,?)').run(id, owner, channel, chat, thread);
+  }
+
   private event(taskId: string, type: string, data: unknown) {
     this.db.prepare('INSERT INTO event(taskId,type,data) VALUES(?,?,?)')
       .run(taskId, type, JSON.stringify(data));
@@ -367,7 +379,7 @@ export class TaskStore {
     }
     const terminal = new Set(['run.finished', 'task.cancelled', 'run.lease_expired', 'run.device_revoked', 'approval.expired', 'run.inputs_changed', 'run.device_interrupted', 'run.deadline_exceeded', 'task.result_accepted', 'task.result_rejected', 'workflow.result_outdated']);
     if (!terminal.has(type) && type !== 'task.cancel_requested') return;
-    const task = this.db.prepare('SELECT status FROM task WHERE id=?').get(taskId);
+    const task = this.db.prepare('SELECT owner,status FROM task WHERE id=?').get(taskId);
     const status = String(task?.status);
     const notices: Record<string, string> = {
       succeeded: 'completed', failed: 'failed', cancelled: 'was cancelled', waiting_user: 'needs attention', waiting_review: 'needs result review',
@@ -379,8 +391,8 @@ export class TaskStore {
     this.queuePush(taskId, 'task_update', now);
     const text = `Blazar task ${notice}. Open Blazar to view details. Task: ${taskId}`;
     for (const route of routes) {
-      this.db.prepare('INSERT INTO channel_outbox VALUES(?,?,?,?,?,?,?,0)')
-        .run(randomUUID(), String(route.channel), String(route.chat), String(route.thread), text, now, now);
+      const thread = String(route.thread);
+      this.queueChannelNotice(String(task?.owner), String(route.channel), String(route.chat), thread, thread, text, now);
     }
   }
 
@@ -599,10 +611,11 @@ export class TaskStore {
       ELSE 'pending' END AS delivery
       FROM channel_thread c JOIN task t ON c.task_id=t.id
       LEFT JOIN channel_outbox o ON o.rowid=(
-        SELECT rowid FROM channel_outbox WHERE channel=c.channel AND chat=c.chat AND message_id=c.thread
-        ORDER BY created DESC,rowid DESC LIMIT 1
+        SELECT notice.rowid FROM channel_notice_binding b JOIN channel_outbox notice ON notice.id=b.notice
+        WHERE b.owner=c.owner AND b.channel=c.channel AND b.chat=c.chat AND b.thread=c.thread
+        ORDER BY notice.created DESC,notice.rowid DESC LIMIT 1
       )
-      LEFT JOIN channel_reply_window w ON w.channel=c.channel AND w.chat=c.chat AND w.message_id=c.thread
+      LEFT JOIN channel_reply_window w ON w.channel=o.channel AND w.chat=o.chat AND w.message_id=o.message_id
       WHERE t.owner=? AND c.task_id=? ORDER BY c.rowid`)
       .all(now, owner, taskId).map(row => {
         const channel = String(row.channel);
@@ -619,8 +632,6 @@ export class TaskStore {
       if (!link) return false;
       this.db.prepare('DELETE FROM channel_thread WHERE owner=? AND task_id=? AND channel=? AND chat=? AND thread=?')
         .run(owner, taskId, link.channel, link.chat, link.thread);
-      this.db.prepare('DELETE FROM channel_outbox WHERE channel=? AND chat=? AND message_id=? AND delivered=0')
-        .run(link.channel, link.chat, link.thread);
       this.db.prepare(`DELETE FROM channel_outbox WHERE delivered=0 AND id IN (
         SELECT notice FROM channel_notice_binding WHERE owner=? AND channel=? AND chat=? AND thread=?
       )`).run(owner, link.channel, link.chat, link.thread);
@@ -781,16 +792,10 @@ export class TaskStore {
           this.db.prepare('INSERT OR IGNORE INTO channel_reply_window VALUES(?,?,?,?)')
             .run(channel, message.chat, replyId, message.replyExpires);
         }
-        const notice = randomUUID();
         const chinese = ['/状态', '/暂停', '/继续'].includes(message.text);
         const state = displayTaskStatus(status, chinese);
         const text = chinese ? `Blazar 任务${state}。任务 ID ${link.id}` : `Blazar task status: ${state}. Task: ${link.id}`;
-        this.db.prepare('INSERT INTO channel_outbox VALUES(?,?,?,?,?,?,?,0)')
-          .run(notice, channel, message.chat, replyId, text, now, now);
-        if (replyId !== thread) {
-          this.db.prepare('INSERT INTO channel_notice_binding VALUES(?,?,?,?,?)')
-            .run(notice, owner, channel, message.chat, thread);
-        }
+        this.queueChannelNotice(owner, channel, message.chat, thread, replyId, text, now);
         return;
       }
       if (message.text === '/cancel') {
@@ -1266,8 +1271,17 @@ export class TaskStore {
     const total = queue.reduce((sum, row) => sum + Number(row.total_ms), 0);
     let cumulative = 0;
     const p95 = queue.find(row => (cumulative += Number(row.count)) >= Math.ceil(count * 0.95));
+    const channelDelivery = this.db.prepare(`SELECT
+      CASE WHEN json_valid(b.channel) THEN json_extract(b.channel,'$[0]') ELSE b.channel END AS channel,
+      SUM(o.delivered=1) AS sent,SUM(o.delivered=-1) AS failed,SUM(o.delivered=-2) AS unknown,
+      SUM(o.delivered=0 AND COALESCE(w.expires,o.created+600000)<=?) AS expired,
+      SUM(o.delivered=0 AND COALESCE(w.expires,o.created+600000)>?) AS pending
+      FROM channel_notice_binding b JOIN channel_outbox o ON o.id=b.notice
+      LEFT JOIN channel_reply_window w ON w.channel=o.channel AND w.chat=o.chat AND w.message_id=o.message_id
+      WHERE b.owner=? GROUP BY 1 ORDER BY 1`).all(now, now, owner);
     return {
       tasks: Object.fromEntries(tasks.map(row => [row.status, row.count])),
+      channelDelivery,
       queueLatencyMs: { count, mean: count ? total / count : null,
         p95UpperBound: p95 ? queueLatencyBounds[Number(p95.bucket)] ?? null : null },
       devices: {

@@ -124,6 +124,34 @@ test('progress requires a current run and consecutive device sequences', t => {
   assert.equal(db.events('owner', 0).filter(event => event.type === 'run.progress').length, 2);
 });
 
+test('channel delivery metrics count outcomes without exposing conversation identities', t => {
+  const store = new TaskStore(':memory:');
+  t.after(() => store.close());
+  const now = Date.now();
+  const channel = JSON.stringify(['qq', 'hidden-bot']);
+  const add = (owner: string, id: string, expires: number) => {
+    store.receiveChannelMessage(owner, channel, 'workspace', {
+      id, chat: 'hidden-chat', thread: id, root: true, text: 'Review notes', replyExpires: expires,
+    });
+    const { run } = store.claim(owner, 'workspace', 'device', now, 45_000)!;
+    assert.equal(store.finish(run.id, 'device', now, { status: 'succeeded', result: 'Private' }), true);
+  };
+  for (const id of ['sent', 'failed', 'unknown', 'pending']) add('owner', id, now + 60_000);
+  const finish = (outcome: boolean) => store.finishChannelNotice(
+    store.leasePassiveNotice(channel, Date.now(), ['hidden-chat'])!.id, outcome);
+  finish(true);
+  finish(false);
+  assert.equal(store.leasePassiveNotice(channel, Date.now(), ['hidden-chat'])?.messageId, 'unknown');
+  add('owner', 'expired', now - 1);
+  add('other', 'elsewhere', now + 60_000);
+  const metrics = store.metrics('owner', now);
+  assert.deepEqual(metrics.channelDelivery.map(row => ({ ...row })),
+    [{ channel: 'qq', sent: 1, failed: 1, unknown: 1, expired: 1, pending: 1 }]);
+  assert.deepEqual(store.metrics('other', now).channelDelivery.map(row => ({ ...row })),
+    [{ channel: 'qq', sent: 0, failed: 0, unknown: 0, expired: 0, pending: 1 }]);
+  assert.doesNotMatch(JSON.stringify(metrics), /hidden-bot|hidden-chat|Private/);
+});
+
 test('queue latency counts each actual dispatch and survives a Router restart', t => {
   const root = mkdtempSync(join(tmpdir(), 'blazar-queue-metrics-'));
   const path = join(root, 'router.sqlite');
