@@ -1409,6 +1409,7 @@ export class TaskStore {
       const digest = createHash('sha256').update(JSON.stringify([
         outcome.status, outcome.result, outcome.artifact?.name, outcome.artifact?.text,
         ...(outcome.artifact?.mime ? [outcome.artifact.mime] : []),
+        ...(outcome.waitingReason ? [outcome.waitingReason] : []),
       ])).digest('hex');
       const receipt = this.db.prepare('SELECT outcome_hash FROM run_receipt WHERE id=? AND device=?')
         .get(runId, device);
@@ -1428,7 +1429,10 @@ export class TaskStore {
         return false;
       }
       const click = String(row.goal).startsWith('/click ');
-      if ((outcome.status === 'waiting_user' && !click) ||
+      const patchInputWait = outcome.status === 'waiting_user' && outcome.waitingReason === 'git_patch_inputs' &&
+        Boolean(this.db.prepare("SELECT 1 FROM task_worker_capability WHERE task_id=? AND capability='git-patch-inputs'").get(taskId));
+      if (outcome.waitingReason && !patchInputWait) return false;
+      if ((outcome.status === 'waiting_user' && !click && !patchInputWait) ||
           (click && outcome.status !== 'failed' && !this.db.prepare(`SELECT 1 FROM approval_use u
             JOIN approval a ON a.id=u.id WHERE a.runId=? AND a.version=?`).get(runId, row.runVersion!))) return false;
       if (outcome.status === 'succeeded' && visual && outcome.artifact?.mime !== 'image/png') {
@@ -1456,7 +1460,7 @@ export class TaskStore {
         this.finishInvalidInputs(runId, taskId);
         return false;
       }
-      if (outcome.status === 'waiting_user') this.requireDesktopReconciliation(taskId, runId);
+      if (outcome.status === 'waiting_user' && click) this.requireDesktopReconciliation(taskId, runId);
       this.db.prepare('DELETE FROM run WHERE id=?').run(runId);
       const finalStatus = pendingReview ? 'waiting_review' : outcome.status;
       this.db.prepare('UPDATE task SET status=?,result=? WHERE id=?').run(finalStatus, outcome.result, taskId);
@@ -1472,7 +1476,8 @@ export class TaskStore {
         this.event(taskId, 'artifact.created', { id, taskId, runId, name, sha256, size: content.length, version: row.version });
       }
       this.db.prepare('INSERT INTO run_receipt VALUES(?,?,?)').run(runId, device, digest);
-      this.event(taskId, 'run.finished', { runId, status: finalStatus, result: outcome.result });
+      this.event(taskId, 'run.finished', { runId, status: finalStatus, result: outcome.result,
+        ...(outcome.waitingReason && { waitingReason: outcome.waitingReason }) });
       return true;
     });
   }

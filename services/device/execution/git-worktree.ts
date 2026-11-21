@@ -74,27 +74,29 @@ export async function gitRunWorktrees(workspace: string, stateDirectory: string,
   return { prepare, artifact, includePatch, applyInputs };
 }
 
+export class GitPatchInputError extends Error {}
+
 export async function applyGitPatchInputs(root: string, inputs: PredecessorInput[], signal: AbortSignal) {
-  if (!inputs.length) throw new Error('No Git patch inputs were assigned');
+  if (!inputs.length) throw new GitPatchInputError('No Git patch inputs were assigned');
   const git = gitAt(root, signal);
   const base = await git('rev-parse', '--verify', 'HEAD^{commit}');
   const patches = inputs.map(input => {
     if (input.artifact?.name !== 'git-changes.json' || !input.artifact.text) {
-      throw new Error('A required Git patch artifact is unavailable');
+      throw new GitPatchInputError('A required Git patch artifact is unavailable');
     }
     let report: { version?: number; baseCommit?: string; patch?: unknown; changes?: unknown } | null;
     try {
       report = JSON.parse(input.artifact.text);
     } catch {
-      throw new Error('A required Git patch artifact is malformed');
+      throw new GitPatchInputError('A required Git patch artifact is malformed');
     }
     if (report?.version !== 1 || report.baseCommit !== base) {
-      throw new Error('Git patch inputs do not match the checkout base commit');
+      throw new GitPatchInputError('Git patch inputs do not match the checkout base commit');
     }
     if (typeof report.patch !== 'string' || (report.patch && !report.patch.startsWith('diff --git ')) ||
         /^(?:Binary files |GIT binary patch$)/m.test(report.patch) ||
         !Array.isArray(report.changes) || report.changes.some(change => typeof change !== 'string' || change.startsWith('?? '))) {
-      throw new Error('A required Git patch is incomplete or contains unsupported file changes');
+      throw new GitPatchInputError('A required Git patch is incomplete or contains unsupported file changes');
     }
     return report.patch;
   }).filter(Boolean);
@@ -107,7 +109,7 @@ export async function applyGitPatchInputs(root: string, inputs: PredecessorInput
     await git('apply', '--index', '--whitespace=nowarn', '--', patch);
   } catch (cause) {
     signal.throwIfAborted();
-    throw new Error('Git patch inputs conflict with each other or the checkout. Inspect the retained worktree.', { cause });
+    throw new GitPatchInputError('Git patch inputs conflict with each other or the checkout. Inspect the retained worktree.', { cause });
   } finally {
     await rm(scratch, { force: true, recursive: true });
   }

@@ -190,6 +190,9 @@ export function deviceOperation(store: DeviceTasks, bearer: string, pathname: st
   if (data.status !== 'succeeded' && data.status !== 'failed' && data.status !== 'waiting_user') {
     throw new RequestError(400, 'Invalid outcome status');
   }
+  if (data.waitingReason !== undefined && (data.status !== 'waiting_user' || data.waitingReason !== 'git_patch_inputs')) {
+    throw new RequestError(400, 'Invalid run waiting reason');
+  }
   let artifact: RunOutcome['artifact'];
   if (data.artifact !== undefined) {
     if (data.status !== 'succeeded' || !data.artifact || typeof data.artifact !== 'object' || Array.isArray(data.artifact)) {
@@ -217,6 +220,7 @@ export function deviceOperation(store: DeviceTasks, bearer: string, pathname: st
   }
   const accepted = store.finish(run[1], device.id, now, {
     status: data.status,
+    ...(data.waitingReason && { waitingReason: data.waitingReason }),
     result: requiredText(data.result, 'result', 32_000),
     artifact,
   });

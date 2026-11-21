@@ -125,6 +125,7 @@ test('isolated Worker runs keep their changes in independent retained worktrees'
     { key: 'review', goal: 'Review changes', needs: ['a', 'b'] },
     { key: 'apply', goal: 'Read patched A', needs: ['a'], workerCapability: 'git-patch-inputs' },
     { key: 'conflict', goal: 'Conflicting patch inputs', needs: ['a', 'b'], workerCapability: 'git-patch-inputs' },
+    { key: 'blocked', goal: 'Read merged changes', needs: ['conflict'] },
   ]);
   assert.deepEqual(await Promise.all(clients.map(client => client.runOnce(AbortSignal.timeout(5_000)))), [true, true]);
   const receiver = store.claim('owner', 'project', 'reviewer', Date.now(), 45_000)!;
@@ -147,8 +148,12 @@ test('isolated Worker runs keep their changes in independent retained worktrees'
   const afterApply = store.snapshot('owner').tasks;
   assert.equal(afterApply.find(item => item.goal === 'Read patched A')?.result, 'Read patched A');
   const conflict = afterApply.find(item => item.goal === 'Conflicting patch inputs');
-  assert.equal(conflict?.status, 'failed');
+  assert.equal(conflict?.status, 'waiting_user');
   assert.match(conflict?.result ?? '', /Git patch inputs conflict/);
+  const event = store.timeline('owner', conflict!.id)?.events.find(event => event.type === 'run.finished');
+  assert.equal(event?.data.waitingReason, 'git_patch_inputs');
+  assert.equal(afterApply.find(item => item.goal === 'Read merged changes')?.status, 'waiting_dependency');
+  assert.equal(store.command('owner', conflict!.id, conflict!.version, { action: 'retry' })?.status, 'queued');
 
   assert.equal(await readFile(notes, 'utf8'), 'Uncommitted user edit');
   await writeFile(join(first, 'notes.txt'), 'x'.repeat(70_000));

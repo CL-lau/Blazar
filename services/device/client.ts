@@ -11,7 +11,7 @@ import { maintainLease } from './lease.ts';
 import { platform } from 'node:os';
 import { preview } from './preview.ts';
 import { executeDesktopAction } from './execution/desktop.ts';
-import { applyGitPatchInputs, type gitRunWorktrees } from './execution/git-worktree.ts';
+import { applyGitPatchInputs, GitPatchInputError, type gitRunWorktrees } from './execution/git-worktree.ts';
 import { completeInputArtifacts } from './execution/input-artifacts.ts';
 import { executeWorker } from './execution/worker.ts';
 
@@ -233,7 +233,11 @@ export class DeviceClient {
           this.ledger.clearExecution(this.workspaceIdentity, assignment.run.id);
           active.throwIfAborted();
         }
-        outcome = { status: error instanceof DesktopResultUnverified ? 'waiting_user' : 'failed', result: error instanceof Error ? error.message : 'Preview failed' };
+        outcome = {
+          status: error instanceof DesktopResultUnverified || error instanceof GitPatchInputError ? 'waiting_user' : 'failed',
+          ...(error instanceof GitPatchInputError && { waitingReason: 'git_patch_inputs' }),
+          result: error instanceof Error ? error.message : 'Preview failed',
+        };
       }
       this.ledger.complete(this.workspaceIdentity, this.scope, assignment.run.id, outcome, checkpoint);
       await this.deliver(assignment.run.id, outcome, active);
