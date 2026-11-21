@@ -25,6 +25,7 @@ function App() {
   const [memoryAccounts, setMemoryAccounts] = useState([]);
   const [memorySources, setMemorySources] = useState([]);
   const [plan, setPlan] = useState(null);
+  const [followUp, setFollowUp] = useState(null);
   const [instruction, setInstruction] = useState('');
   const [key, setKey] = useState(() => crypto.randomUUID());
   const [error, setError] = useState('');
@@ -261,6 +262,7 @@ function App() {
                 const ask = action === 'ask';
                 submit(async () => {
                   setMemoryAnswer(null);
+                  setFollowUp(null);
                   if (action === 'app-memory') {
                     if (!chosenSources.length || !memoryQuery.trim()) return;
                     setPlan(null);
@@ -276,6 +278,7 @@ function App() {
                   });
                   if (ask && result.kind !== 'create_task') {
                     setAnswer(result.text);
+                    if (result.kind === 'append_task') setFollowUp({ ...result, key: crypto.randomUUID() });
                     setPlan(result.kind === 'propose_workflow'
                       ? { workspace, steps: result.steps, key: crypto.randomUUID() } : null);
                     return;
@@ -331,6 +334,22 @@ function App() {
                   })}</ul>
                 </section>}
                 {answer && <p role="status">{answer}</p>}
+                {followUp && <section className="approval" aria-label="Proposed follow-up">
+                  <h3>Proposed follow-up</h3>
+                  <p>{snapshot.tasks.find(item => item.id === followUp.taskId)?.goal ?? followUp.taskId}</p>
+                  <p>{followUp.instruction}</p>
+                  <button type="button" disabled={busy} onClick={() => submit(async () => {
+                    await api('/tasks/' + followUp.taskId + '/commands', {
+                      method: 'POST', key: followUp.key,
+                      body: { action: 'append', text: followUp.instruction, expectedVersion: followUp.expectedVersion },
+                    });
+                    setSelected(followUp.taskId);
+                    setFollowUp(null);
+                    setAnswer('');
+                    await reload();
+                  })}>Send instruction</button>
+                  <button type="button" disabled={busy} onClick={() => { setFollowUp(null); setAnswer(''); }}>Discard</button>
+                </section>}
                 {plan && <section className="approval" aria-label="Proposed workflow">
                   <h3>Proposed workflow</h3>
                   <p>Workspace: {plan.workspace}</p>

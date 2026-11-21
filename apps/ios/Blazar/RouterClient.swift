@@ -141,6 +141,9 @@ struct RouterClient: Equatable {
         let kind: String
         let text: String?
         let steps: [WorkflowStep]?
+        let taskId: String?
+        let instruction: String?
+        let expectedVersion: Int?
     }
 
     func ask(workspace: String, text: String, key: UUID, usePersonalMemory: Bool = false) async throws -> ConversationReply {
@@ -160,6 +163,11 @@ struct RouterClient: Equatable {
         body["text"] = text
         body["approvalId"] = approval
         _ = try await request("v1/tasks/\(task.id)/commands", body: body, key: UUID())
+    }
+
+    func sendFollowUp(taskId: String, version: Int, text: String, key: UUID) async throws {
+        _ = try await request("v1/tasks/\(taskId)/commands",
+                              body: ["action": "append", "expectedVersion": version, "text": text], key: key)
     }
 
     func timeline(taskId: String, before: Int? = nil) async throws -> TimelinePage {

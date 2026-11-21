@@ -28,6 +28,12 @@ private struct TaskScreen: View {
         let steps: [RouterClient.WorkflowStep]
         let key = UUID()
     }
+    private struct ProposedFollowUp {
+        let taskId: String
+        let version: Int
+        let instruction: String
+        let key = UUID()
+    }
 
     @Environment(\.scenePhase) private var scenePhase
     @AppStorage("router.endpoint") private var savedEndpoint = ""
@@ -43,6 +49,7 @@ private struct TaskScreen: View {
     @State private var answer: String?
     @State private var usePersonalMemory = false
     @State private var plan: ProposedWorkflow?
+    @State private var followUp: ProposedFollowUp?
     @State private var pairingCode = ""
     @State private var pairing = false
     #if os(iOS)
@@ -138,6 +145,12 @@ private struct TaskScreen: View {
                                     let reply = try await client.ask(workspace: submittedWorkspace, text: goal, key: requestKey,
                                                                      usePersonalMemory: usePersonalMemory)
                                     answer = reply.text
+                                    if reply.kind == "append_task", let taskId = reply.taskId,
+                                       let version = reply.expectedVersion, let instruction = reply.instruction {
+                                        followUp = ProposedFollowUp(taskId: taskId, version: version, instruction: instruction)
+                                    } else {
+                                        followUp = nil
+                                    }
                                     if reply.kind == "propose_workflow", let steps = reply.steps, !steps.isEmpty {
                                         plan = ProposedWorkflow(workspace: submittedWorkspace, steps: steps)
                                     } else {
@@ -156,6 +169,27 @@ private struct TaskScreen: View {
                     DesktopControl(client: client, targets: snapshot.desktopTargets ?? [], tasks: snapshot.tasks,
                                    workspace: $workspace, sending: $sending, reload: reload,
                                    showError: { self.error = $0.localizedDescription })
+                    if let followUp {
+                        Section("Proposed follow-up") {
+                            Text(snapshot.tasks.first { $0.id == followUp.taskId }?.goal ?? followUp.taskId)
+                            Text(followUp.instruction)
+                            Button("Send instruction") {
+                                sending = true
+                                Task {
+                                    defer { sending = false }
+                                    do {
+                                        try await client.sendFollowUp(taskId: followUp.taskId, version: followUp.version,
+                                                                      text: followUp.instruction, key: followUp.key)
+                                        self.followUp = nil
+                                        answer = nil
+                                        await reload()
+                                    } catch { self.error = error.localizedDescription }
+                                }
+                            }
+                            Button("Discard") { self.followUp = nil; answer = nil }
+                        }
+                        .disabled(sending)
+                    }
                     if let plan {
                         Section("Proposed workflow") {
                             Text(plan.workspace)

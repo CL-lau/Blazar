@@ -798,6 +798,7 @@ export function routerServer(store: TaskStore, config: { owner: string; token: s
           }
           else if (!config.harness) throw new RequestError(503, 'Blazar has no Router model configured');
           else {
+            const foundVersions = new Map<string, number>();
             const recall = () => input.usePersonalMemory
               ? config.memory?.personalContext(owner, input.workspace, input.text) ?? [] : [];
             const evidence = recall();
@@ -806,7 +807,11 @@ export function routerServer(store: TaskStore, config: { owner: string; token: s
             try {
               decision = await config.harness({
                 ...input, recent: store.recentConversation(owner, input.workspace),
-                findTasks: query => store.findRouterTasks(owner, input.workspace, query),
+                findTasks: query => {
+                  const tasks = store.findRouterTasks(owner, input.workspace, query);
+                  for (const task of tasks) foundVersions.set(task.id, task.version);
+                  return tasks;
+                },
                 ...(evidence.length ? { personalMemory: evidence.map(item => item.body) } : {}),
               }, AbortSignal.timeout(15_000));
             } catch {
@@ -820,6 +825,16 @@ export function routerServer(store: TaskStore, config: { owner: string; token: s
               if (evidence.some(item => !current.some(note => note.id === item.id && note.version === item.version))) {
                 throw new RequestError(409, 'Personal memory changed while routing. Please retry.');
               }
+            }
+            if (decision.kind === 'append_task') {
+              const version = foundVersions.get(decision.taskId);
+              const task = store.get(owner, decision.taskId);
+              if (!task || task.workspace !== input.workspace || task.version !== version ||
+                  /^\/(observe|click|preview) /.test(task.goal) ||
+                  ['cancelling', 'cancelled', 'pausing', 'paused'].includes(task.status)) {
+                throw new RequestError(409, 'The proposed follow-up target changed or is unavailable');
+              }
+              decision = { ...decision, expectedVersion: version };
             }
           }
           if (!admin && store.mobileOwner(mobileToken) !== owner) throw new RequestError(401, 'Authentication required');

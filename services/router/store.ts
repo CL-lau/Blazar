@@ -358,10 +358,10 @@ export class TaskStore {
   }
 
   findRouterTasks(owner: string, workspace: string, query: string) {
-    return this.db.prepare(`SELECT id,substr(goal,1,320) AS goal,status FROM task WHERE owner=? AND workspace=?
+    return this.db.prepare(`SELECT id,substr(goal,1,320) AS goal,status,version FROM task WHERE owner=? AND workspace=?
       AND (?='' OR id=? OR instr(lower(goal),lower(?))>0)
       ORDER BY rowid DESC LIMIT 8`).all(owner, workspace, query, query, query)
-      .map(row => ({ id: String(row.id), goal: String(row.goal).toWellFormed(), status: String(row.status) }));
+      .map(row => ({ id: String(row.id), goal: String(row.goal).toWellFormed(), status: String(row.status), version: Number(row.version) }));
   }
 
   recentConversation(owner: string, workspace: string): ConversationTurn[] {
@@ -372,6 +372,9 @@ export class TaskStore {
         if (decision.kind === 'propose_workflow') {
           decision.text = decision.text.slice(0, 2_000);
           decision.steps = decision.steps.map(step => ({ ...step, goal: step.goal.slice(0, 200) }));
+        } else if (decision.kind === 'append_task') {
+          decision.text = decision.text.slice(0, 2_000);
+          decision.instruction = decision.instruction.slice(0, 2_000);
         } else if (decision.kind !== 'create_task') decision.text = decision.text.slice(0, 2_000);
         else if (decision.goal) decision.goal = decision.goal.slice(0, 2_000);
         return { text: String(row.text).slice(0, 2_000), decision };

@@ -45,6 +45,10 @@ test('Router authenticates, deduplicates commands and replays task changes over 
     },
     async harness(input) {
       decisions++;
+      if (input.text === 'Add tests to the review') {
+        const [task] = input.findTasks!('Draft the review');
+        return { kind: 'append_task', taskId: task.id, text: 'Add test coverage.', instruction: 'Include tests.' };
+      }
       if (input.workspace === 'memory-review') {
         routingMemory = input.personalMemory;
         if (routingMemoryId) memory.remove('test', routingMemoryId);
@@ -464,5 +468,19 @@ test('Router authenticates, deduplicates commands and replays task changes over 
   assert.equal(store.recentConversation('test', 'memory-review').length, 1);
   routingMemoryId = personal;
   assert.equal((await post('/v1/conversation', 'memory-race', { ...memoryQuestion, usePersonalMemory: true })).status, 409);
+
+  const existing = store.create('test', 'fixture', 'append-existing', 'follow-up', 'Draft the review');
+  const append = { workspace: 'follow-up', text: 'Add tests to the review' };
+  const proposal = await (await post('/v1/conversation', 'append-proposal', append)).json();
+  assert.deepEqual(proposal, {
+    kind: 'append_task', taskId: existing.id, text: 'Add test coverage.',
+    instruction: 'Include tests.', expectedVersion: 1,
+  });
+  assert.equal(store.get('test', existing.id)?.version, 1);
+  const command = { action: 'append', text: proposal.instruction, expectedVersion: proposal.expectedVersion };
+  assert.equal((await post('/v1/tasks/' + existing.id + '/commands', 'confirm-follow-up', command)).status, 200);
+  assert.deepEqual(await (await post('/v1/conversation', 'append-proposal', append)).json(), proposal);
+  assert.equal((await post('/v1/tasks/' + existing.id + '/commands', 'stale-follow-up', command)).status, 409);
+  assert.equal(store.get('test', existing.id)?.version, 2);
 
 });
