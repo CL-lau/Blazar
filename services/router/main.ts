@@ -1,3 +1,4 @@
+import { runDueApplicationWriteCheck } from './application/app-write.ts';
 import { configuredPush, startPushDelivery } from './push.ts';
 import { configuredApplicationWrites, configuredDocuments } from '../../packages/apps/config.ts';
 import { weixinConfig } from '../../packages/channels/weixin.ts';
@@ -56,6 +57,7 @@ if (qq && (!qq.appId || !qq.workspace || !qq.senders.size || !qq.chats.size)) {
   throw new Error('Set all Blazar QQ configuration values before enabling the callback');
 }
 const documents = configuredDocuments(process.env);
+const applicationWrites = configuredApplicationWrites(process.env);
 const push = configuredPush(process.env);
 const instance = lockRouter(process.env.BLAZAR_DB ?? 'blazar.sqlite');
 const memory = new MemoryStore(instance.path);
@@ -74,7 +76,7 @@ const dingTalk = dingTalkConfig(process.env);
 const wecom = weComConfig(process.env);
 const weixin = weixinConfig(process.env);
 const server = routerServer(store, {
-  owner: 'local', token, memory, harness, answerMemory, draftMemory, documents, applicationWrites: configuredApplicationWrites(process.env), pushEnabled: Boolean(push),
+  owner: 'local', token, memory, harness, answerMemory, draftMemory, documents, applicationWrites, pushEnabled: Boolean(push),
   feishu, lark, qq, readQQAttachment,
   readFeishuAttachment: feishuSender?.readAttachment, readLarkAttachment: larkSender?.readAttachment,
   streamChannels: {
@@ -93,6 +95,15 @@ const documentSyncTimer = setInterval(() => {
     .finally(() => { documentSync = undefined; });
 }, 5_000);
 documentSyncTimer.unref();
+const writeCheckShutdown = new AbortController();
+let writeCheck: Promise<unknown> | undefined;
+const writeCheckTimer = setInterval(() => {
+  if (writeCheck || !applicationWrites.length) return;
+  writeCheck = runDueApplicationWriteCheck(memory.appWrites, applicationWrites, writeCheckShutdown.signal)
+    .catch(() => console.error('Application write reconciliation could not complete'))
+    .finally(() => { writeCheck = undefined; });
+}, 5_000);
+writeCheckTimer.unref();
 let nextProgressCleanup = 0;
 let nextMemoryCleanup = 0;
 const cleanupBatch = 1_000;
@@ -162,12 +173,14 @@ function shutdown() {
   dingTalkConnection?.stop();
   clearInterval(documentSyncTimer);
   documentSyncShutdown.abort();
+  clearInterval(writeCheckTimer);
+  writeCheckShutdown.abort();
   clearInterval(watchdog);
   clearInterval(channelDispatcher);
   clearInterval(qqDispatcher);
   server.closeDeviceSockets();
   server.close(async () => {
-    await Promise.all([...collaborationChannels.map(channel => channel.delivery), qqDelivery, documentSync, stopPush?.()]);
+    await Promise.all([...collaborationChannels.map(channel => channel.delivery), qqDelivery, documentSync, writeCheck, stopPush?.()]);
     memory.close();
     store.close();
     instance.release();

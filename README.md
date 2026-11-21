@@ -180,7 +180,8 @@ An optional `statusTool` adds machine reconciliation. The write tool then receiv
 `blazarInvocationId` and should record it with the external operation. The separate, read-only status
 tool receives that ID and returns `structuredContent` containing the same ID, a conclusive `resolution`
 and `evidence`. POST to `/v1/app-write-proposals/{id}/check-result` to run that lookup. Unknown or
-mismatched responses leave the proposal unresolved.
+mismatched responses leave the proposal unresolved. Router also checks unresolved writes in the
+background and persists a five-minute retry interval for inconclusive lookups.
 
 An entry may also specify up to two ordered `fallbacks`, each with its own `endpoint`, `tool`,
 optional `tokenEnv` and optional `statusTool`. Configure fallbacks for the same account and external

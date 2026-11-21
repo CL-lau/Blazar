@@ -1,3 +1,4 @@
+import { sqliteTransaction } from '../../../packages/storage/sqlite.ts';
 import { randomUUID } from 'node:crypto';
 import type { DatabaseSync } from 'node:sqlite';
 import type { ApplicationAction } from '../../../packages/apps/actions.ts';
@@ -87,6 +88,29 @@ export class AppWriteRepository {
         AND (w.status='outcome_unknown' OR (w.status='dispatching' AND w.expires+?<=?))
         AND a.owner=w.owner AND a.active=1 AND a.scope_version=w.scope_version
         AND (a.workspace IS NULL OR a.workspace=w.workspace)`).get(owner, id, revision, backend, applicationWriteTimeoutMs, now));
+  }
+
+  leaseOutcomeCheck(candidates: readonly { revision: string; backend: string }[], now = Date.now()) {
+    return sqliteTransaction(this.db, () => {
+      const due = this.db.prepare(`SELECT w.id,w.owner,w.backend,w.definition_revision AS revision
+        FROM app_write w JOIN app_connection a ON a.id=w.connection
+        JOIN json_each(?) c ON json_extract(c.value,'$.revision')=w.definition_revision
+          AND json_extract(c.value,'$.backend')=w.backend
+        LEFT JOIN app_write_check_schedule s ON s.proposal=w.id
+        LEFT JOIN app_write_reconciliation r ON r.proposal=w.id
+        WHERE r.proposal IS NULL AND (s.next_check IS NULL OR s.next_check<=?)
+          AND (w.status='outcome_unknown' OR (w.status='dispatching' AND w.expires+?<=?))
+          AND a.owner=w.owner AND a.active=1 AND a.scope_version=w.scope_version
+          AND (a.workspace IS NULL OR a.workspace=w.workspace)
+        ORDER BY COALESCE(s.next_check,0),w.rowid LIMIT 1`)
+        .get(JSON.stringify(candidates), now, applicationWriteTimeoutMs, now) as {
+          id: string; owner: string; backend: string; revision: string;
+        } | undefined;
+      if (!due) return undefined;
+      this.db.prepare(`INSERT INTO app_write_check_schedule VALUES(?,?)
+        ON CONFLICT(proposal) DO UPDATE SET next_check=excluded.next_check`).run(due.id, now + 300_000);
+      return due;
+    });
   }
 
   reconciliation(owner: string, id: string) {

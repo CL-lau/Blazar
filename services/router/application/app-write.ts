@@ -1,5 +1,6 @@
 import { invokeApplicationAction, type ActionBackend } from '../../../packages/apps/actions.ts';
-import type { AppWriteRepository } from '../persistence/app-write-repository.ts';
+import type { ConfiguredApplicationWrite } from '../../../packages/apps/config.ts';
+import { applicationWriteTimeoutMs, type AppWriteRepository } from '../persistence/app-write-repository.ts';
 import { RequestError } from '../protocol/request.ts';
 
 export async function confirmApplicationWrite(
@@ -45,7 +46,7 @@ export async function checkApplicationWrite(
 ) {
   const recorded = writes.reconciliation(owner, id);
   if (recorded) return recorded;
-  const permitted = () => writes.canCheck(owner, id, revision, lookup.id);
+  const permitted = () => !signal.aborted && writes.canCheck(owner, id, revision, lookup.id);
   if (!permitted()) return undefined;
   try {
     const result = await lookup.invoke({
@@ -63,4 +64,22 @@ export async function checkApplicationWrite(
   } catch {
     return undefined;
   }
+}
+
+export async function runDueApplicationWriteCheck(
+  writes: AppWriteRepository,
+  definitions: readonly ConfiguredApplicationWrite[],
+  signal: AbortSignal,
+) {
+  if (signal.aborted) return false;
+  const candidates = definitions.flatMap(definition => definition.candidates.flatMap(({ lookup }) =>
+    lookup ? [{ revision: definition.revision, backend: lookup.id, lookup }] : []));
+  if (!candidates.length) return false;
+  const due = writes.leaseOutcomeCheck(candidates.map(({ revision, backend }) => ({ revision, backend })));
+  if (!due) return false;
+  const candidate = candidates.find(item => item.revision === due.revision && item.backend === due.backend);
+  if (!candidate) return false;
+  await checkApplicationWrite(writes, due.owner, due.id, due.revision, candidate.lookup,
+    AbortSignal.any([signal, AbortSignal.timeout(applicationWriteTimeoutMs)]));
+  return true;
 }

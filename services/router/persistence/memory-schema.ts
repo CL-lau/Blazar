@@ -21,6 +21,11 @@ export function initializeMemorySchema(db: DatabaseSync): boolean {
       proposal TEXT PRIMARY KEY REFERENCES app_write(id), client TEXT NOT NULL
     );
     CREATE INDEX IF NOT EXISTS app_write_mobile_client ON app_write_mobile_grant(client);
+    CREATE INDEX IF NOT EXISTS app_write_unresolved ON app_write(definition_revision,backend)
+      WHERE status IN ('outcome_unknown','dispatching');
+    CREATE TABLE IF NOT EXISTS app_write_check_schedule (
+      proposal TEXT PRIMARY KEY REFERENCES app_write(id), next_check INTEGER NOT NULL
+    );
     CREATE TABLE IF NOT EXISTS app_write_reconciliation (
       proposal TEXT PRIMARY KEY REFERENCES app_write(id), resolution TEXT NOT NULL
         CHECK(resolution IN ('applied','not_applied')),
