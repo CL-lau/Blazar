@@ -812,3 +812,28 @@ test('IM retry is limited to a linked task and deduplicated by channel message I
   assert.equal(db.get('owner', task.id)?.version, task.version + 1);
   assert.equal(db.timeline('owner', task.id)?.events.filter(event => event.type === 'task.retry_requested').length, 1);
 });
+
+test('IM result review requires the current version of a linked task', t => {
+  const db = new TaskStore(':memory:');
+  t.after(() => db.close());
+  const now = Date.now();
+  db.createWorkflow('owner', 'review-flow', 'project', [
+    { key: 'draft', goal: 'Draft notes', needs: [], requireReview: true },
+    { key: 'next', goal: 'Summarize notes', needs: ['draft'] },
+  ]);
+  const { task, run } = db.claim('owner', 'project', 'device', now, 45_000)!;
+  assert.equal(db.finish(run.id, run.device, now, { status: 'succeeded', result: 'Draft' }), true);
+  const code = db.createTaskLink('owner', task.id, now)!.code;
+  const send = (id: string, text: string, root = false) =>
+    db.receiveChannelMessage('owner', 'feishu', 'project', { id, text, chat: 'chat', thread: 'root', root });
+  send('root', '/link ' + code, true);
+  send('missing-version', '/accept');
+  send('wrong-version', '/accept 2');
+  assert.equal(db.get('owner', task.id)?.status, 'waiting_review');
+  send('accept', '/验收 1');
+  send('accept', '/验收 1');
+  assert.equal(db.get('owner', task.id)?.status, 'succeeded');
+  assert.equal(db.get('owner', task.id)?.version, 2);
+  assert.equal(db.timeline('owner', task.id)?.events.filter(event => event.type === 'task.result_accepted').length, 1);
+  assert.equal(db.claim('owner', 'project', 'device', now, 45_000)?.task.goal, 'Summarize notes');
+});

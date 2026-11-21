@@ -162,7 +162,7 @@ To enable clicks for named buttons, set `BLAZAR_COMPUTER_BUTTONS` to an alias-to
 
 To cancel a task from a linked IM thread, send `/blazar /cancel` as a reply. On channels that use explicit task references, use the channel’s follow-up syntax with `/cancel` as the follow-up text. The original workspace and conversation must match the task link.
 
-Linked conversations also accept `/status`, `/pause`, `/resume`, and `/retry` as follow-up text. Their Chinese equivalents are `/状态`, `/暂停`, `/继续`, and `/重试`. Resume applies to paused tasks. Retry queues a new version of a failed task or one that is waiting for attention without an active run.
+Linked conversations also accept `/status`, `/pause`, `/resume`, and `/retry` as follow-up text. Their Chinese equivalents are `/状态`, `/暂停`, `/继续`, and `/重试`. Resume applies to paused tasks. Retry queues a new version of a failed task or one that is waiting for attention without an active run. To review a linked result, use `/status` to check its current version, then reply with `/accept <version>` or `/reject <version>` (`/验收` or `/退回`).
 
 To continue an existing task in another supported IM conversation, open the task on desktop and create a one-time link command. Send the command as a new message in an authorized conversation for the same workspace. Reply in the linked Feishu or Lark thread, or use `/blazar follow TASK_ID your instruction` on channels that require an explicit task reference.
 

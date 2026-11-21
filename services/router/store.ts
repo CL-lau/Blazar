@@ -817,7 +817,8 @@ export class TaskStore {
       const pause = message.text === '/pause' || message.text === '/暂停';
       const resume = message.text === '/resume' || message.text === '/继续';
       const retry = message.text === '/retry' || message.text === '/重试';
-      if ((message.text === '/cancel' || statusQuery || pause || resume || retry) && message.root) return;
+      const review = /^\/(accept|reject|验收|退回)(?:\s+(.*))?$/.exec(message.text);
+      if ((message.text === '/cancel' || statusQuery || pause || resume || retry || review) && message.root) return;
       const linking = message.text === '/link' || message.text.startsWith('/link ');
       if (linking || message.root) {
         let taskId: string;
@@ -856,11 +857,15 @@ export class TaskStore {
         const refs = this.appEvidence(taskId);
         return !refs || this.canUseChannelAppEvidence?.(owner, workspace, refs) === true;
       };
-      if (statusQuery || pause || resume || retry) {
+      if (statusQuery || pause || resume || retry || review) {
         const previous = String(link.status);
         if (pause) this.pauseTask(taskId, previous, { channel });
         if ((resume || retry) && canContinue()) this.requeueTask(taskId, previous, retry ? 'retry' : 'resume', { channel });
-        const status = this.get(owner, taskId)!.status;
+        const current = this.get(owner, taskId)!;
+        if (review && /^[1-9]\d*$/.test(review[2] ?? '') && Number(review[2]) === current.version) {
+          const accepted = review[1] === 'accept' || review[1] === '验收';
+          if ((!accepted || canContinue()) && this.reviewResult(current, accepted, { channel })) return;
+        }
         const now = Date.now();
         const thread = String(link.thread);
         const replyId = message.replyExpires === undefined ? thread : message.id;
@@ -869,9 +874,10 @@ export class TaskStore {
           this.db.prepare('INSERT OR IGNORE INTO channel_reply_window VALUES(?,?,?,?)')
             .run(channel, message.chat, replyId, message.replyExpires);
         }
-        const chinese = ['/状态', '/暂停', '/继续', '/重试'].includes(message.text);
-        const state = displayTaskStatus(status, chinese);
-        const text = chinese ? `Blazar 任务${state}。任务 ID ${link.id}` : `Blazar task status: ${state}. Task: ${link.id}`;
+        const chinese = ['/状态', '/暂停', '/继续', '/重试'].includes(message.text) || review?.[1] === '验收' || review?.[1] === '退回';
+        const state = displayTaskStatus(current.status, chinese);
+        const text = chinese ? `Blazar 任务${state}。版本 ${current.version}。任务 ID ${link.id}`
+          : `Blazar task status: ${state}. Version: ${current.version}. Task: ${link.id}`;
         this.queueChannelNotice(owner, channel, message.chat, thread, replyId, text, now);
         return;
       }
@@ -882,6 +888,22 @@ export class TaskStore {
       if (['cancelled', 'cancelling', 'paused', 'pausing'].includes(String(link.status)) || !canContinue()) return;
       this.appendInstruction(taskId, message.text, String(link.status), { channel });
     });
+  }
+
+  private reviewResult(task: Task, accepted: boolean, metadata: Record<string, string> = {}) {
+    if (task.status !== 'waiting_review' || this.db.prepare('SELECT 1 FROM run WHERE taskId=?').get(task.id)) return false;
+    const { id: taskId, version } = task;
+    if (accepted && this.db.prepare(`SELECT 1 FROM review_input i JOIN task p ON p.id=i.predecessor
+      WHERE i.task_id=? AND (p.status!='succeeded' OR p.version<>i.version)`).get(taskId)) return false;
+    const status = accepted ? 'succeeded' : 'failed';
+    this.db.prepare('UPDATE task SET status=?,version=version+1 WHERE id=?').run(status, taskId);
+    if (accepted) {
+      this.db.prepare(`UPDATE artifact_version SET task_version=? WHERE task_version=?
+        AND artifact_id IN (SELECT id FROM artifact WHERE taskId=?)`).run(version + 1, version, taskId);
+    }
+    this.db.prepare('DELETE FROM review_input WHERE task_id=?').run(taskId);
+    this.event(taskId, accepted ? 'task.result_accepted' : 'task.result_rejected', { status, ...metadata });
+    return true;
   }
 
   private pauseTask(taskId: string, previousStatus: string, metadata: Record<string, string> = {}) {
@@ -1141,18 +1163,7 @@ export class TaskStore {
         this.db.prepare("UPDATE task SET status='running' WHERE id=?").run(taskId);
         this.event(taskId, 'approval.decided', { approvalId: command.approvalId, decision });
       } else if (command.action === 'accept_result' || command.action === 'reject_result') {
-        if (task.status !== 'waiting_review' || liveRun) return undefined;
-        const accepted = command.action === 'accept_result';
-        if (accepted && this.db.prepare(`SELECT 1 FROM review_input i JOIN task p ON p.id=i.predecessor
-          WHERE i.task_id=? AND (p.status!='succeeded' OR p.version<>i.version)`).get(taskId)) return undefined;
-        const status = accepted ? 'succeeded' : 'failed';
-        this.db.prepare('UPDATE task SET status=?,version=version+1 WHERE id=?').run(status, taskId);
-        if (accepted) {
-          this.db.prepare(`UPDATE artifact_version SET task_version=? WHERE task_version=?
-            AND artifact_id IN (SELECT id FROM artifact WHERE taskId=?)`).run(version + 1, version, taskId);
-        }
-        this.db.prepare('DELETE FROM review_input WHERE task_id=?').run(taskId);
-        this.event(taskId, accepted ? 'task.result_accepted' : 'task.result_rejected', { status });
+        if (!this.reviewResult(task, command.action === 'accept_result')) return undefined;
       } else if (command.action === 'pause') {
         if (!this.pauseTask(taskId, task.status)) return undefined;
       } else if (command.action === 'resume' || command.action === 'retry') {
