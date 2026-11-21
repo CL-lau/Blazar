@@ -534,9 +534,12 @@ export function routerServer(store: TaskStore, config: { owner: string; token: s
           const goal = requiredText(data.text, 'text', 32_000);
           const desktopDevice = data.desktopDevice;
           if (desktopDevice !== undefined) {
+            const targetApp = /^\/(?:observe|click) ([a-z0-9_-]{1,32})(?: |$)/.exec(goal)?.[1];
             if (typeof desktopDevice !== 'string' || !/^[a-f0-9-]{36}$/.test(desktopDevice) ||
-                !/^\/(observe|click) /.test(goal)) throw new RequestError(400, 'Invalid desktop target');
-            if (!store.ownsDesktopTarget(owner, workspace, desktopDevice)) throw new RequestError(404, 'Desktop target unavailable');
+                !targetApp) throw new RequestError(400, 'Invalid desktop target');
+            if (!store.ownsDesktopTarget(owner, workspace, desktopDevice, targetApp)) {
+              throw new RequestError(404, 'Desktop target unavailable');
+            }
           }
           if (data.usePersonalMemory !== undefined && typeof data.usePersonalMemory !== 'boolean') {
             throw new RequestError(400, 'Invalid task memory option');

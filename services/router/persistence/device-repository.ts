@@ -99,9 +99,10 @@ export class DeviceRepository {
       }));
   }
 
-  ownsDesktopTarget(owner: string, workspace: string, id: string) {
+  ownsDesktopTarget(owner: string, workspace: string, id: string, alias: string) {
     return Boolean(this.db.prepare(`SELECT 1 FROM device d JOIN device_desktop_apps a ON a.device_id=d.id
-      WHERE d.owner=? AND d.workspace=? AND d.id=? AND d.revoked=0`).get(owner, workspace, id));
+      WHERE d.owner=? AND d.workspace=? AND d.id=? AND d.revoked=0
+        AND EXISTS (SELECT 1 FROM json_each(a.aliases) WHERE value=?)`).get(owner, workspace, id, alias));
   }
 
   recordDeviceActivity(id: string, now: number, capability?: string, platform?: string) {

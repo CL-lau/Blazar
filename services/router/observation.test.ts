@@ -71,6 +71,15 @@ console.log(JSON.stringify({ok:true,command:'snapshot',data:{tree:{role:'window'
   assert.equal(await client.runOnce(AbortSignal.timeout(8_000)), false);
   const second = store.registerDevice('owner', 'Second computer', 'work');
   store.recordDeviceActivity(second.id, Date.now(), 'computer.observe');
+  store.recordDesktopApps(second.id, ['calculator', 'notes']);
+  const misdirected = await fetch(new URL('/v1/events', 'http://127.0.0.1:' + address.port), {
+    method: 'POST', headers: {
+      Authorization: 'Bearer admin', 'Content-Type': 'application/json', 'Idempotency-Key': 'wrong-computer',
+    },
+    body: JSON.stringify({ workspace: 'work', text: '/observe notes', desktopDevice: computer }),
+  });
+  assert.equal(misdirected.status, 404);
+  assert.equal(store.snapshot('owner').tasks.length, 0);
   store.recordDesktopApps(second.id, ['calculator']);
   const deskTask = await fetch(new URL('/v1/events', 'http://127.0.0.1:' + address.port), {
     method: 'POST', headers: {
