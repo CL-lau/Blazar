@@ -470,6 +470,27 @@ test('a run cannot extend its lease past the Router time limit', t => {
   assert.equal(db.timeline('owner', task.id)?.events[0].type, 'run.deadline_exceeded');
 });
 
+test('workspace Worker time limits apply at claim and survive policy changes', t => {
+  const db = new TaskStore(':memory:');
+  t.after(() => db.close());
+  db.setWorkspaceWorkerPolicy('owner', 'project', ['jsonl'], undefined, 30);
+  const claim = (now: number) => db.claim('owner', 'project', 'device', now, 45_000, '', '', undefined,
+    { label: 'Fixture', protocol: 'jsonl' });
+  const task = db.create('owner', 'desktop', 'deadline', 'project', 'Review notes');
+  const { run } = claim(0)!;
+  assert.equal(run.expires, 30_000);
+
+  db.setWorkspaceWorkerPolicy('owner', 'project', ['jsonl'], undefined, 120);
+  assert.equal(db.renew(run.id, 'device', 10_000, 45_000), 30_000);
+  assert.equal(db.expire(30_000), 1);
+  assert.equal(db.timeline('owner', task.id)?.events[0].type, 'run.deadline_exceeded');
+
+  db.create('owner', 'desktop', 'next', 'project', 'Review more notes');
+  const next = claim(30_000)!.run;
+  assert.equal(next.expires, 75_000);
+  assert.equal(db.renew(next.id, 'device', 70_000, 90_000), 150_000);
+});
+
 test('only completed failures and reconciled runs can be retried as a new version', t => {
   const db = new TaskStore(':memory:');
   t.after(() => db.close());

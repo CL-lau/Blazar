@@ -154,7 +154,7 @@ export class TaskStore {
         device_id TEXT PRIMARY KEY REFERENCES device(id)
       );
       CREATE TABLE IF NOT EXISTS workspace_worker_policy (
-        owner TEXT NOT NULL, workspace TEXT NOT NULL, protocols TEXT NOT NULL, max_concurrent INTEGER, PRIMARY KEY(owner,workspace)
+        owner TEXT NOT NULL, workspace TEXT NOT NULL, protocols TEXT NOT NULL, max_concurrent INTEGER, run_limit_seconds INTEGER, PRIMARY KEY(owner,workspace)
       );
       CREATE TABLE IF NOT EXISTS device_worker (
         device_id TEXT PRIMARY KEY REFERENCES device(id), label TEXT NOT NULL, protocol TEXT NOT NULL,
@@ -1195,6 +1195,9 @@ export class TaskStore {
   }
 
   shareTaskResult(owner: string, taskId: string, version: number, client: string, enabled: boolean) {
+    if (!this.db.prepare("SELECT 1 FROM pragma_table_info('workspace_worker_policy') WHERE name='run_limit_seconds'").get()) {
+      this.db.exec('ALTER TABLE workspace_worker_policy ADD COLUMN run_limit_seconds INTEGER');
+    }
     if (!this.db.prepare('SELECT 1 FROM mobile_client WHERE id=? AND owner=?').get(client, owner)) return false;
     if (enabled) {
       this.db.prepare(`INSERT INTO mobile_result_grant VALUES(?,?,?)
@@ -1332,20 +1335,22 @@ export class TaskStore {
   }
 
   workspaceWorkerPolicies(owner: string) {
-    return this.db.prepare('SELECT workspace,protocols,max_concurrent FROM workspace_worker_policy WHERE owner=? ORDER BY workspace')
+    return this.db.prepare('SELECT workspace,protocols,max_concurrent,run_limit_seconds FROM workspace_worker_policy WHERE owner=? ORDER BY workspace')
       .all(owner).map(row => ({
         workspace: String(row.workspace), protocols: JSON.parse(String(row.protocols)) as string[],
+        ...(row.run_limit_seconds !== null && { runLimitSeconds: Number(row.run_limit_seconds) }),
         ...(row.max_concurrent !== null && { maxConcurrent: Number(row.max_concurrent) }),
       }));
   }
 
-  setWorkspaceWorkerPolicy(owner: string, workspace: string, protocols: string[] | null, maxConcurrent?: number) {
+  setWorkspaceWorkerPolicy(owner: string, workspace: string, protocols: string[] | null, maxConcurrent?: number, runLimitSeconds?: number) {
     if (protocols === null) {
       this.db.prepare('DELETE FROM workspace_worker_policy WHERE owner=? AND workspace=?').run(owner, workspace);
     } else {
-      this.db.prepare(`INSERT INTO workspace_worker_policy(owner,workspace,protocols,max_concurrent) VALUES(?,?,?,?)
-        ON CONFLICT(owner,workspace) DO UPDATE SET protocols=excluded.protocols,max_concurrent=excluded.max_concurrent`)
-        .run(owner, workspace, JSON.stringify(protocols), maxConcurrent ?? null);
+      this.db.prepare(`INSERT INTO workspace_worker_policy(owner,workspace,protocols,max_concurrent,run_limit_seconds) VALUES(?,?,?,?,?)
+        ON CONFLICT(owner,workspace) DO UPDATE SET protocols=excluded.protocols,max_concurrent=excluded.max_concurrent,
+          run_limit_seconds=excluded.run_limit_seconds`)
+        .run(owner, workspace, JSON.stringify(protocols), maxConcurrent ?? null, runLimitSeconds ?? null);
     }
   }
 
@@ -1473,7 +1478,7 @@ export class TaskStore {
     return this.transaction(() => {
       const identity = [owner, workspace, goalPrefix, excludingPrefix];
       const fingerprint = JSON.stringify(desktopApps ? [...identity, desktopApps] : worker ? [...identity, worker] : identity);
-      const policy = this.db.prepare('SELECT protocols,max_concurrent FROM workspace_worker_policy WHERE owner=? AND workspace=?')
+      const policy = this.db.prepare('SELECT protocols,max_concurrent,run_limit_seconds FROM workspace_worker_policy WHERE owner=? AND workspace=?')
         .get(owner, workspace);
       const workerPermitted = !policy || (worker && (JSON.parse(String(policy.protocols)) as string[]).includes(worker.protocol));
       if (requestId) {
@@ -1542,9 +1547,11 @@ export class TaskStore {
           .run(device, requestId, fingerprint, null, now + 10 * 60_000);
         return undefined;
       }
-      const run: Run = { id: randomUUID(), taskId: task.id, version: task.version, device, expires: now + Math.min(leaseMs, runLimitMs) };
+      const workerTask = !/^\/(observe|click|preview) /.test(task.goal);
+      const limitMs = workerTask && policy?.run_limit_seconds != null ? Number(policy.run_limit_seconds) * 1_000 : runLimitMs;
+      const run: Run = { id: randomUUID(), taskId: task.id, version: task.version, device, expires: now + Math.min(leaseMs, limitMs) };
       this.db.prepare('INSERT INTO run VALUES(?,?,?,?,?)').run(run.id, task.id, device, run.version, run.expires);
-      this.db.prepare('INSERT INTO run_deadline VALUES(?,?)').run(run.id, now + runLimitMs);
+      this.db.prepare('INSERT INTO run_deadline VALUES(?,?)').run(run.id, now + limitMs);
       this.db.prepare('INSERT INTO run_activity(run_id,last_output) VALUES(?,?)').run(run.id, now);
       this.db.prepare("UPDATE task SET status='running' WHERE id=?").run(task.id);
       const predecessors = this.predecessorInputs(task.id);

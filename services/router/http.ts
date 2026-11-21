@@ -881,7 +881,13 @@ export function routerServer(store: TaskStore, config: { owner: string; token: s
               !Number.isSafeInteger(maxConcurrent) || maxConcurrent < 1 || maxConcurrent > 100)) {
             throw new RequestError(400, 'Invalid workspace Worker concurrency limit');
           }
-          store.setWorkspaceWorkerPolicy(owner, workspace, protocols === null ? null : [...new Set(protocols)].sort(), maxConcurrent);
+          const runLimitSeconds = data.runLimitSeconds;
+          if (runLimitSeconds !== undefined && (protocols === null || typeof runLimitSeconds !== 'number' ||
+              !Number.isSafeInteger(runLimitSeconds) || runLimitSeconds < 30 || runLimitSeconds > 600)) {
+            throw new RequestError(400, 'Invalid workspace Worker run time limit');
+          }
+          store.setWorkspaceWorkerPolicy(owner, workspace, protocols === null ? null : [...new Set(protocols)].sort(),
+            maxConcurrent, runLimitSeconds);
           store.updateDeviceReadiness(Date.now());
           reply(response, 200, { policies: store.workspaceWorkerPolicies(owner) });
           return;
