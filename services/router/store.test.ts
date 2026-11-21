@@ -477,3 +477,30 @@ test('revisions invalidate completed transitive results without silently re-runn
   const next = db.claim('owner', 'project', 'device', 10, 100)!;
   assert.equal(next.predecessors[0].result, 'Revised draft');
 });
+
+test('claims rotate incoming channels within each owner and workspace while preserving channel FIFO', t => {
+  const store = new TaskStore(':memory:');
+  t.after(() => store.close());
+  const receive = (channel: string, id: string, workspace = 'project', owner = 'owner') =>
+    store.receiveChannelMessage(owner, channel, workspace, { id, chat: 'chat', thread: id, root: true, text: id });
+  receive('weixin', 'wx-1');
+  receive('weixin', 'wx-2');
+  receive('weixin', 'wx-3');
+  receive('feishu', 'feishu-1');
+  receive('feishu', 'feishu-other-project', 'other-project');
+  receive('feishu', 'feishu-other-owner', 'project', 'other-owner');
+  const desktop = store.create('owner', 'desktop', 'local', 'project', 'Local task');
+  const take = (device: string, key: string, workspace = 'project', owner = 'owner') =>
+    store.claim(owner, workspace, device, 1, 10_000, '', '', key)!;
+  const first = take('device-a', 'first');
+  assert.equal(first.task.goal, 'wx-1');
+  assert.equal(take('device-a', 'first').run.id, first.run.id);
+  assert.equal(take('device-b', 'second').task.goal, 'feishu-1');
+  assert.equal(take('device-a', 'third').task.id, desktop.id);
+  receive('feishu', 'feishu-2');
+  assert.equal(take('device-b', 'fourth').task.goal, 'wx-2');
+  assert.equal(take('device-a', 'fifth').task.goal, 'feishu-2');
+  assert.equal(take('device-b', 'sixth').task.goal, 'wx-3');
+  assert.equal(take('device-c', 'other', 'other-project').task.goal, 'feishu-other-project');
+  assert.equal(take('device-d', 'other', 'project', 'other-owner').task.goal, 'feishu-other-owner');
+});

@@ -187,6 +187,11 @@ export class TaskStore {
       CREATE TABLE IF NOT EXISTS event_retention (
         id INTEGER PRIMARY KEY CHECK(id=1), replay_floor INTEGER NOT NULL
       );
+      CREATE TABLE IF NOT EXISTS channel_dispatch (
+        owner TEXT NOT NULL, workspace TEXT NOT NULL, goal_prefix TEXT NOT NULL, excluding_prefix TEXT NOT NULL,
+        channel TEXT NOT NULL, last_dispatch INTEGER NOT NULL,
+        PRIMARY KEY(owner,workspace,goal_prefix,excluding_prefix,channel)
+      );
       CREATE TABLE IF NOT EXISTS device_claim (
         device TEXT NOT NULL, key TEXT NOT NULL, fingerprint TEXT NOT NULL,
         response TEXT, expires INTEGER NOT NULL, PRIMARY KEY(device,key)
@@ -1173,7 +1178,12 @@ export class TaskStore {
         }
       }
       if (this.db.prepare('SELECT 1 FROM device_pause WHERE device_id=?').get(device)) return undefined;
-      const task = this.db.prepare(`SELECT * FROM task WHERE owner=? AND workspace=?
+      const task = this.db.prepare(`WITH eligible AS (
+        SELECT task.rowid AS queue_order, task.*, COALESCE((
+          SELECT json_extract(e.data,'$.channel') FROM event e
+          WHERE e.taskId=task.id AND e.type='task.created' ORDER BY e.seq LIMIT 1
+        ), '') AS origin_channel
+        FROM task WHERE owner=? AND workspace=?
         AND status IN ('queued','waiting_device') AND (substr(goal,1,length(?))=? OR (?='/observe ' AND substr(goal,1,7)='/click '))
         AND (?='' OR (substr(goal,1,length(?))!=? AND substr(goal,1,9)!='/observe ' AND substr(goal,1,7)!='/click '))
         AND NOT EXISTS(SELECT 1 FROM task_desktop_device target WHERE target.task_id=task.id AND target.device_id<>?)
@@ -1183,8 +1193,15 @@ export class TaskStore {
         AND NOT EXISTS (
           SELECT 1 FROM workflow_dependency d JOIN task p ON p.id=d.predecessor
           WHERE d.task_id=task.id AND p.status!='succeeded'
-        ) ORDER BY rowid LIMIT 1`).get(owner, workspace, goalPrefix, goalPrefix, goalPrefix, excludingPrefix, excludingPrefix, excludingPrefix, device,
-          desktopApps ? JSON.stringify(desktopApps) : null, desktopApps ? JSON.stringify(desktopApps) : null) as unknown as Task | undefined;
+        )
+      )
+      SELECT eligible.* FROM eligible LEFT JOIN channel_dispatch d
+        ON d.owner=eligible.owner AND d.workspace=eligible.workspace AND d.channel=eligible.origin_channel
+        AND d.goal_prefix=? AND d.excluding_prefix=?
+      ORDER BY COALESCE(d.last_dispatch,0), eligible.queue_order LIMIT 1`).get(
+        owner, workspace, goalPrefix, goalPrefix, goalPrefix, excludingPrefix, excludingPrefix, excludingPrefix, device,
+        desktopApps ? JSON.stringify(desktopApps) : null, desktopApps ? JSON.stringify(desktopApps) : null,
+        goalPrefix, excludingPrefix) as unknown as (Task & { origin_channel: string }) | undefined;
       if (!task) {
         if (requestId) this.db.prepare('INSERT INTO device_claim VALUES(?,?,?,?,?)')
           .run(device, requestId, fingerprint, null, now + 10 * 60_000);
@@ -1205,6 +1222,9 @@ export class TaskStore {
           taskId, version, ...(artifact && { artifactId: artifact.id }),
         })),
       });
+      this.db.prepare(`INSERT INTO channel_dispatch VALUES(?,?,?,?,?,?) ON CONFLICT
+        (owner,workspace,goal_prefix,excluding_prefix,channel) DO UPDATE SET last_dispatch=excluded.last_dispatch`)
+        .run(owner, workspace, goalPrefix, excludingPrefix, task.origin_channel, this.eventCursor());
       const assignment = this.assignment(owner, run, predecessors);
       if (requestId) this.db.prepare('INSERT INTO device_claim VALUES(?,?,?,?,?)')
         .run(device, requestId, fingerprint, JSON.stringify(assignment), now + 10 * 60_000);
