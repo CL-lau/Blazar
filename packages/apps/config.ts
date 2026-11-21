@@ -1,3 +1,4 @@
+import { browserFormBackend } from './browser-actions.ts';
 import { createHash } from 'node:crypto';
 import { mcpActionBackend } from './mcp-actions.ts';
 import { invokeApplicationAction, type ActionBackend, type ApplicationAction } from './actions.ts';
@@ -173,10 +174,22 @@ export function configuredApplicationWrites(env: NodeJS.ProcessEnv, transport = 
     const fallbacks = entry.fallbacks ?? [];
     if (!Array.isArray(fallbacks) || fallbacks.length > 2 || fallbacks.some(item =>
       !item || typeof item !== 'object' || Array.isArray(item) ||
-      Object.keys(item).some(field => !['endpoint', 'tool', 'statusTool', 'tokenEnv'].includes(field)))) {
+      Object.keys(item).some(field => !['endpoint', 'tool', 'statusTool', 'tokenEnv', 'kind', 'url', 'submitUrl', 'button', 'inputLabel', 'inputKey', 'storageState'].includes(field)))) {
       throw new Error('Invalid MCP application write fallback configuration');
     }
     const candidates = [entry, ...fallbacks].map((candidate, index) => {
+      if (candidate.kind === 'browser-form') {
+        const { url, submitUrl, button, inputLabel, inputKey, storageState } = candidate;
+        if (typeof url !== 'string' || typeof submitUrl !== 'string' || typeof button !== 'string' || !button.trim() ||
+            typeof inputLabel !== 'string' || !inputLabel.trim() || typeof inputKey !== 'string' || !inputKey.trim() ||
+            (storageState !== undefined && typeof storageState !== 'string')) {
+          throw new Error('Invalid browser form configuration');
+        }
+        const backend = browserFormBackend({ id: 'browser-' + index, capability, url, submitUrl, button,
+          inputLabel, inputKey, storageState });
+        return { backend, lookup: undefined, identity: ['browser-form', url, submitUrl, button, inputLabel, inputKey, storageState] };
+      }
+      if (candidate.kind !== undefined && candidate.kind !== 'mcp') throw new Error('Unknown application write backend');
       const { endpoint, tool, statusTool, tokenEnv } = candidate;
       if (typeof endpoint !== 'string' || typeof tool !== 'string' ||
           (statusTool !== undefined && (typeof statusTool !== 'string' || statusTool === tool))) {
@@ -191,9 +204,10 @@ export function configuredApplicationWrites(env: NodeJS.ProcessEnv, transport = 
         : undefined;
       return { backend, lookup, identity: [new URL(endpoint).href, tool, statusTool, tokenEnv, token] };
     });
-    const targets = candidates.map(({ identity: [endpoint, tool, , , token] }) => JSON.stringify([endpoint, tool, token]));
+    const targets = candidates.map(({ backend, identity }) => JSON.stringify(backend.id.startsWith('browser-')
+      ? identity : [identity[0], identity[1], identity[4]]));
     if (new Set(targets).size !== targets.length) throw new Error('Duplicate MCP application write backend');
-    const fingerprint = candidates.length === 1
+    const fingerprint = candidates.length === 1 && !candidates[0].backend.id.startsWith('browser-')
       ? [key, entry.endpoint, entry.tool, entry.tokenEnv, candidates[0].identity[4], ...(entry.statusTool ? [entry.statusTool] : [])]
       : [key, candidates.map(item => item.identity)];
     const revision = createHash('sha256').update(JSON.stringify(fingerprint)).digest('hex');

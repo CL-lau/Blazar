@@ -187,6 +187,13 @@ optional `tokenEnv` and optional `statusTool`. Configure fallbacks for the same 
 effect. Router switches only when the current backend reports unavailability before the write is
 dispatched. Outcome checks use the backend recorded for that write.
 
+A `browser-form` fallback uses an isolated Chrome context on the Router host. Set `kind` to
+`browser-form` and configure `url`, `submitUrl`, `inputLabel`, `inputKey` and `button`. For an
+authenticated page, `storageState` can point to an account-specific local Playwright state file.
+The form accepts one approved string field and one same-origin POST. A matching 2xx response
+completes the write. A lost response or redirect after submission leaves the result uncertain.
+
+
 
 Register the account in the desktop app with app type `mcp`, then use `review` as the document ID. For a server requiring bearer authentication, set `tokenEnv` to the name of a `BLAZAR_MCP_TOKEN_*` environment variable. The connector reads text resources by alias.
 

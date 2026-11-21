@@ -238,3 +238,45 @@ test('Router requires explicit confirmation for a configured application write',
   assert.equal(calls.filter(method => method === 'tools/call').length, 4);
   assert.equal(dispatchedIds.length, 2);
 });
+
+test('a browser form fallback submits approved data once after MCP is unavailable', {
+  skip: !process.env.BLAZAR_TEST_BROWSER_ACTIONS,
+}, async t => {
+  const { createServer } = await import('node:http');
+  const { once } = await import('node:events');
+  const { configuredApplicationWrites } = await import('../../packages/apps/config.ts');
+  const received: string[] = [];
+  const app = createServer(async (request, response) => {
+    if (request.method === 'GET' && request.url === '/edit') {
+      response.setHeader('Content-Type', 'text/html');
+      response.end('<form method="post" action="/save"><label>Title <input name="title"></label><button>Save</button></form>');
+    } else if (request.method === 'POST' && request.url === '/save') {
+      let body = '';
+      for await (const chunk of request) body += chunk;
+      received.push(body);
+      response.end('Saved');
+    } else response.writeHead(404).end();
+  });
+  app.listen(0, '127.0.0.1');
+  await once(app, 'listening');
+  t.after(() => new Promise<void>(resolve => app.close(() => resolve())));
+  const address = app.address();
+  assert(address && typeof address !== 'string');
+  const base = 'http://127.0.0.1:' + address.port;
+  const [definition] = configuredApplicationWrites({ BLAZAR_MCP_ACTIONS: JSON.stringify([{
+    app: 'mcp', account: 'fixture', capability: 'action.document.update', endpoint: base + '/mcp', tool: 'update',
+    fallbacks: [{ kind: 'browser-form', url: base + '/edit', submitUrl: base + '/save',
+      button: 'Save', inputLabel: 'Title', inputKey: 'title' }],
+  }]) }, async () => new Response(null, { status: 503 }));
+  const backends = definition.candidates.map(({ backend }) => ({ ...backend, connectionId: action.connectionId }));
+  const run = (allowWrite: boolean) => {
+    let browserChecks = 0;
+    return invokeApplicationAction({ ...action, capability: definition.capability, input: { title: 'Approved title' } },
+      backends, async backend => backend.id !== 'browser-1' || ++browserChecks === 1 || allowWrite,
+      AbortSignal.timeout(10_000));
+  };
+  assert.deepEqual(await run(false), { status: 'denied' });
+  assert.deepEqual(received, []);
+  assert.deepEqual(await run(true), { status: 'succeeded', output: { status: 200 } });
+  assert.deepEqual(received, ['title=Approved+title']);
+});
