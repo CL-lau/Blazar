@@ -59,17 +59,26 @@ export class MemoryStore {
 
   connections(owner: string) {
     const rows = this.db.prepare(`SELECT a.id,a.app,a.account,a.active,a.workspace,
-      u.status AS test_status,u.started AS test_started,u.workspace AS test_workspace
+      u.status AS test_status,u.started AS test_started,u.workspace AS test_workspace,
+      h.status AS health_status,h.started AS health_started,h.workspace AS health_workspace
       FROM app_connection a LEFT JOIN app_usage u ON u.id=(
         SELECT test.id FROM app_usage test WHERE test.connection=a.id AND test.operation='test'
         AND test.status<>'started' AND (a.workspace IS NULL OR test.workspace=a.workspace)
         ORDER BY test.id DESC LIMIT 1
+      ) LEFT JOIN app_usage h ON h.id=(
+        SELECT health.id FROM app_usage health WHERE health.connection=a.id AND health.operation='health'
+        AND health.status<>'started' AND health.scope_version=a.scope_version AND a.active=1
+        ORDER BY health.id DESC LIMIT 1
       ) WHERE a.owner=? ORDER BY a.rowid DESC`).all(owner);
-    return rows.map(({ id, app, account, active, workspace, test_status, test_started, test_workspace }) => ({
+    return rows.map(({ id, app, account, active, workspace, test_status, test_started, test_workspace,
+      health_status, health_started, health_workspace }) => ({
       id: String(id), app: String(app), account: String(account), active: Number(active),
       workspace: workspace === null ? null : String(workspace),
       ...(test_status !== null && { lastDocumentTest: {
         status: String(test_status), started: Number(test_started), workspace: String(test_workspace),
+      } }),
+      ...(health_status !== null && { lastHealthCheck: {
+        status: String(health_status), started: Number(health_started), workspace: String(health_workspace),
       } }),
     }));
   }
@@ -81,8 +90,9 @@ export class MemoryStore {
   }
 
   startAppUsage(connection: string, workspace: string, operation: 'import' | 'test' | 'refresh' | 'search' | 'discover' | 'health') {
-    return this.db.prepare("INSERT INTO app_usage(connection,workspace,operation,status,started) VALUES(?,?,?,'started',?)")
-      .run(connection, workspace, operation, Date.now()).lastInsertRowid;
+    return this.db.prepare(`INSERT INTO app_usage(connection,workspace,operation,status,started,scope_version)
+      VALUES(?,?,?,'started',?,(SELECT scope_version FROM app_connection WHERE id=?))`)
+      .run(connection, workspace, operation, Date.now(), connection).lastInsertRowid;
   }
 
   finishAppUsage(id: number | bigint, status: 'succeeded' | 'failed' | 'access_changed' | 'access_denied') {

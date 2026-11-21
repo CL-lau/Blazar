@@ -178,6 +178,13 @@ export function Knowledge({ token }) {
               {' · '}{connection.lastDocumentTest.workspace}
               {' · '}{new Date(connection.lastDocumentTest.started).toLocaleString()}
             </small>}
+            {connection.lastHealthCheck && <small>
+              Last connection check · {({
+                succeeded: 'Passed', access_denied: 'Access denied', failed: 'Unavailable',
+              })[connection.lastHealthCheck.status] ?? connection.lastHealthCheck.status}
+              {' · '}{connection.lastHealthCheck.workspace}
+              {' · '}{new Date(connection.lastHealthCheck.started).toLocaleString()}
+            </small>}
             {connection.active && <form onSubmit={event => changeWorkspace(event, connection)}>
               <label>Limit to workspace<input name="workspace" defaultValue={connection.workspace ?? ''} maxLength={128} /></label>
               <button>Save scope</button>
@@ -190,6 +197,7 @@ export function Knowledge({ token }) {
                 const { status } = await request('/app-connections/' + connection.id + '/capabilities/connection.health', {
                   method: 'POST', body: { workspace },
                 });
+                await refreshConnections();
                 setNotice({ succeeded: 'Connection check passed.', access_denied: 'Source access was denied.',
                   failed: 'Source could not be reached or returned an error.' }[status]);
               });

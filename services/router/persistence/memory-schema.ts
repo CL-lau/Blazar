@@ -20,7 +20,7 @@ export function initializeMemorySchema(db: DatabaseSync): boolean {
     );
     CREATE TABLE IF NOT EXISTS app_usage (
       id INTEGER PRIMARY KEY, connection TEXT NOT NULL REFERENCES app_connection(id),
-      workspace TEXT NOT NULL, operation TEXT NOT NULL, status TEXT NOT NULL, started INTEGER NOT NULL
+      workspace TEXT NOT NULL, operation TEXT NOT NULL, status TEXT NOT NULL, started INTEGER NOT NULL, scope_version INTEGER
     );
     CREATE INDEX IF NOT EXISTS app_usage_connection ON app_usage(connection,id);
     CREATE INDEX IF NOT EXISTS app_usage_document_test ON app_usage(connection,id)
@@ -77,6 +77,11 @@ export function initializeMemorySchema(db: DatabaseSync): boolean {
   if (!db.prepare("SELECT 1 FROM pragma_table_info('app_connection') WHERE name='scope_version'").get()) {
     db.exec('ALTER TABLE app_connection ADD COLUMN scope_version INTEGER NOT NULL DEFAULT 1');
   }
+  if (!db.prepare("SELECT 1 FROM pragma_table_info('app_usage') WHERE name='scope_version'").get()) {
+    db.exec('ALTER TABLE app_usage ADD COLUMN scope_version INTEGER');
+  }
+  db.exec(`CREATE INDEX IF NOT EXISTS app_usage_connection_health ON app_usage(connection,scope_version,id)
+    WHERE operation='health' AND status<>'started'`);
   db.exec(`
     CREATE TRIGGER IF NOT EXISTS document_sync_connection_changed
     AFTER UPDATE OF active,scope_version ON app_connection

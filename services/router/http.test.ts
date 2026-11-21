@@ -237,6 +237,10 @@ test('Router authenticates, deduplicates commands and replays task changes over 
     app: 'lark', account: 'not configured',
   })).json();
   const configured = await (await fetch(url + '/v1/app-connections', { headers })).json();
+  const lastHealthCheck = configured.connections.find(item => item.id === github).lastHealthCheck;
+  assert.equal(lastHealthCheck.status, 'succeeded');
+  assert.equal(lastHealthCheck.workspace, 'demo');
+  assert.equal(typeof lastHealthCheck.started, 'number');
   assert.equal(configured.connections.filter(item => item.canImportDocument).length, 3);
   assert.equal(configured.connections.find(item => item.id === scopedConnection)?.workspace, 'private');
   const successfulTest = configured.connections.find(item => item.id === scopedConnection).lastDocumentTest;
@@ -331,6 +335,10 @@ test('Router authenticates, deduplicates commands and replays task changes over 
   assert.equal(memory.recall('test', 'demo', 'findings', [github]).length, 1);
   githubStatus = 404;
   assert.deepEqual(await (await post(repoHealth, 'github-health-denied', { workspace: 'demo' })).json(), { status: 'access_denied' });
+  assert.equal(memory.connections('test').find(item => item.id === github)?.lastHealthCheck?.status, 'access_denied');
+  assert.equal(memory.setConnectionWorkspace('test', github, 'other'), true);
+  assert.equal(memory.setConnectionWorkspace('test', github, null), true);
+  assert.equal(memory.connections('test').find(item => item.id === github)?.lastHealthCheck, undefined);
   assert.equal((await post(repoImport, 'missing-github', { workspace: 'demo', document: 'docs/review.md' })).status, 502);
   assert.deepEqual(memory.recall('test', 'demo', 'findings', [github]), []);
   githubStatus = 200;
