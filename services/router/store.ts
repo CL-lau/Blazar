@@ -467,7 +467,11 @@ export class TaskStore {
 
   snapshot(owner: string) {
     return this.transaction(() => {
-      const tasks = this.db.prepare('SELECT * FROM task WHERE owner=? ORDER BY rowid DESC').all(owner) as unknown as Task[];
+      const rows = this.db.prepare('SELECT * FROM task WHERE owner=? ORDER BY rowid DESC').all(owner) as unknown as Task[];
+      const pendingStops = new Set(this.db.prepare(`SELECT s.task_id FROM expired_approval_stop s
+        JOIN task t ON t.id=s.task_id WHERE t.owner=? AND s.expires>?`).all(owner, Date.now()).map(row => row.task_id));
+      const tasks = rows.map(task => pendingStops.has(task.id) && ['queued', 'waiting_device'].includes(task.status)
+        ? { ...task, waitingForPreviousRun: true } : task);
       const cursor = this.eventCursor();
       const artifacts = this.db.prepare(`SELECT a.id,a.taskId,a.runId,a.name,a.sha256,a.size,
         CASE WHEN i.artifact_id IS NOT NULL THEN 'image/png' END AS mime,i.expires,v.task_version AS version
@@ -1815,8 +1819,12 @@ export class TaskStore {
           EXISTS(SELECT 1 FROM run_evidence_stop s WHERE s.run_id=r.id) OR (
           t.status='running' AND r.version<>t.version
           AND NOT EXISTS(SELECT 1 FROM invalid_workflow_run i WHERE i.id=r.id)))`).get(runId, device, now);
-      if (!run) return this.db.prepare('DELETE FROM expired_approval_stop WHERE run_id=? AND device_id=?')
-        .run(runId, device).changes === 1;
+      if (!run) {
+        const pending = this.db.prepare('DELETE FROM expired_approval_stop WHERE run_id=? AND device_id=? RETURNING task_id')
+          .get(runId, device);
+        if (pending?.task_id) this.event(String(pending.task_id), 'run.stop_confirmed', { runId });
+        return Boolean(pending);
+      }
       const taskId = String(run.taskId);
       if (run.status === 'pausing' || run.status === 'cancelling') {
         this.finishStoppedRun(runId, taskId, run.status === 'pausing');
@@ -1956,7 +1964,10 @@ export class TaskStore {
 
   expire(now: number, notifyStop?: (device: string, runId: string) => void) {
     const stopped = this.transaction(() => {
-      this.db.prepare('DELETE FROM expired_approval_stop WHERE expires<=?').run(now);
+      const expiredStops = this.db.prepare('DELETE FROM expired_approval_stop WHERE expires<=? RETURNING task_id,run_id').all(now);
+      for (const stop of expiredStops) {
+        if (stop.task_id) this.event(String(stop.task_id), 'run.stop_window_expired', { runId: stop.run_id });
+      }
       this.db.prepare('DELETE FROM device_claim WHERE expires<=?').run(now);
       this.db.prepare('DELETE FROM artifact WHERE id IN (SELECT artifact_id FROM artifact_image WHERE expires<=?)').run(now);
       const approvals = this.db.prepare(`SELECT a.id,a.runId,a.taskId,a.expires,r.device,r.expires AS leaseExpires FROM approval a

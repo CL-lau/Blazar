@@ -739,11 +739,14 @@ test('retry waits for an approval-timed-out run to stop even without a workspace
   assert.equal(db.expire(expiry), 1);
   assert.equal(db.command('owner', task.id, task.version, { action: 'retry' })?.version, task.version + 1);
 
+  assert.equal(db.snapshot('owner').tasks.find(item => item.id === task.id)?.waitingForPreviousRun, true);
   const unrelated = db.create('owner', 'fixture', 'unrelated', 'project', 'Read another file');
   const claim = (device: string) => db.claim('owner', 'project', device, expiry, 45_000);
   assert.equal(claim('other-device')?.task.id, unrelated.id);
   assert.equal(claim('replacement-device'), undefined);
   assert.ok(db.acknowledgeStop(run.id, run.device, expiry));
+  assert.equal(db.snapshot('owner').tasks.find(item => item.id === task.id)?.waitingForPreviousRun, undefined);
+  assert.equal(db.timeline('owner', task.id)?.events[0].type, 'run.stop_confirmed');
   const retry = claim('replacement-device');
   assert.equal(retry?.task.id, task.id);
   assert.equal(retry?.run.version, task.version + 1);

@@ -436,6 +436,9 @@ private struct TaskDetails: View {
                     Text("The personal memory used by this task is unavailable.")
                         .foregroundStyle(.secondary)
                 }
+                if task.waitingForPreviousRun == true {
+                    Text("Waiting for the previous run to stop before retrying.").foregroundStyle(.secondary)
+                }
                 if let progress { Text(progress).foregroundStyle(.secondary) }
                 if let result = task.result { Text(result).textSelection(.enabled) }
             }

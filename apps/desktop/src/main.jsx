@@ -276,6 +276,7 @@ function App() {
                 {memoryUnavailable && <button type="button" disabled={busy} onClick={startDraftFromTask}>
                   Create new task from this goal
                 </button>}
+                {task.waitingForPreviousRun && <p role="status">Waiting for the previous run to stop before retrying.</p>}
                 {progress && <p role="status">{progress.message}</p>}
                 {task.result && <pre>{task.result}</pre>}
                 {task.usesAppMemory && <section aria-label="Paired phone result access">
