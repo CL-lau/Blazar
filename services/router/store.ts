@@ -398,8 +398,15 @@ export class TaskStore {
         WHERE w.owner=? ORDER BY s.rowid`).all(owner);
       const criteria = this.db.prepare(`SELECT c.task_id AS taskId,c.criterion FROM task_criterion c
         JOIN task t ON t.id=c.task_id WHERE t.owner=? ORDER BY c.task_id,c.position`).all(owner);
-      return { tasks, artifacts, approvals, progress, workflowSteps, criteria, cursor };
+      const attachments = this.db.prepare(`SELECT a.task_id AS taskId,a.position,a.name,length(CAST(a.text AS BLOB)) AS size
+        FROM task_attachment a JOIN task t ON t.id=a.task_id WHERE t.owner=? ORDER BY a.task_id,a.position`).all(owner);
+      return { tasks, artifacts, attachments, approvals, progress, workflowSteps, criteria, cursor };
     });
+  }
+
+  taskAttachment(owner: string, taskId: string, position: number) {
+    return this.db.prepare(`SELECT a.name,a.text FROM task_attachment a JOIN task t ON t.id=a.task_id
+      WHERE t.owner=? AND a.task_id=? AND a.position=?`).get(owner, taskId, position);
   }
 
   artifact(owner: string, id: string, now = Date.now()) {

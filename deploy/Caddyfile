@@ -11,7 +11,7 @@
 	}
 	@public_resource {
 		method GET
-		path_regexp ^/v1/(tasks/[a-f0-9-]{36}/timeline|artifacts/[a-f0-9-]{36}(/diff)?)$
+		path_regexp ^/v1/(tasks/[a-f0-9-]{36}/(timeline|attachments/[0-3])|artifacts/[a-f0-9-]{36}(/diff)?)$
 	}
 	@public_write {
 		method POST

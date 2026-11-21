@@ -259,6 +259,7 @@ private struct TaskScreen: View {
                                             criteria: (snapshot.criteria ?? []).filter { $0.taskId == task.id }.map(\.criterion),
                                             progress: snapshot.progress?.first { $0.taskId == task.id }?.message,
                                             approvals: snapshot.approvals.filter { $0.taskId == task.id },
+                                            attachments: (snapshot.attachments ?? []).filter { $0.taskId == task.id },
                                             artifacts: snapshot.artifacts.filter { $0.taskId == task.id },
                                             reload: reload)
                             } label: {
@@ -393,12 +394,14 @@ private struct TaskDetails: View {
     let criteria: [String]
     let progress: String?
     let approvals: [RouterSnapshot.Approval]
+    let attachments: [RouterSnapshot.Attachment]
     let artifacts: [RouterSnapshot.Artifact]
     let reload: () async -> Void
     @Environment(\.dismiss) private var dismiss
     @State private var instruction = ""
     @State private var error: String?
     @State private var preview: String?
+    @State private var attachmentPreview: (position: Int, text: String)?
     @State private var previewArtifacts: [String] = []
     @State private var imagePreview: Data?
     @State private var imageExpiry: Int?
@@ -436,6 +439,23 @@ private struct TaskDetails: View {
                     Text(approval.summary)
                     Button("Approve") { send("approve", approval: approval.id) }
                     Button("Deny", role: .destructive) { send("deny", approval: approval.id) }
+                }
+            }
+            if !attachments.isEmpty {
+                Section("Input attachments") {
+                    ForEach(attachments) { attachment in
+                        Button(attachment.name) {
+                            Task {
+                                do {
+                                    let text = try await client.attachment(attachment)
+                                    attachmentPreview = (attachment.position, text)
+                                } catch { self.error = error.localizedDescription }
+                            }
+                        }
+                    }
+                    if let attachmentPreview, attachments.contains(where: { $0.position == attachmentPreview.position }) {
+                        Text(attachmentPreview.text).textSelection(.enabled)
+                    }
                 }
             }
             if !artifacts.isEmpty {

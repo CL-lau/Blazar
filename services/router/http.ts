@@ -902,6 +902,14 @@ export function routerServer(store: TaskStore, config: { owner: string; token: s
         reply(response, 200, { text: artifactDiff(previous.name, decode(previous.content), current.name, decode(current.content)) });
         return;
       }
+      const attachmentPath = /^\/v1\/tasks\/([a-f0-9-]{36})\/attachments\/([0-3])$/.exec(url.pathname);
+      if (request.method === 'GET' && attachmentPath) {
+        if (!canReadTask(attachmentPath[1])) throw new RequestError(404, 'Task attachment not found');
+        const attachment = store.taskAttachment(owner, attachmentPath[1], Number(attachmentPath[2]));
+        if (!attachment) throw new RequestError(404, 'Task attachment not found');
+        reply(response, 200, attachment);
+        return;
+      }
       const artifactPath = /^\/v1\/artifacts\/([a-f0-9-]{36})(\/image)?$/.exec(url.pathname);
       if (request.method === 'GET' && artifactPath) {
         const file = store.artifact(owner, artifactPath[1]);
@@ -935,6 +943,7 @@ export function routerServer(store: TaskStore, config: { owner: string; token: s
               } : task),
           artifacts: snapshot.artifacts.filter(item => !restricted.has(String(item.taskId)) ||
             canReadTask(String(item.taskId), typeof item.version === 'number' ? item.version : undefined)),
+          attachments: snapshot.attachments.filter(item => !restricted.has(String(item.taskId))),
           progress: snapshot.progress.filter(item => !restricted.has(String(item.taskId))),
           approvals: snapshot.approvals.filter(item => !restricted.has(String(item.taskId))),
           desktopTargets: store.desktopTargets(owner),

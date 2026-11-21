@@ -29,6 +29,13 @@ struct RouterSnapshot: Decodable {
         let version: Int
         let summary: String
     }
+    struct Attachment: Decodable, Identifiable {
+        let taskId: String
+        let position: Int
+        let name: String
+        let size: Int
+        var id: Int { position }
+    }
     struct Artifact: Decodable, Identifiable {
         let id: String
         let taskId: String
@@ -57,6 +64,7 @@ struct RouterSnapshot: Decodable {
     let tasks: [Task]
     let approvals: [Approval]
     let artifacts: [Artifact]
+    let attachments: [Attachment]?
     let desktopTargets: [DesktopTarget]?
 }
 
@@ -252,6 +260,12 @@ struct RouterClient: Equatable {
 
     func artifactData(_ artifact: RouterSnapshot.Artifact) async throws -> Data {
         try await request("v1/artifacts/\(artifact.id)")
+    }
+
+    func attachment(_ attachment: RouterSnapshot.Attachment) async throws -> String {
+        struct Content: Decodable { let text: String }
+        let data = try await request("v1/tasks/\(attachment.taskId)/attachments/\(attachment.position)")
+        return try JSONDecoder().decode(Content.self, from: data).text
     }
 
     func compareArtifacts(_ current: RouterSnapshot.Artifact, base: RouterSnapshot.Artifact) async throws -> String {

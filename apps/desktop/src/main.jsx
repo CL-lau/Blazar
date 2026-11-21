@@ -132,6 +132,7 @@ function App() {
     .filter(link => link.taskId === selected && link.predecessorId)
     .map(link => snapshot.tasks.find(item => item.id === link.predecessorId)).filter(Boolean);
   const artifacts = snapshot?.artifacts.filter(item => item.taskId === selected) ?? [];
+  const taskAttachments = snapshot?.attachments?.filter(item => item.taskId === selected) ?? [];
   const criteria = snapshot?.criteria?.filter(item => item.taskId === selected) ?? [];
   const progress = snapshot?.progress?.find(item => item.taskId === selected);
   const availableSources = memoryAccounts.filter(account =>
@@ -291,6 +292,15 @@ function App() {
                     <button disabled={busy} onClick={() => command('deny', { approvalId: item.id })}>Deny</button>
                   </section>
                 ))}
+                {taskAttachments.length > 0 && <section aria-label="Input attachments">
+                  <h3>Input attachments</h3>
+                  <ul>{taskAttachments.map(item => <li key={item.position}>
+                    <button disabled={busy} onClick={() => submit(async () => {
+                      const file = await api('/tasks/' + task.id + '/attachments/' + item.position);
+                      setPreview({ taskId: task.id, attachmentPosition: item.position, name: file.name, text: file.text });
+                    })}>{item.name}</button> · {item.size} bytes
+                  </li>)}</ul>
+                </section>}
                 {artifacts.map((item, index) => (
                   <div key={item.id}>
                     <button onClick={() => submit(async () => {
@@ -307,7 +317,9 @@ function App() {
                     })}>Compare with latest</button>}
                   </div>
                 ))}
-                {preview?.taskId === task.id && preview.artifactIds.every(id => artifacts.some(item => item.id === id)) &&
+                {preview?.taskId === task.id && (preview.attachmentPosition === undefined
+                  ? preview.artifactIds.every(id => artifacts.some(item => item.id === id))
+                  : taskAttachments.some(item => item.position === preview.attachmentPosition)) &&
                   <section><h3>{preview.name}</h3>
                   {preview.png ? <img className="window-image" src={'data:image/png;base64,' + preview.png} alt="Captured window" /> :
                     <pre>{preview.text}</pre>}

@@ -209,13 +209,26 @@ test('a registered JSONL extension executes a real subprocess through Router and
   const attachedEvent = store.timeline('owner', attachedTask.id)?.events.find(event => event.type === 'task.created');
   assert.equal(attachedEvent?.data.attachments[0].name, attachment.name);
   assert.doesNotMatch(JSON.stringify(attachedEvent), /Attachment fixture body/);
-  const createWithEvidence = (key: string, sourceId = connection, goal = 'Use the review template') => fetch(base + '/v1/events', {
+  const attachmentPath = '/v1/tasks/' + attachedTask.id + '/attachments/0';
+  const readAttachments = async (token: string) => (await (await fetch(base + '/v1/state', {
+    headers: { Authorization: 'Bearer ' + token },
+  })).json()).attachments;
+  const readAttachment = (path: string, token: string) => fetch(base + path, {
+    headers: { Authorization: 'Bearer ' + token },
+  });
+  assert.deepEqual((await readAttachments('local')).filter((item: { taskId: string }) => item.taskId === attachedTask.id),
+    [{ taskId: attachedTask.id, position: 0, name: attachment.name, size: Buffer.byteLength(attachment.text) }]);
+  assert.deepEqual(await (await readAttachment(attachmentPath, 'local')).json(), attachment);
+  assert.equal((await readAttachment(attachmentPath, 'wrong')).status, 401);
+  assert.equal(store.taskAttachment('another-owner', attachedTask.id, 0), undefined);
+
+  const createWithEvidence = (key: string, sourceId = connection, goal = 'Use the review template', attachments?: { name: string; text: string }[]) => fetch(base + '/v1/events', {
     method: 'POST', headers: {
       Authorization: 'Bearer local', 'Content-Type': 'application/json', 'Idempotency-Key': key,
-    }, body: JSON.stringify({ workspace: 'project', text: goal,
+    }, body: JSON.stringify({ workspace: 'project', text: goal, attachments,
       appMemory: { query: 'review', sources: [sourceId] } }),
   });
-  const creationWithEvidence = await createWithEvidence('app-evidence');
+  const creationWithEvidence = await createWithEvidence('app-evidence', connection, 'Use the review template', [attachment]);
   assert.equal(creationWithEvidence.status, 202);
   const protectedTask = await creationWithEvidence.json();
   await expectNoLegacyAssignment();
@@ -259,6 +272,11 @@ test('a registered JSONL extension executes a real subprocess through Router and
   assert.equal((await setShare(true, 1, phone.token)).status, 403);
   assert.equal((await setShare(true)).status, 200);
   assert.equal(await (await download(phone.token)).text(), 'Private review template');
+  const protectedAttachmentPath = '/v1/tasks/' + protectedTask.id + '/attachments/0';
+  assert.equal((await readAttachment(protectedAttachmentPath, 'local')).status, 200);
+  assert.equal((await readAttachment(protectedAttachmentPath, phone.token)).status, 404);
+  assert.ok(!(await readAttachments(phone.token)).some((item: { taskId: string }) => item.taskId === protectedTask.id));
+  assert.equal((await readAttachment(attachmentPath, phone.token)).status, 200);
   const otherPairing = store.createPairing('owner', Date.now());
   const otherPhone = store.redeemPairing(otherPairing.code, 'Other phone', Date.now())!;
   assert.equal((await download(otherPhone.token)).status, 404);
@@ -306,6 +324,7 @@ test('a registered JSONL extension executes a real subprocess through Router and
   assert.equal(await client.runOnce(AbortSignal.timeout(5_000)), false);
   assert.equal(store.get('owner', pending.id)?.status, 'waiting_user');
   assert.equal((await download('local')).status, 404);
+  assert.equal((await readAttachment(protectedAttachmentPath, 'local')).status, 404);
   assert.equal((await download(phone.token)).status, 404);
   const hidden = await (await fetch(base + '/v1/state', { headers: { Authorization: 'Bearer local' } })).json();
   assert.equal(hidden.tasks.find((item: { id: string }) => item.id === protectedTask.id)?.result, null);
