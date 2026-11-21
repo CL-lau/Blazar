@@ -121,7 +121,9 @@ test('a configured MCP account reads allowlisted text resources without invoking
   const [repository] = configuredDocuments({ ...githubEnv, BLAZAR_MCP_DOCS: '[]',
     BLAZAR_APP_MANIFESTS: JSON.stringify([githubManifest]) }, transport);
   methods.length = 0;
-  assert.equal((await repository.read('review', signal)).text, 'GitHub review guidance');
+  const direct = await repository.read('review', signal);
+  assert.equal(direct.text, 'GitHub review guidance');
+  assert.deepEqual(direct.backend, { kind: 'github', fallback: false });
   assert.deepEqual(methods, ['github']);
   methods.length = 0;
   githubStatus = 401;
@@ -129,7 +131,13 @@ test('a configured MCP account reads allowlisted text resources without invoking
   assert.deepEqual(methods, ['github']);
   methods.length = 0;
   githubStatus = 503;
-  assert.equal((await repository.read('review', signal)).text, 'MCP review guidance');
+  const repositoryId = store.connect('owner', repository.app, repository.account, 'project');
+  const preview = await invokeDocumentCapability(store, 'owner', repositoryId, [repository], 'document.read',
+    { workspace: 'project', document: 'review' });
+  assert.ok('text' in preview);
+  assert.equal(preview.text, 'MCP review guidance');
+  assert.deepEqual(preview.backend, { kind: 'mcp', fallback: true });
+  assert.deepEqual(store.appUsage('owner', repositoryId)?.[0].backend, preview.backend);
   assert.deepEqual(methods, ['github', 'initialize', 'notifications/initialized', 'resources/read', 'close']);
 
 });

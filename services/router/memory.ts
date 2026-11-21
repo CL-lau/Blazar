@@ -1,5 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import { DatabaseSync } from 'node:sqlite';
+import type { DocumentReadBackend } from '../../packages/apps/documents.ts';
 import { sqliteTransaction } from '../../packages/storage/sqlite.ts';
 import { initializeMemorySchema } from './persistence/memory-schema.ts';
 
@@ -95,8 +96,10 @@ export class MemoryStore {
       .run(connection, workspace, operation, Date.now(), connection).lastInsertRowid;
   }
 
-  finishAppUsage(id: number | bigint, status: 'succeeded' | 'failed' | 'access_changed' | 'access_denied') {
-    this.db.prepare('UPDATE app_usage SET status=? WHERE id=?').run(status, id);
+  finishAppUsage(id: number | bigint, status: 'succeeded' | 'failed' | 'access_changed' | 'access_denied',
+                 backend?: DocumentReadBackend) {
+    this.db.prepare('UPDATE app_usage SET status=?,read_backend=? WHERE id=?')
+      .run(status, backend ? JSON.stringify(backend) : null, id);
   }
 
   recordWorkerAppUsage(workspace: string, taskId: string, runId: string, connections: string[]) {
@@ -108,10 +111,13 @@ export class MemoryStore {
   appUsage(owner: string, connection: string) {
     if (!this.db.prepare('SELECT 1 FROM app_connection WHERE owner=? AND id=?').get(owner, connection)) return undefined;
     return this.db.prepare(`SELECT * FROM (
-      SELECT id,workspace,operation,status,started,NULL AS taskId FROM app_usage WHERE connection=?
+      SELECT id,workspace,operation,status,started,NULL AS taskId,read_backend FROM app_usage WHERE connection=?
       UNION ALL
-      SELECT run_id,workspace,'worker_memory','authorized',started,task_id FROM worker_app_usage WHERE connection=?
-    ) ORDER BY started DESC,id DESC LIMIT 50`).all(connection, connection);
+      SELECT run_id,workspace,'worker_memory','authorized',started,task_id,NULL FROM worker_app_usage WHERE connection=?
+    ) ORDER BY started DESC,id DESC LIMIT 50`).all(connection, connection)
+      .map(({ read_backend, ...item }) => ({
+        ...item, ...(typeof read_backend === 'string' && { backend: JSON.parse(read_backend) as DocumentReadBackend }),
+      }));
   }
 
   documentsToRefresh(owner: string, workspace: string, connection: string, after: string) {

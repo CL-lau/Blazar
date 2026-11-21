@@ -4,6 +4,8 @@ export class DocumentUnavailable extends Error {}
 export class DocumentAccessDenied extends DocumentUnavailable {}
 export class DocumentBackendUnavailable extends DocumentUnavailable {}
 
+export type DocumentReadBackend = { kind: 'github' | 'mcp'; fallback: boolean };
+
 export type DocumentConnector = {
   app: string;
   account: string;
@@ -12,7 +14,7 @@ export type DocumentConnector = {
   health?(signal: AbortSignal): Promise<void>;
   discover?(signal: AbortSignal): Promise<{ aliases: string[]; complete: boolean }>;
   accepts(document: string): boolean;
-  read(document: string, signal: AbortSignal): Promise<{ text: string; revision: string }>;
+  read(document: string, signal: AbortSignal): Promise<{ text: string; revision: string; backend?: DocumentReadBackend }>;
 };
 
 const documentApps = new Map([

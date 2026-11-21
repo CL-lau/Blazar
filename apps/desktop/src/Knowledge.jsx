@@ -226,6 +226,7 @@ export function Knowledge({ token }) {
             <li key={item.id}>
               {{ import: 'Document import', test: 'Access test', health: 'Connection check', read: 'Document preview', refresh: 'Document refresh', search: 'Document search', discover: 'Document discovery', worker_memory: 'Worker memory access' }[item.operation]} · {item.workspace} ·{' '}
               {item.taskId && <><code>{item.taskId}</code> · </>}
+              {item.backend && <>{item.backend.kind === 'github' ? 'GitHub API' : 'MCP'}{item.backend.fallback && ' fallback'} · </>}
               {item.status.replaceAll('_', ' ')} · {new Date(item.started).toLocaleString()}
             </li>
           ))}</ul>}
@@ -346,6 +347,9 @@ export function Knowledge({ token }) {
           {documentPreview && <section aria-label="Document preview">
             <h3>{documentPreview.resource}</h3>
             <p>Revision <code>{documentPreview.revision}</code></p>
+            {documentPreview.backend && <p>
+              {documentPreview.backend.kind === 'github' ? 'GitHub API' : 'MCP'}{documentPreview.backend.fallback && ' fallback'}
+            </p>}
             <pre>{documentPreview.text}</pre>
             {documentPreview.truncated && <p>Preview truncated.</p>}
           </section>}

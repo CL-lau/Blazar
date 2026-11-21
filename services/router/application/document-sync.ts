@@ -35,7 +35,7 @@ export async function accessDocument(store: DocumentMemory, owner: string, works
     throw new RequestError(409, 'Source access changed during the document read');
   }
   if (operation === 'test') {
-    store.finishAppUsage(usageId, 'succeeded');
+    store.finishAppUsage(usageId, 'succeeded', content.backend);
     return { readable: true };
   }
   if (operation === 'read') {
@@ -43,14 +43,15 @@ export async function accessDocument(store: DocumentMemory, owner: string, works
       store.finishAppUsage(usageId, 'access_changed');
       throw new RequestError(409, 'Source access changed during the document read');
     }
-    store.finishAppUsage(usageId, 'succeeded');
+    store.finishAppUsage(usageId, 'succeeded', content.backend);
     return { connection, resource: document, revision: content.revision,
+      ...(content.backend && { backend: content.backend }),
       text: content.text.slice(0, 4_000).toWellFormed(), truncated: content.text.length > 4_000 };
   }
   const id = store.importDocument(owner, workspace, content.text, {
     connection, resource: document, revision: content.revision,
   }, usageId);
-  store.finishAppUsage(usageId, id ? 'succeeded' : 'access_changed');
+  store.finishAppUsage(usageId, id ? 'succeeded' : 'access_changed', id ? content.backend : undefined);
   if (!id) throw new RequestError(409, 'Source access changed during import');
   return { id, revision: content.revision };
 }

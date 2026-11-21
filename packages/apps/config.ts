@@ -1,4 +1,4 @@
-import { DocumentBackendUnavailable, DocumentUnavailable, type DocumentConnector } from './documents.ts';
+import { DocumentBackendUnavailable, DocumentUnavailable, type DocumentConnector, type DocumentReadBackend } from './documents.ts';
 import { feishuDocuments } from './feishu-docs.ts';
 import { mcpDocuments } from './mcp-docs.ts';
 import { githubDocuments } from './github-docs.ts';
@@ -88,21 +88,24 @@ export function configuredDocuments(env: NodeJS.ProcessEnv, transport = fetch): 
       throw new Error('Each fallback must map exactly the configured document aliases');
     }
     const backends = [primary, ...backups];
-    async function tryBackends<T>(signal: AbortSignal, invoke: (backend: typeof primary) => Promise<T>) {
-      for (const backend of backends.slice(0, -1)) {
+    async function tryBackends<T>(signal: AbortSignal, invoke: (backend: typeof primary, index: number) => Promise<T>) {
+      for (const [index, backend] of backends.slice(0, -1).entries()) {
         signal.throwIfAborted();
         try {
-          return await invoke(backend);
+          return await invoke(backend, index);
         } catch (error) {
           if (!(error instanceof DocumentBackendUnavailable)) throw error;
         }
       }
       signal.throwIfAborted();
-      return invoke(backends[backends.length - 1]);
+      return invoke(backends[backends.length - 1], backends.length - 1);
     }
     register({
       ...primary, app: entry.id, definition: { label, version: entry.version },
-      read: (alias, signal) => tryBackends(signal, backend => backend.read(alias, signal)),
+      read: (alias, signal) => tryBackends(signal, async (reader, index) => {
+        const backend: DocumentReadBackend = { kind: github && index === 0 ? 'github' : 'mcp', fallback: index > 0 };
+        return { ...await reader.read(alias, signal), backend };
+      }),
       health: signal => tryBackends(signal, backend => backend.health(signal)),
       ...(!github && { discover: (signal: AbortSignal) => tryBackends(signal, backend => backend.discover!(signal)) }),
     });
