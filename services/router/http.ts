@@ -806,6 +806,7 @@ export function routerServer(store: TaskStore, config: { owner: string; token: s
             try {
               decision = await config.harness({
                 ...input, recent: store.recentConversation(owner, input.workspace),
+                findTasks: query => store.findRouterTasks(owner, input.workspace, query),
                 ...(evidence.length ? { personalMemory: evidence.map(item => item.body) } : {}),
               }, AbortSignal.timeout(15_000));
             } catch {

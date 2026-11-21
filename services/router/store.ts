@@ -357,6 +357,13 @@ export class TaskStore {
       WHERE t.owner=? AND e.seq>? ORDER BY e.seq LIMIT 100`).all(owner, after) as unknown as TaskEvent[];
   }
 
+  findRouterTasks(owner: string, workspace: string, query: string) {
+    return this.db.prepare(`SELECT id,substr(goal,1,320) AS goal,status FROM task WHERE owner=? AND workspace=?
+      AND (?='' OR id=? OR instr(lower(goal),lower(?))>0)
+      ORDER BY rowid DESC LIMIT 8`).all(owner, workspace, query, query, query)
+      .map(row => ({ id: String(row.id), goal: String(row.goal).toWellFormed(), status: String(row.status) }));
+  }
+
   recentConversation(owner: string, workspace: string): ConversationTurn[] {
     return this.db.prepare(`SELECT json_extract(request,'$[1]') AS text,decision FROM routing_decision
       WHERE owner=? AND json_extract(request,'$[0]')=? AND json_array_length(request)=2 ORDER BY rowid DESC LIMIT 6`)
