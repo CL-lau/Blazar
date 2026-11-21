@@ -10,11 +10,12 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
 import { setTimeout as delay } from 'node:timers/promises';
+import type { ConfiguredApplicationWrite } from '../../packages/apps/config.ts';
 import { routerServer } from './http.ts';
 import { MemoryStore } from './memory.ts';
 import { TaskStore } from './store.ts';
 
-test('the public gateway carries a paired phone screenshot task and WSS Worker result end to end', {
+test('the public gateway carries paired phone write approvals and screenshot tasks end to end', {
   skip: !process.env.BLAZAR_TEST_CADDY_EXECUTABLE && 'Set BLAZAR_TEST_CADDY_EXECUTABLE to a Caddy executable',
   timeout: 15_000,
 }, async t => {
@@ -26,7 +27,22 @@ test('the public gateway carries a paired phone screenshot task and WSS Worker r
   });
   const store = new TaskStore(':memory:');
   const memory = new MemoryStore(':memory:');
-  const router = routerServer(store, { memory, owner: 'owner', token: 'local-admin' });
+  const submittedWrites: unknown[] = [];
+  const write: ConfiguredApplicationWrite = {
+    app: 'mcp', account: 'Fixture', capability: 'action.document.update', revision: 'fixture-v1',
+    candidates: [{
+      lookup: undefined,
+      backend: {
+        id: 'fixture', connectionId: '', capability: 'action.document.update', effect: 'write',
+        async invoke(action, _signal, authorizeDispatch) {
+          if (!await authorizeDispatch()) return { status: 'denied' };
+          submittedWrites.push(action.input);
+          return { status: 'succeeded', output: null };
+        },
+      },
+    }],
+  };
+  const router = routerServer(store, { memory, owner: 'owner', token: 'local-admin', applicationWrites: [write] });
   router.listen(0, '127.0.0.1');
   await once(router, 'listening');
   t.after(async () => {
@@ -106,6 +122,32 @@ test('the public gateway carries a paired phone screenshot task and WSS Worker r
   assert.equal((await send(proposalPath + '/confirm', ca, 'local-admin', {})).status, 401);
   assert.equal((await send(proposalPath + '/share', ca, phone.token, {})).status, 404);
   assert.equal((await send(proposalPath + '/reconcile', ca, phone.token, {})).status, 404);
+  const localPost = (path: string, body: object) => fetch('http://127.0.0.1:' + upstream.port + path, {
+    method: 'POST', signal: AbortSignal.timeout(3_000),
+    headers: { Authorization: 'Bearer local-admin', 'Content-Type': 'application/json' }, body: JSON.stringify(body),
+  });
+  const connection = memory.connect('owner', write.app, write.account, 'project');
+  const requested = await localPost('/v1/app-connections/' + connection + '/write-proposals', {
+    workspace: 'project', capability: write.capability, input: { title: 'Approved on iPhone' },
+  });
+  assert.equal(requested.status, 201);
+  const { id: writeId } = await requested.json();
+  const review = writes + '/' + writeId;
+  assert.equal((await send(review, ca, phone.token)).status, 404);
+  assert.equal((await localPost(review + '/share', { client: phone.id })).status, 200);
+  const proposal = await send(review, ca, phone.token);
+  assert.equal(proposal.status, 200);
+  const details = JSON.parse(proposal.body.toString());
+  assert.equal(details.account, write.account);
+  assert.deepEqual(JSON.parse(details.inputPreview), { title: 'Approved on iPhone' });
+  assert.equal((await send(review, ca, otherPhone.token)).status, 404);
+  assert.equal((await send(review + '/confirm', ca, otherPhone.token, {})).status, 404);
+  assert.equal(submittedWrites.length, 0);
+  const approved = await send(review + '/confirm', ca, phone.token, {});
+  assert.equal(approved.status, 200);
+  assert.deepEqual(JSON.parse(approved.body.toString()), { status: 'succeeded' });
+  assert.equal((await send(review + '/confirm', ca, phone.token, {})).status, 200);
+  assert.deepEqual(submittedWrites, [{ title: 'Approved on iPhone' }]);
   const device = store.registerDevice('owner', 'Computer', 'project');
   const socket = new WebSocket(base.replace(/^https:/, 'wss:') + '/v1/devices/connect', {
     ca, handshakeTimeout: 3_000, headers: { Authorization: 'Bearer ' + device.token },
@@ -156,5 +198,6 @@ test('the public gateway carries a paired phone screenshot task and WSS Worker r
   assert.equal(image.cache, 'no-store');
   assert.deepEqual(image.body, png);
   assert(store.revokeMobile('owner', phone.id));
+  assert.equal((await send(review, ca, phone.token)).status, 401);
   assert.equal((await send(path, ca, phone.token)).status, 401);
 });
