@@ -729,6 +729,40 @@ test('Router capability tools only expose active connections and devices in the 
   }, undefined, undefined]);
 });
 
+test('direct task intake deduplicates per paired phone and administrator', async t => {
+  const store = new TaskStore(':memory:');
+  const server = routerServer(store, { owner: 'owner', token: 'admin-secret' });
+  const pair = (name: string) => store.redeemPairing(store.createPairing('owner', Date.now()).code, name, Date.now())!;
+  const first = pair('First phone');
+  const second = pair('Second phone');
+  server.listen(0, '127.0.0.1');
+  t.after(async () => {
+    await new Promise<void>(resolve => server.close(() => resolve()));
+    store.close();
+  });
+  await once(server, 'listening');
+  const address = server.address();
+  assert.ok(address && typeof address !== 'string');
+  const submit = (token: string, text: string) => fetch('http://127.0.0.1:' + address.port + '/v1/events', {
+    method: 'POST',
+    headers: { Authorization: 'Bearer ' + token, 'Content-Type': 'application/json', 'Idempotency-Key': 'shared-key' },
+    body: JSON.stringify({ workspace: 'project', text }),
+  });
+  const response = await Promise.all([
+    submit(first.token, 'Review the first report'),
+    submit(second.token, 'Review the second report'),
+    submit('admin-secret', 'Review the second report'),
+  ]);
+  assert.deepEqual(response.map(item => item.status), [202, 202, 202]);
+  const tasks = await Promise.all(response.map(item => item.json()));
+  assert.equal(new Set(tasks.map(task => task.id)).size, 3);
+  const replay = await submit(second.token, 'Review the second report');
+  assert.equal(replay.status, 202);
+  assert.equal((await replay.json()).id, tasks[1].id);
+  assert.equal((await submit(second.token, 'Different request')).status, 409);
+  assert.equal(store.snapshot('owner').tasks.length, 3);
+});
+
 test('concurrent conversation retries share routing and reject in-flight key conflicts', { timeout: 5000 }, async t => {
   const store = new TaskStore(':memory:');
   const entered = Promise.withResolvers<void>();

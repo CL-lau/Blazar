@@ -1285,7 +1285,8 @@ export function routerServer(store: TaskStore, config: { owner: string; token: s
               throw new RequestError(400, 'Select application memory for the new task');
             }
           }
-          const task = store.create(owner, 'desktop-api', key, workspace, goal, desktopDevice, memoryInputs,
+          const source = mobile ? 'mobile-api:' + mobile.id : 'desktop-api';
+          const task = store.create(owner, source, key, workspace, goal, desktopDevice, memoryInputs,
             appEvidence, attachments, copiedFromTask);
           ownerMetrics(owner).observe('event', performance.now() - started);
           reply(response, 202, taskResponse(task));
