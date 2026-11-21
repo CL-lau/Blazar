@@ -393,7 +393,10 @@ private struct TaskScreen: View {
                     continue
                 } catch {
                     guard !Task.isCancelled, self.client == client else { return }
-                    if error is RouterAccessDenied { clearUnauthorizedState() }
+                    if error is RouterAccessDenied {
+                        clearUnauthorizedState()
+                        return
+                    }
                     self.error = error.localizedDescription
                 }
             }
@@ -416,7 +419,10 @@ private struct TaskScreen: View {
         } catch {
             guard !Task.isCancelled, self.client == client, snapshotRequest == request else { return }
             snapshot = nil
-            if error is RouterAccessDenied { clearUnauthorizedState() }
+            if error is RouterAccessDenied {
+                clearUnauthorizedState()
+                return
+            }
             self.error = error.localizedDescription
         }
     }
@@ -428,6 +434,13 @@ private struct TaskScreen: View {
         offlineSummary = nil
         answer = nil
         plan = nil
+        token = ""
+        do {
+            try Credentials.remove()
+            error = "This phone’s Router access has ended. Pair again to reconnect."
+        } catch {
+            self.error = "Router access has ended. The saved credential could not be removed. Pair again to replace it."
+        }
     }
 }
 

@@ -29,4 +29,11 @@ enum Credentials {
             throw NSError(domain: NSOSStatusErrorDomain, code: Int(status))
         }
     }
+
+    static func remove() throws {
+        let status = SecItemDelete(query as CFDictionary)
+        guard status == errSecSuccess || status == errSecItemNotFound else {
+            throw NSError(domain: NSOSStatusErrorDomain, code: Int(status))
+        }
+    }
 }
