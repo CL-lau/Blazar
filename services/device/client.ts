@@ -1,14 +1,7 @@
 import { WorkerCleanupError } from '../../packages/workers/process.ts';
 import { DesktopResultUnverified, probeComputer, type ObservationConfig } from '../../packages/computer-use/observe.ts';
 import { DeviceSocket } from './socket.ts';
-import { runAider } from '../../packages/workers/aider.ts';
-import { runCustomJsonl } from '../../packages/workers/custom-jsonl.ts';
-import { runPi } from '../../packages/workers/pi.ts';
-import { runClaude } from '../../packages/workers/claude.ts';
-import type { JobContext, WorkerSteer } from '../../packages/workers/prompt.ts';
-import { runCodex } from '../../packages/workers/codex.ts';
 import type { Worker } from '../../packages/workers/registry.ts';
-import { AcpSessionRestoreError, runAcp } from '../../packages/workers/acp.ts';
 import { createHash, createHmac, randomUUID } from 'node:crypto';
 import { DeviceLedger, type SessionCheckpoint } from './ledger.ts';
 import { setTimeout as delay } from 'node:timers/promises';
@@ -18,6 +11,7 @@ import { maintainLease } from './lease.ts';
 import { platform } from 'node:os';
 import { preview } from './preview.ts';
 import { executeDesktopAction } from './execution/desktop.ts';
+import { executeWorker } from './execution/worker.ts';
 
 type Assignment = { clickExpectedText?: string; run: Run; task: Task; instructions: string[]; predecessors: PredecessorInput[]; acceptanceCriteria?: string[]; memoryInputs?: TaskMemoryInput[]; attachments?: TaskAttachment[] };
 
@@ -101,104 +95,6 @@ export class DeviceClient {
     return response.ok;
   }
 
-  private async steerWorker(prefix: string, steer: WorkerSteer, finished: AbortSignal,
-                           stop: AbortController, active: AbortSignal) {
-    const polling = AbortSignal.any([finished, active]);
-    let appliedVersion: number | undefined;
-    try {
-      while (!polling.aborted || (appliedVersion !== undefined && !active.aborted)) {
-        const response = await this.post(prefix + 'steer', { appliedVersion }, appliedVersion === undefined ? polling : active);
-        if (!response.ok) {
-          await response.body?.cancel();
-          if (!finished.aborted) stop.abort();
-          return;
-        }
-        const { instruction } = await response.json() as {
-          instruction: { version: number; text: string; messageId: string } | null;
-        };
-        appliedVersion = undefined;
-        if (polling.aborted) return;
-        if (instruction) {
-          if (!await steer(instruction.text, instruction.messageId)) {
-            if (!finished.aborted) stop.abort();
-            return;
-          }
-          appliedVersion = instruction.version;
-        } else {
-          await delay(250, undefined, { signal: polling });
-        }
-      }
-    } catch {
-      if (!polling.aborted) stop.abort();
-    }
-  }
-
-  private async runSteerableWorker(worker: Worker, prefix: string, job: JobContext,
-                               stop: AbortController, active: AbortSignal) {
-    const finished = new AbortController();
-    let steering: Promise<void> | undefined;
-    try {
-      const run = worker.protocol === 'pi' ? runPi : runCodex;
-      return await run(worker, this.root, job, active, steer => {
-        steering = this.steerWorker(prefix, steer, finished.signal, stop, active);
-        return () => finished.abort();
-      });
-    } finally {
-      finished.abort();
-      await steering;
-    }
-  }
-
-  private async runAcpWorker(worker: Worker, prefix: string, taskId: string, job: JobContext, active: AbortSignal,
-                             report: (message: string, signal: AbortSignal) => Promise<void>) {
-    const key = createHash('sha256').update(JSON.stringify([
-      this.scope, this.workspaceIdentity, this.workerConfiguration?.revision, taskId, job.goal,
-      job.acceptanceCriteria, job.memoryInputs?.map(({ id, version }) => [id, version]),
-      job.predecessors.map(({ taskId, version }) => [taskId, version]),
-      ...(job.attachments?.length ? [job.attachments] : []),
-    ])).digest('hex');
-    const instructionCount = job.instructions.length;
-    const previous = this.ledger.takeSession(key, instructionCount);
-    let checkpoint: SessionCheckpoint | undefined;
-    const run = (context: JobContext, resumeId?: string) => runAcp(worker, this.root, context, active,
-      async (summary, signal) => {
-        const decision = await this.approve(prefix, summary, signal);
-        if (decision?.decision !== 'approved') return decision?.decision;
-        if (await this.consumeApproval(prefix, decision.id, signal)) return 'approved';
-        return undefined;
-      }, report, { resumeId, onCompleted: id => { checkpoint = { key, id, instructionCount }; } });
-    let result: string;
-    try {
-      result = previous
-        ? await run({ ...job, instructions: job.instructions.slice(previous.instructionCount) }, previous.id)
-        : await run(job);
-    } catch (error) {
-      if (!(error instanceof AcpSessionRestoreError)) throw error;
-      result = await run(job);
-    }
-    return { result, checkpoint };
-  }
-
-  private async completeInputArtifacts(inputs: PredecessorInput[], prefix: string, signal: AbortSignal) {
-    let budget = 64_000;
-    for (const input of inputs) {
-      const artifact = input.artifact;
-      if (!artifact || !artifact.truncated || artifact.size > budget || artifact.size <= 0) continue;
-      const response = await this.post(prefix + 'input-artifact', { artifactId: artifact.id }, signal);
-      if (!response.ok) {
-        await response.body?.cancel();
-        throw new Error('Unable to read a required workflow input');
-      }
-      const { text } = await response.json() as { text?: unknown };
-      if (typeof text !== 'string' || Buffer.byteLength(text) !== artifact.size ||
-          createHash('sha256').update(text).digest('hex') !== artifact.sha256) {
-        throw new Error('Workflow input artifact failed integrity verification');
-      }
-      artifact.text = text;
-      budget -= artifact.size;
-    }
-  }
-
   async runOnce(signal: AbortSignal): Promise<boolean> {
     const interrupted = this.ledger.interrupted(this.workspaceIdentity);
     if (interrupted) {
@@ -278,30 +174,18 @@ export class DeviceClient {
               return () => this.consumeApproval(prefix, decision.id, signal);
             }, assignment.clickExpectedText);
         } else if (this.worker) {
-          if (this.worker.protocol === 'jsonl' && this.worker.includeFullInputArtifacts) {
-            await this.completeInputArtifacts(assignment.predecessors, prefix, active);
-          }
-          const job = { goal: assignment.task.goal, instructions: assignment.instructions,
-            predecessors: assignment.predecessors, acceptanceCriteria: assignment.acceptanceCriteria,
-            memoryInputs: assignment.memoryInputs, attachments: assignment.attachments };
-          let sequence = 1;
-          const report = async (message: string, signal: AbortSignal) => {
-            const reply = await this.post(prefix + 'progress', { seq: ++sequence, message }, signal);
-            await reply.body?.cancel();
-            if (!reply.ok) throw new Error('Router rejected Worker progress');
-          };
-          const result = this.worker.protocol === 'jsonl'
-            ? await runCustomJsonl(this.worker, this.root, job, active, report)
-            : this.worker.protocol === 'pi' || this.worker.protocol === 'codex'
-            ? await this.runSteerableWorker(this.worker, prefix, job, stop, active)
-            : this.worker.protocol === 'claude'
-            ? await runClaude(this.worker, this.root, job, active)
-              : this.worker.protocol === 'aider'
-                ? await runAider(this.worker, this.root, job, active)
-                : await this.runAcpWorker(this.worker, prefix, assignment.task.id, job, active, report);
-          if (typeof result !== 'string') checkpoint = result.checkpoint;
-          const text = typeof result === 'string' ? result : result.result;
-          outcome = { status: 'succeeded', result: text, artifact: { name: 'worker-result.txt', text } };
+          const { result, checkpoint: session } = await executeWorker({
+            root: this.root, scope: this.scope, workspaceIdentity: this.workspaceIdentity,
+            revision: this.workerConfiguration?.revision, ledger: this.ledger,
+            post: (path, data, signal) => this.post(path, data, signal),
+            approve: (path, summary, signal) => this.approve(path, summary, signal),
+            consumeApproval: (path, id, signal) => this.consumeApproval(path, id, signal),
+          }, this.worker, prefix, assignment.task.id, {
+            goal: assignment.task.goal, instructions: assignment.instructions, predecessors: assignment.predecessors,
+            acceptanceCriteria: assignment.acceptanceCriteria, memoryInputs: assignment.memoryInputs, attachments: assignment.attachments,
+          }, stop, active);
+          checkpoint = session;
+          outcome = { status: 'succeeded', result, artifact: { name: 'worker-result.txt', text: result } };
         } else {
           if (assignment.instructions.length) throw new Error('Submit a new preview to change the document path.');
           const document = await preview(this.root, assignment.task.goal, active);
