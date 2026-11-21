@@ -3,6 +3,7 @@ import { callRouter } from './router.js';
 
 export function Knowledge({ token }) {
   const [connections, setConnections] = useState([]);
+  const [documentSync, setDocumentSync] = useState([]);
   const [results, setResults] = useState(null);
   const [searchQuery, setSearchQuery] = useState('');
   const [editing, setEditing] = useState(null);
@@ -29,7 +30,11 @@ export function Knowledge({ token }) {
   useEffect(() => {
     let current = true;
     callRouter(token, '/app-connections')
-      .then(data => { if (current) setConnections(data.connections); })
+      .then(data => {
+        if (!current) return;
+        setConnections(data.connections);
+        setDocumentSync(data.documentSync ?? []);
+      })
       .catch(failure => { if (current) setError(failure.message); });
     return () => { current = false; };
   }, [token]);
@@ -40,7 +45,9 @@ export function Knowledge({ token }) {
   const accountName = connection => `${connection.app} · ${connection.account}`;
 
   async function refreshConnections() {
-    setConnections((await request('/app-connections')).connections);
+    const data = await request('/app-connections');
+    setConnections(data.connections);
+    setDocumentSync(data.documentSync ?? []);
   }
 
   function saveAccount(event) {
@@ -218,7 +225,29 @@ export function Knowledge({ token }) {
                 setNotice(`Refreshed ${refreshed} documents. Could not refresh ${unavailable}.`);
               });
             }}>Refresh imported documents</button>
+            <label>Automatic refresh<select name="interval">
+              <option value="">Off</option>
+              <option value="15">Every 15 minutes</option>
+              <option value="60">Every hour</option>
+              <option value="360">Every six hours</option>
+              <option value="1440">Every day</option>
+            </select></label>
+            <button type="button" onClick={event => {
+              const form = event.currentTarget.form;
+              if (!form.elements.namedItem('workspace').reportValidity()) return;
+              const { connection, workspace, interval } = Object.fromEntries(new FormData(form));
+              void perform(async () => {
+                await request('/app-connections/' + connection + '/document-sync', {
+                  method: 'POST', body: { workspace, intervalMinutes: interval ? Number(interval) : null },
+                });
+                await refreshConnections();
+                setNotice('Automatic refresh settings saved.');
+              });
+            }}>Save refresh schedule</button>
           </form>
+          {documentSync.filter(schedule => schedule.connection === importSource.id).map(schedule => (
+            <p key={schedule.workspace}>{schedule.workspace} · Every {schedule.intervalMinutes} minutes</p>
+          ))}
         </fieldset>
       )}
 

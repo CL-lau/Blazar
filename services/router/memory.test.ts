@@ -6,6 +6,26 @@ import { DatabaseSync } from 'node:sqlite';
 import test from 'node:test';
 import { MemoryStore } from './memory.ts';
 
+test('document sync resumes its saved cursor and rejects stale schedule leases after restart', t => {
+  const root = mkdtempSync(join(tmpdir(), 'blazar-document-sync-'));
+  const path = join(root, 'sync.sqlite');
+  let store = new MemoryStore(path);
+  t.after(() => { store.close(); rmSync(root, { recursive: true, force: true }); });
+  const connection = store.connect('owner', 'github', 'handbook', 'work');
+  assert.equal(store.setDocumentSync('owner', connection, 'work', 15, 100), true);
+  const first = store.leaseDocumentSync(100)!;
+  assert.equal(first.cursor, '');
+  store.finishDocumentSync(first, 'guide.md', 110);
+  store.close();
+  store = new MemoryStore(path);
+  const next = store.leaseDocumentSync(110)!;
+  assert.equal(next.cursor, 'guide.md');
+  assert.equal(store.documentSyncActive(first, 110), false);
+  assert.equal(store.documentSyncActive(next, 110), true);
+  assert.equal(store.setConnectionWorkspace('owner', connection, 'private'), true);
+  assert.equal(store.documentSyncActive(next, 110), false);
+});
+
 test('personal context finds unpinned Chinese preferences in a longer sentence', t => {
   const store = new MemoryStore(':memory:');
   t.after(() => store.close());

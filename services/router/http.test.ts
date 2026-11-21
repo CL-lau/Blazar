@@ -10,7 +10,7 @@ import { DeviceClient } from '../device/client.ts';
 import assert from 'node:assert/strict';
 import { once } from 'node:events';
 import test from 'node:test';
-import { routerServer } from './http.ts';
+import { routerServer, runDueDocumentSync } from './http.ts';
 import { MemoryStore } from './memory.ts';
 import { TaskStore } from './store.ts';
 
@@ -248,6 +248,22 @@ test('Router authenticates, deduplicates commands and replays task changes over 
   assert.deepEqual(await refreshed.json(), { refreshed: 1, unavailable: 0, after: null });
   assert.deepEqual(memory.recall('test', 'demo', 'findings', [github]), []);
   assert.equal(memory.recall('test', 'demo', 'guidance', [github])[0]?.body, githubBody);
+  const syncPath = '/v1/app-connections/' + github + '/document-sync';
+  assert.equal((await post(syncPath, 'enable-refresh', { workspace: 'demo', intervalMinutes: 15 })).status, 200);
+  const scheduledReader = githubDocuments('engineering', 'example/handbook', 'fixture', async () =>
+    new Response('Scheduled revision'));
+  const syncSignal = AbortSignal.timeout(2_000);
+  assert.equal(await runDueDocumentSync(memory, [scheduledReader], syncSignal), true);
+  assert.equal(memory.recall('test', 'demo', 'Scheduled revision', [github]).length, 1);
+  assert.equal(await runDueDocumentSync(memory, [scheduledReader], syncSignal), false);
+  assert.equal((await post(syncPath, 'restart-schedule', { workspace: 'demo', intervalMinutes: 15 })).status, 200);
+  const cancelledReader = githubDocuments('engineering', 'example/handbook', 'fixture', async () => {
+    assert.equal(memory.setDocumentSync('test', github, 'demo', null), true);
+    return new Response('Cancelled revision');
+  });
+  assert.equal(await runDueDocumentSync(memory, [cancelledReader], syncSignal), true);
+  assert.equal(memory.recall('test', 'demo', 'Cancelled revision', [github]).length, 0);
+  assert.equal(await runDueDocumentSync(memory, [scheduledReader], syncSignal), false);
 
   const registerDevice = async (name: string, workspace: string) => {
     const response = await post('/v1/admin/devices', name, { name, workspace });

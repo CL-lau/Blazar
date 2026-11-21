@@ -140,6 +140,8 @@ export BLAZAR_MCP_DOCS='[{"account":"Handbook","endpoint":"http://127.0.0.1:4198
 
 Register the account in the desktop app with app type `mcp`, then use `review` as the document ID. For a server requiring bearer authentication, set `tokenEnv` to the name of a `BLAZAR_MCP_TOKEN_*` environment variable. The connector reads text resources by alias.
 
+In **Apps and memory**, choose a source account and workspace to refresh previously imported documents. You can also save an automatic refresh interval for that account and workspace.
+
 Register a `github` source account with the matching label in Apps and memory. Import a Markdown or text path relative to the repository root. The reader uses the repository's default branch. Select the GitHub and Feishu sources together to search across both, with each result retaining its connection and content revision.
 
 In Apps and memory, use **Disable memory** to keep an item out of normal search and model answers. Use **Find disabled memory** with the same workspace and authorized sources to locate it and restore it. Source revocation applies to both active and disabled items.

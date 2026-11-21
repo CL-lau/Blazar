@@ -8,7 +8,7 @@ import { createQQSender, qqChannel } from '../../packages/channels/qq.ts';
 import { dingTalkConfig, startDingTalk } from './dingtalk.ts';
 import { createFeishuSender, feishuChannel } from '../../packages/channels/feishu.ts';
 import { piHarness, piMemoryAnswer } from './harness.ts';
-import { routerServer } from './http.ts';
+import { routerServer, runDueDocumentSync } from './http.ts';
 import { MemoryStore } from './memory.ts';
 import { TaskStore } from './store.ts';
 import { lockRouter } from './instance.ts';
@@ -51,6 +51,15 @@ const store = new TaskStore(instance.path);
 const memory = new MemoryStore(instance.path);
 const server = routerServer(store, { feishu, qq, documents, owner: 'local', token, memory, harness, answerMemory, pushEnabled: Boolean(push) });
 const stopPush = push && startPushDelivery(store, push);
+const documentSyncShutdown = new AbortController();
+let documentSync: Promise<unknown> | undefined;
+const documentSyncTimer = setInterval(() => {
+  if (documentSync || !documents.length) return;
+  documentSync = runDueDocumentSync(memory, documents, documentSyncShutdown.signal)
+    .catch(() => console.error('Document synchronization could not complete'))
+    .finally(() => { documentSync = undefined; });
+}, 5_000);
+documentSyncTimer.unref();
 const watchdog = setInterval(() => {
   const now = Date.now();
   store.expire(now);
@@ -107,12 +116,14 @@ function shutdown() {
   stopWeixin?.();
   stopWeCom?.();
   stopDingTalk?.();
+  clearInterval(documentSyncTimer);
+  documentSyncShutdown.abort();
   clearInterval(watchdog);
   clearInterval(channelDispatcher);
   clearInterval(qqDispatcher);
   server.closeDeviceSockets();
   server.close(async () => {
-    await Promise.all([delivery, qqDelivery, stopPush?.()]);
+    await Promise.all([delivery, qqDelivery, documentSync, stopPush?.()]);
     memory.close();
     store.close();
     instance.release();

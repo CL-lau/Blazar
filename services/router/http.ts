@@ -91,17 +91,24 @@ async function stream(store: TaskStore, owner: string, cursor: number, response:
 }
 
 async function accessDocument(store: MemoryStore, owner: string, workspace: string, connection: string,
-                              reader: DocumentConnector, document: string, operation: 'test' | 'import' | 'refresh') {
+                              reader: DocumentConnector, document: string, operation: 'test' | 'import' | 'refresh',
+                              signal?: AbortSignal, permitted = () => true) {
+  if (!permitted()) throw new RequestError(409, 'Document refresh was cancelled');
   if (store.resourceRevoked(connection, document)) throw new RequestError(409, 'Document access was revoked');
   if (!reader.accepts(document)) throw new RequestError(400, 'Invalid document reference');
   const usageId = store.startAppUsage(connection, workspace, operation);
   let content;
   try {
-    content = await reader.read(document, AbortSignal.timeout(10_000));
+    const timeout = AbortSignal.timeout(10_000);
+    content = await reader.read(document, signal ? AbortSignal.any([timeout, signal]) : timeout);
   } catch (error) {
-    if (error instanceof DocumentAccessDenied) store.recordDocumentAccess(connection, document, usageId, false);
+    if (error instanceof DocumentAccessDenied && permitted()) store.recordDocumentAccess(connection, document, usageId, false);
     store.finishAppUsage(usageId, 'failed');
     throw new RequestError(502, error instanceof DocumentUnavailable ? error.message : 'Document read failed');
+  }
+  if (!permitted()) {
+    store.finishAppUsage(usageId, 'access_changed');
+    throw new RequestError(409, 'Document refresh was cancelled');
   }
   if (operation === 'test') {
     if (!store.connection(owner, connection, workspace) || store.resourceRevoked(connection, document)) {
@@ -119,6 +126,31 @@ async function accessDocument(store: MemoryStore, owner: string, workspace: stri
   return { id, revision: content.revision };
 }
 
+async function refreshDocumentPage(store: MemoryStore, owner: string, workspace: string, connection: string,
+                                   reader: DocumentConnector, cursor: string, signal?: AbortSignal, permitted?: () => boolean) {
+  const documents = store.documentsToRefresh(owner, workspace, connection, cursor);
+  const page = documents.slice(0, 8);
+  const results = await Promise.allSettled(page.map(document =>
+    accessDocument(store, owner, workspace, connection, reader, document, 'refresh', signal, permitted)));
+  const refreshed = results.filter(result => result.status === 'fulfilled').length;
+  return { refreshed, unavailable: results.length - refreshed, after: documents.length > page.length ? page.at(-1)! : null };
+}
+
+export async function runDueDocumentSync(store: MemoryStore, readers: readonly DocumentConnector[],
+                                         signal: AbortSignal, now = Date.now()) {
+  if (signal.aborted) return false;
+  const sync = store.leaseDocumentSync(now);
+  if (!sync) return false;
+  const connection = store.connection(sync.owner, sync.connection, sync.workspace);
+  const reader = readers.find(item => item.app === connection?.app && item.account === connection.account);
+  const permitted = () => !signal.aborted && store.documentSyncActive(sync);
+  const page = reader && permitted() ? await refreshDocumentPage(
+    store, sync.owner, sync.workspace, sync.connection, reader, sync.cursor, signal, permitted,
+  ) : undefined;
+  store.finishDocumentSync(sync, signal.aborted ? sync.cursor : page?.after ?? null);
+  return true;
+}
+
 async function handleMemory(
   request: IncomingMessage, response: ServerResponse, url: URL, owner: string, store: MemoryStore, documents?: readonly DocumentConnector[], answerMemory?: MemoryAnswer,
 ): Promise<boolean> {
@@ -128,7 +160,7 @@ async function handleMemory(
     documents?.find(connector => connector.app === connection.app && connector.account === connection.account);
   if (pathname === '/v1/app-connections') {
     if (method === 'GET') {
-      reply(response, 200, { connections: store.connections(owner).map(connection => {
+      reply(response, 200, { documentSync: store.documentSyncSettings(owner), connections: store.connections(owner).map(connection => {
         const reader = connection.active ? readerFor(connection) : undefined;
         return { ...connection, canImportDocument: Boolean(reader), documentAliases: reader?.documentAliases };
       }) });
@@ -142,6 +174,21 @@ async function handleMemory(
       reply(response, 201, { id: store.connect(owner, app, account, workspace) });
       return true;
     }
+  }
+
+  const syncPath = /^\/v1\/app-connections\/([a-f0-9-]{36})\/document-sync$/.exec(pathname);
+  if (syncPath && method === 'POST') {
+    const data = await jsonObject(request);
+    const workspace = requiredText(data.workspace, 'workspace', 128);
+    const interval = data.intervalMinutes;
+    if (interval !== null && (typeof interval !== 'number' || !Number.isSafeInteger(interval) ||
+        interval < 1 || interval > 10_080)) throw new RequestError(400, 'Invalid document refresh interval');
+    const connection = store.connection(owner, syncPath[1], workspace);
+    if (!connection) throw new RequestError(404, 'Active connection not found');
+    if (interval !== null && !readerFor(connection)) throw new RequestError(409, 'No document reader is configured for this connection');
+    store.setDocumentSync(owner, syncPath[1], workspace, interval);
+    reply(response, 200, { intervalMinutes: interval });
+    return true;
   }
 
   const usagePath = /^\/v1\/app-connections\/([a-f0-9-]{36})\/usage$/.exec(pathname);
@@ -163,15 +210,7 @@ async function handleMemory(
     if (!reader) throw new RequestError(409, 'No document reader is configured for this connection');
     if (documentPath[2] === 'refresh-documents') {
       const after = data.after === undefined ? '' : requiredText(data.after, 'document cursor', 128);
-      const documents = store.documentsToRefresh(owner, workspace, connectionId, after);
-      const page = documents.slice(0, 8);
-      const results = await Promise.allSettled(page.map(document =>
-        accessDocument(store, owner, workspace, connectionId, reader, document, 'refresh')));
-      const refreshed = results.filter(result => result.status === 'fulfilled').length;
-      reply(response, 200, {
-        refreshed, unavailable: results.length - refreshed,
-        after: documents.length > page.length ? page.at(-1) : null,
-      });
+      reply(response, 200, await refreshDocumentPage(store, owner, workspace, connectionId, reader, after));
       return true;
     }
     const document = requiredText(data.document, 'document ID', 128);

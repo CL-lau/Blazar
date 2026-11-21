@@ -10,6 +10,10 @@ export interface ResourceRef {
 const memoryWords = new Intl.Segmenter(undefined, { granularity: 'word' });
 const eastAsianWord = /[\p{Script=Han}\p{Script=Hiragana}\p{Script=Katakana}\p{Script=Hangul}]/u;
 
+type DocumentSyncLease = {
+  owner: string; connection: string; workspace: string; cursor: string; token: string;
+};
+
 export class MemoryStore {
   private db: DatabaseSync;
   private fullText: boolean;
@@ -37,6 +41,12 @@ export class MemoryStore {
         workspace TEXT NOT NULL, operation TEXT NOT NULL, status TEXT NOT NULL, started INTEGER NOT NULL
       );
       CREATE INDEX IF NOT EXISTS app_usage_connection ON app_usage(connection,id);
+      CREATE TABLE IF NOT EXISTS document_sync (
+        connection TEXT NOT NULL REFERENCES app_connection(id), workspace TEXT NOT NULL,
+        interval_minutes INTEGER NOT NULL, due INTEGER NOT NULL, cursor TEXT NOT NULL DEFAULT '',
+        lease_token TEXT, lease_expires INTEGER, PRIMARY KEY(connection,workspace)
+      );
+      CREATE INDEX IF NOT EXISTS document_sync_due ON document_sync(due);
       CREATE TABLE IF NOT EXISTS memory (
         id TEXT PRIMARY KEY, owner TEXT NOT NULL, workspace TEXT NOT NULL,
         body TEXT NOT NULL, connection TEXT REFERENCES app_connection(id),
@@ -198,6 +208,48 @@ export class MemoryStore {
       WHERE h.owner=? AND h.workspace=? AND h.connection=? AND h.resource>?
       AND NOT EXISTS(SELECT 1 FROM revoked_resource r WHERE r.connection=h.connection AND r.resource=h.resource)
       ORDER BY h.resource LIMIT 9`).all(owner, workspace, connection, after).map(row => String(row.resource));
+  }
+
+  documentSyncSettings(owner: string) {
+    return this.db.prepare(`SELECT s.connection,s.workspace,s.interval_minutes AS intervalMinutes
+      FROM document_sync s JOIN app_connection a ON a.id=s.connection WHERE a.owner=? AND a.active=1
+        AND (a.workspace IS NULL OR a.workspace=s.workspace) ORDER BY s.workspace`).all(owner);
+  }
+
+  setDocumentSync(owner: string, connection: string, workspace: string, interval: number | null, now = Date.now()) {
+    if (!this.connection(owner, connection, workspace)) return false;
+    if (interval === null) {
+      this.db.prepare('DELETE FROM document_sync WHERE connection=? AND workspace=?').run(connection, workspace);
+    } else {
+      this.db.prepare(`INSERT INTO document_sync(connection,workspace,interval_minutes,due) VALUES(?,?,?,?)
+        ON CONFLICT(connection,workspace) DO UPDATE SET interval_minutes=excluded.interval_minutes,
+          due=excluded.due,cursor='',lease_token=NULL,lease_expires=NULL`).run(connection, workspace, interval, now);
+    }
+    return true;
+  }
+
+  leaseDocumentSync(now: number): DocumentSyncLease | undefined {
+    const token = randomUUID();
+    return this.db.prepare(`WITH candidate AS (
+        SELECT s.rowid FROM document_sync s JOIN app_connection a ON a.id=s.connection
+        WHERE a.active=1 AND (a.workspace IS NULL OR a.workspace=s.workspace) AND s.due<=?
+          AND (s.lease_expires IS NULL OR s.lease_expires<=?) ORDER BY s.due,s.rowid LIMIT 1
+      )
+      UPDATE document_sync SET lease_token=?,lease_expires=? WHERE rowid=(SELECT rowid FROM candidate)
+      RETURNING (SELECT owner FROM app_connection WHERE id=document_sync.connection) AS owner,
+        connection,workspace,cursor,lease_token AS token`).get(now, now, token, now + 45_000) as DocumentSyncLease | undefined;
+  }
+
+  documentSyncActive(sync: DocumentSyncLease, now = Date.now()) {
+    return Boolean(this.connection(sync.owner, sync.connection, sync.workspace) &&
+      this.db.prepare('SELECT 1 FROM document_sync WHERE connection=? AND workspace=? AND lease_token=? AND lease_expires>?')
+        .get(sync.connection, sync.workspace, sync.token, now));
+  }
+
+  finishDocumentSync(sync: DocumentSyncLease, next: string | null, now = Date.now()) {
+    this.db.prepare(`UPDATE document_sync SET cursor=?,due=?+CASE WHEN ? IS NULL THEN interval_minutes*60000 ELSE 0 END,
+      lease_token=NULL,lease_expires=NULL WHERE connection=? AND workspace=? AND lease_token=?`)
+      .run(next ?? '', now, next, sync.connection, sync.workspace, sync.token);
   }
 
   recordDocumentAccess(connection: string, resource: string, requestId: number | bigint, allowed: boolean) {
