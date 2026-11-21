@@ -22,6 +22,7 @@ struct RouterSnapshot: Decodable {
         let version: Int
         let result: String?
         let usesAppMemory: Bool?
+        let personalMemoryUnavailable: Bool?
     }
     struct Approval: Decodable, Identifiable {
         let id: String

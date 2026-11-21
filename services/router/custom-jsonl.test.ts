@@ -522,6 +522,8 @@ test('a registered JSONL extension executes a real subprocess through Router and
   const personalArtifact = store.snapshot('owner').artifacts.find(item => item.taskId === task.id)!;
   const personalArtifactPath = '/v1/artifacts/' + personalArtifact.id;
   assert.equal((await readAttachment(personalArtifactPath, phone.token)).status, 200);
+  assert.equal((await readState(phone.token)).tasks.find((item: { id: string }) =>
+    item.id === task.id)?.personalMemoryUnavailable, undefined);
   const rememberDerived = await fetch(base + '/v1/tasks/' + task.id + '/remember-result', {
     method: 'POST', headers: { Authorization: 'Bearer local', 'Content-Type': 'application/json' },
     body: JSON.stringify({ expectedVersion: 1 }),
@@ -533,6 +535,7 @@ test('a registered JSONL extension executes a real subprocess through Router and
   assert.equal((await readAttachment('/v1/tasks/' + task.id + '/timeline', 'local')).status, 404);
   const stateAfterMemoryRemoval = await readState(phone.token);
   assert.equal(stateAfterMemoryRemoval.tasks.find((item: { id: string }) => item.id === task.id)?.result, null);
+  assert.equal(stateAfterMemoryRemoval.tasks.find((item: { id: string }) => item.id === task.id)?.personalMemoryUnavailable, true);
   assert.ok(!stateAfterMemoryRemoval.artifacts.some((item: { id: string }) => item.id === personalArtifact.id));
 });
 

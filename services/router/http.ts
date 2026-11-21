@@ -1006,7 +1006,9 @@ export function routerServer(store: TaskStore, config: { owner: string; token: s
         const snapshot = store.snapshot(owner);
         const protectedTasks = new Set(store.appEvidenceTasks(owner));
         const personalTasks = new Set(store.personalEvidenceTasks(owner));
-        const restricted = new Set([...new Set([...protectedTasks, ...personalTasks])].filter(taskId => !canReadTask(taskId)));
+        const unavailablePersonal = new Set(snapshot.tasks.filter(task => personalTasks.has(task.id) &&
+          !config.memory?.resolvePersonalEvidence(owner, task.workspace, store.personalEvidence(task.id))).map(task => task.id));
+        const restricted = new Set([...unavailablePersonal, ...[...protectedTasks].filter(taskId => !canReadTask(taskId))]);
         reply(response, 200, { ...snapshot,
           tasks: snapshot.tasks.map(task => ({
             ...task,
@@ -1014,7 +1016,9 @@ export function routerServer(store: TaskStore, config: { owner: string; token: s
               ...(!admin && { goal: protectedTaskLabel }),
               ...(admin && restricted.has(task.id) && { appMemoryUnavailable: true }),
             }),
-            ...(personalTasks.has(task.id) && { usesPersonalMemory: true }),
+            ...(personalTasks.has(task.id) && { usesPersonalMemory: true,
+              ...(unavailablePersonal.has(task.id) && { personalMemoryUnavailable: true }),
+            }),
             ...(restricted.has(task.id) && !canReadTask(task.id, task.version) && { result: null }),
           })),
           artifacts: snapshot.artifacts.filter(item => !restricted.has(String(item.taskId)) ||

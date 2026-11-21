@@ -416,6 +416,10 @@ private struct TaskDetails: View {
             Section("Task") {
                 Text(task.goal)
                 Text(task.status.replacingOccurrences(of: "_", with: " "))
+                if task.personalMemoryUnavailable == true {
+                    Text("The personal memory used by this task is unavailable.")
+                        .foregroundStyle(.secondary)
+                }
                 if let progress { Text(progress).foregroundStyle(.secondary) }
                 if let result = task.result { Text(result).textSelection(.enabled) }
             }
@@ -509,9 +513,11 @@ private struct TaskDetails: View {
             }
             if task.status == "paused" {
                 Button("Resume task") { send("resume") }
+                    .disabled(task.personalMemoryUnavailable == true)
             }
             if task.status == "failed" || (task.status == "waiting_user" && approvals.isEmpty) {
                 Button("Retry task") { confirmingRetry = true }
+                    .disabled(task.personalMemoryUnavailable == true)
                     .confirmationDialog("Retry this task as a new run?", isPresented: $confirmingRetry) {
                         Button("Retry task") { send("retry") }
                     } message: {
@@ -530,39 +536,51 @@ private struct TaskDetails: View {
             if !["cancelled", "cancelling", "paused", "pausing"].contains(task.status) {
                 Section("Follow-up") {
                     TextField("Additional instruction", text: $instruction, axis: .vertical)
+                        .disabled(task.personalMemoryUnavailable == true)
                     Button("Send") { send("append", text: instruction) }
-                        .disabled(instruction.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                        .disabled(task.personalMemoryUnavailable == true ||
+                                  instruction.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
                     if ["queued", "running", "waiting_user", "waiting_dependency", "waiting_device"].contains(task.status) {
                         Button("Cancel task", role: .destructive) { send("cancel") }
                     }
                 }
             }
-            Section("Activity") {
-                ForEach(activity) { entry in
-                    VStack(alignment: .leading) {
-                        Text(entry.title)
-                        if let text = entry.data.description { Text(text).font(.caption) }
+            if task.personalMemoryUnavailable != true {
+                Section("Activity") {
+                    ForEach(activity) { entry in
+                        VStack(alignment: .leading) {
+                            Text(entry.title)
+                            if let text = entry.data.description { Text(text).font(.caption) }
+                        }
                     }
-                }
-                if let before {
-                    Button("Load older activity") { Task { await loadActivity(before: before) } }
-                        .disabled(loadingActivity)
+                    if let before {
+                        Button("Load older activity") { Task { await loadActivity(before: before) } }
+                            .disabled(loadingActivity)
+                    }
                 }
             }
             if let error { Text(error).foregroundStyle(.red) }
         }
         .disabled(working)
         .navigationTitle("Task")
-        .task { await loadActivity() }
+        .task(id: task.personalMemoryUnavailable) {
+            if task.personalMemoryUnavailable == true {
+                activity = []
+                before = nil
+            } else {
+                await loadActivity()
+            }
+        }
         .refreshable { await loadActivity() }
     }
 
     private func loadActivity(before cursor: Int? = nil) async {
-        guard !loadingActivity else { return }
+        guard !loadingActivity, task.personalMemoryUnavailable != true else { return }
         loadingActivity = true
         defer { loadingActivity = false }
         do {
             let page = try await client.timeline(taskId: task.id, before: cursor)
+            guard !Task.isCancelled else { return }
             activity = cursor == nil ? page.events : activity + page.events
             before = page.before
         } catch { self.error = error.localizedDescription }

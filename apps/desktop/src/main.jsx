@@ -129,6 +129,7 @@ function App() {
   }
 
   const task = snapshot?.tasks.find(item => item.id === selected);
+  const memoryUnavailable = task?.appMemoryUnavailable || task?.personalMemoryUnavailable;
   const dependencies = (snapshot?.workflowSteps ?? [])
     .filter(link => link.taskId === selected && link.predecessorId)
     .map(link => snapshot.tasks.find(item => item.id === link.predecessorId)).filter(Boolean);
@@ -252,6 +253,9 @@ function App() {
                 {task.appMemoryUnavailable && <p role="status">
                   The application memory used by this task is unavailable. Restore access to the original source and version to retry.
                 </p>}
+                {task.personalMemoryUnavailable && <p role="status">
+                  The personal memory used by this task is unavailable. Create a new task with the current memory.
+                </p>}
                 {progress && <p role="status">{progress.message}</p>}
                 {task.result && <pre>{task.result}</pre>}
                 {task.usesAppMemory && <section aria-label="Paired phone result access">
@@ -334,14 +338,14 @@ function App() {
                   <button disabled={busy} onClick={() => command('reject_result')}>Reject result</button>
                 </section>}
                 <ChannelLinks key={task.id} taskId={task.id} token={connected} cursor={snapshot.cursor} />
-                {!task.appMemoryUnavailable && <Timeline key={task.id} taskId={task.id} token={connected} cursor={snapshot.cursor} />}
+                {!memoryUnavailable && <Timeline key={task.id} taskId={task.id} token={connected} cursor={snapshot.cursor} />}
                 {['queued', 'running', 'waiting_user', 'waiting_dependency', 'waiting_device'].includes(task.status) &&
                   <button disabled={busy} onClick={() => command('pause')}>Pause task</button>}
                 {task.status === 'paused' &&
-                  <button disabled={busy || task.appMemoryUnavailable} onClick={() => command('resume')}>Resume task</button>}
+                  <button disabled={busy || memoryUnavailable} onClick={() => command('resume')}>Resume task</button>}
                 {(task.status === 'failed' || (task.status === 'waiting_user'
                   && !snapshot.approvals.some(approval => approval.taskId === task.id))) &&
-                  <button disabled={busy || task.appMemoryUnavailable} onClick={() => {
+                  <button disabled={busy || memoryUnavailable} onClick={() => {
                     if (window.confirm('Retry this task as a new run? Review any effects of the previous run first.')) command('retry');
                   }}>Retry task</button>}
                 {['paused', 'pausing', 'waiting_review'].includes(task.status) &&
@@ -349,10 +353,10 @@ function App() {
                 {!['cancelled', 'cancelling', 'paused', 'pausing'].includes(task.status) && (
                   <form onSubmit={event => {
                     event.preventDefault();
-                    if (!task.appMemoryUnavailable) command('append', { text: instruction });
+                    if (!memoryUnavailable) command('append', { text: instruction });
                   }}>
-                    <label>Follow-up<textarea disabled={task.appMemoryUnavailable} value={instruction} onChange={event => setInstruction(event.target.value)} required /></label>
-                    <button disabled={busy || task.appMemoryUnavailable || !instruction.trim()}>Send instruction</button>
+                    <label>Follow-up<textarea disabled={memoryUnavailable} value={instruction} onChange={event => setInstruction(event.target.value)} required /></label>
+                    <button disabled={busy || memoryUnavailable || !instruction.trim()}>Send instruction</button>
                     {['queued', 'running', 'waiting_user', 'waiting_dependency', 'waiting_device'].includes(task.status) &&
                       <button type="button" disabled={busy} onClick={() => command('cancel')}>Cancel task</button>}
                   </form>
