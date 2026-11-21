@@ -189,8 +189,10 @@ async function observeWindow(config: ObservationConfig, root: string, goal: stri
     ).join('\n') || 'No visible windows found.';
   }
   const windowId = match[3];
-  if (windowId) await accessibleWindow(config, root, app, windowId, signal, match[4]);
+  const identity = match[4];
+  if (windowId) await accessibleWindow(config, root, app, windowId, signal, identity);
   const snapshot = await readSnapshot(config, root, app, signal, windowId);
+  if (windowId && identity) await accessibleWindow(config, root, app, windowId, signal, identity);
   const description = describeTree(snapshot.tree);
   if (!description) throw new Error('No accessible elements were found.');
   return description;

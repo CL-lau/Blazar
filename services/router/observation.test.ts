@@ -25,19 +25,22 @@ if (process.argv[2] === 'screenshot') {
   if (process.argv.slice(3, 7).join(' ') !== '--app Calculator --window-id w-10') process.exit(2);
   require('node:fs').writeFileSync(process.argv[7],
     Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+aS4sAAAAASUVORK5CYII=', 'base64'));
+  if (require('node:fs').existsSync('replace-on-image')) require('node:fs').writeFileSync('replaced-window', '');
   console.log(JSON.stringify({ok:true,command:'screenshot',data:{}}));
   process.exit(0);
 }
 if (process.argv[2] === 'list-windows') {
   console.log(JSON.stringify({ok:true,command:'list-windows',data:[
     {id:'w-10',app_name:'Calculator',title:'Scientific · Calculator',visible:true,
-      accessible:!require('node:fs').existsSync('ax-unavailable'),process_instance:'one'},
+      accessible:!require('node:fs').existsSync('ax-unavailable'),
+      process_instance:require('node:fs').existsSync('replaced-window')?'replacement':'one'},
     {id:'w-11',app_name:'Other',title:'Other workspace',visible:true,accessible:true},
   ]}));
   process.exit(0);
 }
 if (![['snapshot','--app','Calculator','-i'], ['snapshot','--app','Calculator','-i','--window-id','w-10']]
     .some(args => JSON.stringify(process.argv.slice(2)) === JSON.stringify(args))) process.exit(2);
+if (require('node:fs').existsSync('replace-on-snapshot')) require('node:fs').writeFileSync('replaced-window', '');
 console.log(JSON.stringify({ok:true,command:'snapshot',data:{tree:{role:'window',name:'Calculator',children:[
   {role:'button',name:'Add',value:'private value',ref_id:'@temporary'},
   {role:'secureTextField',name:'Secret title'},
@@ -160,6 +163,19 @@ console.log(JSON.stringify({ok:true,command:'snapshot',data:{tree:{role:'window'
   assert.equal(await client.runOnce(AbortSignal.timeout(8_000)), true);
   assert.equal(store.get('owner', fallbackPlan.steps[1].taskId)?.status, 'succeeded');
   assert.ok(store.snapshot('owner').artifacts.some(item => item.taskId === fallbackPlan.steps[1].taskId && item.mime === 'image/png'));
+  rmSync(join(directory, 'ax-unavailable'));
+  for (const [mode, phase] of [['visual', 'image'], ['hybrid', 'snapshot']]) {
+    const marker = join(directory, 'replace-on-' + phase);
+    writeFileSync(marker, '');
+    const replaced = store.create('owner', 'desktop', 'replacement-' + phase, 'work',
+      '/observe calculator --window w-10 --instance ' + inventory[0].identity + ' --' + mode, computer);
+    assert.equal(await client.runOnce(AbortSignal.timeout(8_000)), true);
+    assert.equal(store.get('owner', replaced.id)?.status, 'failed');
+    assert.match(store.get('owner', replaced.id)?.result ?? '', /selected window changed/);
+    assert.equal(store.snapshot('owner').artifacts.some(item => item.taskId === replaced.id), false);
+    rmSync(marker);
+    rmSync(join(directory, 'replaced-window'));
+  }
   const blockedVisual = store.create('owner', 'desktop', 'permission-changed', 'work',
     '/observe calculator --window w-10 --instance ' + inventory[0].identity + ' --visual', computer);
   writeFileSync(join(directory, 'recording-denied'), '');
