@@ -9,13 +9,18 @@ import test from 'node:test';
 import { gitRunWorktrees, inspectRunWorktree } from '../device/execution/git-worktree.ts';
 import { executeWorker } from '../device/execution/worker.ts';
 import { DeviceClient } from '../device/client.ts';
+import { lockWorkspace } from '../device/workspace.ts';
 import { DeviceLedger } from '../device/ledger.ts';
 import { routerServer } from './http.ts';
 import { TaskStore } from './store.ts';
 
 test('isolated Worker runs keep their changes in independent retained worktrees', async t => {
   const state = await realpath(await mkdtemp(join(tmpdir(), 'blazar-git-runs-')));
-  t.after(() => rm(state, { force: true, recursive: true }));
+  let stopServer: (() => Promise<void>) | undefined;
+  t.after(async () => {
+    await stopServer?.();
+    await rm(state, { force: true, recursive: true });
+  });
   const repository = join(state, 'project');
   await mkdir(repository);
   const git = (...args: string[]) => execFileSync('git', args, { cwd: repository, stdio: 'pipe' });
@@ -31,13 +36,26 @@ test('isolated Worker runs keep their changes in independent retained worktrees'
   const [first, second] = await Promise.all([prepare(firstId), prepare(randomUUID())]);
   const worker = {
     label: 'Writing fixture', protocol: 'jsonl' as const, executable: process.execPath,
-    args: ['-e', `
+    args: ['-e', String.raw`
       const fs = require('node:fs');
       const { input } = JSON.parse(fs.readFileSync(0, 'utf8'));
       if (fs.readFileSync('notes.txt', 'utf8') !== 'Committed source') process.exit(1);
       fs.writeFileSync('notes.txt', input.goal);
-      process.stdout.write(JSON.stringify({ version: 1, type: 'completed', result: input.goal }) + '\\n');
-    `],
+      function finish() {
+        process.stdout.write(JSON.stringify({ version: 1, type: 'completed', result: input.goal }) + '\n');
+      }
+      if (!input.goal.startsWith('Parallel ')) finish();
+      else {
+        const sibling = input.goal === 'Parallel A' ? 'Parallel B' : 'Parallel A';
+        const path = require('node:path');
+        fs.writeFileSync(path.join(process.argv[1], input.goal), process.cwd());
+        const timer = setInterval(() => {
+          if (!fs.existsSync(path.join(process.argv[1], sibling))) return;
+          clearInterval(timer);
+          finish();
+        }, 10);
+      }
+    `, state],
   };
   const run = async (root: string, goal: string) => {
     const stop = new AbortController();
@@ -75,38 +93,53 @@ test('isolated Worker runs keep their changes in independent retained worktrees'
   await assert.rejects(prepare(firstId), /Unable to prepare the run Git worktree/);
 
   const store = new TaskStore(':memory:');
-  const ledger = new DeviceLedger(':memory:');
-  const device = store.registerDevice('owner', 'Git fixture', 'project');
+  const devices = ['Git fixture A', 'Git fixture B'].map(label => {
+    const device = store.registerDevice('owner', label, 'project');
+    return { device, lock: lockWorkspace(repository, state, device.token),
+      ledger: new DeviceLedger(join(state, 'device-ledger.sqlite')) };
+  });
   const server = routerServer(store, { owner: 'owner', token: 'fixture' });
   server.listen(0, '127.0.0.1');
   await once(server, 'listening');
   const address = server.address();
   assert(address && typeof address !== 'string');
-  const client = new DeviceClient(new URL('http://127.0.0.1:' + address.port), device.token,
-    repository, ledger, worker, undefined, repository, await gitRunWorktrees(repository, state, true));
-  t.after(async () => {
-    client.close();
+  const patchedWorktrees = await gitRunWorktrees(repository, state, true);
+  const base = new URL('http://127.0.0.1:' + address.port);
+  const clients = devices.map(({ device, ledger, lock }) =>
+    new DeviceClient(base, device.token, lock.root, ledger, worker, undefined, lock.identity, patchedWorktrees));
+  stopServer = async () => {
+    for (const client of clients) client.close();
     server.closeDeviceSockets();
     await new Promise<void>(resolve => server.close(() => resolve()));
-    ledger.close();
+    for (const { ledger, lock } of devices) {
+      ledger.close();
+      lock.release();
+    }
     store.close();
-  });
+  };
   store.createWorkflow('owner', 'git-handoff', 'project', [
-    { key: 'draft', goal: 'Draft content', needs: [], workerCapability: 'git-worktree' },
-    { key: 'review', goal: 'Review changes', needs: ['draft'] },
+    { key: 'a', goal: 'Parallel A', needs: [], workerCapability: 'git-worktree' },
+    { key: 'b', goal: 'Parallel B', needs: [], workerCapability: 'git-worktree' },
+    { key: 'review', goal: 'Review changes', needs: ['a', 'b'] },
   ]);
-  assert.equal(await client.runOnce(AbortSignal.timeout(5_000)), true);
+  assert.deepEqual(await Promise.all(clients.map(client => client.runOnce(AbortSignal.timeout(5_000)))), [true, true]);
   const receiver = store.claim('owner', 'project', 'reviewer', Date.now(), 45_000)!;
   assert.equal(receiver.task.goal, 'Review changes');
-  assert.equal(receiver.predecessors[0].result, 'Draft content');
-  assert.equal(receiver.predecessors[0].artifact?.name, 'git-changes.json');
-  const received = JSON.parse(receiver.predecessors[0].artifact!.excerpt);
-  assert.deepEqual(received.trackedFiles, ['M\tnotes.txt']);
-  assert.match(received.patch, /-Committed source[\s\S]*\+Draft content/);
-  const patched = await gitRunWorktrees(repository, state, true);
+  assert.deepEqual(receiver.predecessors.map(input => input.result), ['Parallel A', 'Parallel B']);
+  const checkouts = [];
+  for (const input of receiver.predecessors) {
+    assert.equal(input.artifact?.name, 'git-changes.json');
+    const received = JSON.parse(input.artifact!.excerpt);
+    assert.deepEqual(received.trackedFiles, ['M\tnotes.txt']);
+    assert(received.patch.includes('\n+' + input.result));
+    const checkout = await readFile(join(state, input.result!), 'utf8');
+    assert.equal(await readFile(join(checkout, 'notes.txt'), 'utf8'), input.result);
+    checkouts.push(checkout);
+  }
+  assert.equal(new Set(checkouts).size, 2);
+  assert.equal(await readFile(notes, 'utf8'), 'Uncommitted user edit');
   await writeFile(join(first, 'notes.txt'), 'x'.repeat(70_000));
-  const oversized = JSON.parse((await patched.artifact(firstId, AbortSignal.timeout(5_000))).text);
+  const oversized = JSON.parse((await patchedWorktrees.artifact(firstId, AbortSignal.timeout(5_000))).text);
   assert.equal(oversized.patch, undefined);
   assert.equal(oversized.patchOmitted, 'size_limit');
-
 });
