@@ -30,7 +30,8 @@ if (process.argv[2] === 'screenshot') {
 }
 if (process.argv[2] === 'list-windows') {
   console.log(JSON.stringify({ok:true,command:'list-windows',data:[
-    {id:'w-10',app_name:'Calculator',title:'Scientific · Calculator',visible:true,accessible:true,process_instance:'one'},
+    {id:'w-10',app_name:'Calculator',title:'Scientific · Calculator',visible:true,
+      accessible:!require('node:fs').existsSync('ax-unavailable'),process_instance:'one'},
     {id:'w-11',app_name:'Other',title:'Other workspace',visible:true,accessible:true},
   ]}));
   process.exit(0);
@@ -134,13 +135,13 @@ console.log(JSON.stringify({ok:true,command:'snapshot',data:{tree:{role:'window'
   const jsonImage = await (await fetch(jsonPicture, { headers: { Authorization: 'Bearer admin' } })).json();
   assert.equal(Buffer.from(jsonImage.png, 'base64').subarray(0, 8).toString('hex'), '89504e470d0a1a0a');
   assert.equal(store.artifact('owner', String(image.id), Number(image.expires)), undefined);
-  const submitVisualWorkflow = (deviceId: string, key: string) => fetch(new URL('/v1/workflows', picture), {
+  const submitVisualWorkflow = (deviceId: string, key: string, mode = 'hybrid') => fetch(new URL('/v1/workflows', picture), {
     method: 'POST', headers: { Authorization: 'Bearer admin', 'Content-Type': 'application/json', 'Idempotency-Key': key },
     body: JSON.stringify({ workspace: 'work', steps: [
       { key: 'inventory', goal: 'List calculator windows', needs: [],
         action: { kind: 'desktop.observe', alias: 'calculator', deviceId, mode: 'windows' } },
       { key: 'capture', goal: 'Capture calculator screenshot', needs: ['inventory'],
-        action: { kind: 'desktop.observe', alias: 'calculator', deviceId, mode: 'hybrid',
+        action: { kind: 'desktop.observe', alias: 'calculator', deviceId, mode,
           windowFrom: { step: 'inventory', title: 'Scientific · Calculator' } } },
       { key: 'next', goal: 'Acknowledge completion', needs: ['capture'] },
     ] }),
@@ -151,6 +152,14 @@ console.log(JSON.stringify({ok:true,command:'snapshot',data:{tree:{role:'window'
   const { steps } = await submitted.json();
   assert.equal(await client.runOnce(AbortSignal.timeout(8_000)), true);
   assert.equal(await client.runOnce(AbortSignal.timeout(8_000)), true);
+  writeFileSync(join(directory, 'ax-unavailable'), '');
+  const fallback = await submitVisualWorkflow(computer, 'without-ax', 'visual');
+  assert.equal(fallback.status, 202);
+  const fallbackPlan = await fallback.json();
+  assert.equal(await client.runOnce(AbortSignal.timeout(8_000)), true);
+  assert.equal(await client.runOnce(AbortSignal.timeout(8_000)), true);
+  assert.equal(store.get('owner', fallbackPlan.steps[1].taskId)?.status, 'succeeded');
+  assert.ok(store.snapshot('owner').artifacts.some(item => item.taskId === fallbackPlan.steps[1].taskId && item.mime === 'image/png'));
   const blockedVisual = store.create('owner', 'desktop', 'permission-changed', 'work',
     '/observe calculator --window w-10 --instance ' + inventory[0].identity + ' --visual', computer);
   writeFileSync(join(directory, 'recording-denied'), '');

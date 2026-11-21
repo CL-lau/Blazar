@@ -1130,8 +1130,11 @@ export class TaskStore {
       const action = this.runInputs.desktopAction(task);
       const resolvedGoal = this.runInputs.resolveDesktopGoal(task, action);
       if (resolvedGoal === undefined) {
+        const message = action?.kind === 'desktop.observe' && action.mode === 'visual'
+          ? 'The observation did not identify one window with the requested title.'
+          : 'The observation did not identify one accessible window with the requested title.';
         this.db.prepare("UPDATE task SET status='waiting_user',result=? WHERE id=?")
-          .run('The observation did not identify one accessible window with the requested title.', task.id);
+          .run(message, task.id);
         this.event(task.id, 'workflow.window_unresolved', { status: 'waiting_user' });
         if (requestId) this.dispatch.saveReceipt(device, requestId, fingerprint, null, now);
         return undefined;

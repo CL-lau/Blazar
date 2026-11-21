@@ -21,7 +21,9 @@ export class RunInputRepository {
     const input = this.db.prepare(`SELECT p.result FROM workflow_dependency d JOIN task p ON p.id=d.predecessor
       JOIN workflow_step source ON source.task_id=p.id WHERE d.task_id=? AND source.step_key=? AND p.status='succeeded'`)
       .get(task.id, action.windowFrom.step);
-    const target = typeof input?.result === 'string' && resolveWorkflowWindow(input.result, action.windowFrom.title);
+    const requiresAccessibility = action.kind !== 'desktop.observe' || action.mode !== 'visual';
+    const target = typeof input?.result === 'string' &&
+      resolveWorkflowWindow(input.result, action.windowFrom.title, requiresAccessibility);
     return target ? workflowActionGoal(action, target) : undefined;
   }
 

@@ -136,14 +136,14 @@ export function workflowActionGoal(action: WorkflowAction, observed?: DesktopWin
     : `/click ${action.alias} [resolve workflow window]`;
 }
 
-export function resolveWorkflowWindow(inventory: string, title: string): DesktopWindowReference | undefined {
+export function resolveWorkflowWindow(inventory: string, title: string, requiresAccessibility: boolean): DesktopWindowReference | undefined {
   let windows: unknown;
   try { windows = JSON.parse(inventory); } catch { return undefined; }
   if (!Array.isArray(windows) || windows.length > 25) return undefined;
   const matches = windows.filter(item => item && typeof item === 'object' && item.title === title);
   if (matches.length !== 1) return undefined;
   const { id, identity, accessible } = matches[0];
-  if (accessible !== true || typeof id !== 'string' || !/^w-[0-9]{1,20}$/.test(id) ||
+  if ((requiresAccessibility && accessible !== true) || typeof id !== 'string' || !/^w-[0-9]{1,20}$/.test(id) ||
       typeof identity !== 'string' || !/^[a-f0-9]{64}$/.test(identity)) return undefined;
   return { windowId: id, windowIdentity: identity };
 }
