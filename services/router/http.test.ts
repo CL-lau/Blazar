@@ -1112,10 +1112,14 @@ test('Router decisions can consume versioned text results without crossing works
   assert.deepEqual(store.recentConversation('owner', 'project'), []);
 });
 
-test('memory answers and desktop conversation routing share model admission', async t => {
+test('memory answers, drafts, and desktop conversation routing share model admission', async t => {
   const store = new TaskStore(':memory:');
   const memory = new MemoryStore(':memory:');
   memory.remember('owner', 'work', 'Review the project draft');
+  const connection = memory.connect('owner', 'github', 'handbook', 'work');
+  const source = memory.remember('owner', 'work', 'Use one finding per line', {
+    connection, resource: 'review.md', revision: 'v1',
+  })!;
   const loaded = Promise.withResolvers<void>();
   const finish = Promise.withResolvers<string>();
   let calls = 0;
@@ -1126,6 +1130,7 @@ test('memory answers and desktop conversation routing share model admission', as
       return finish.promise;
     },
     async harness() { return { kind: 'reply', text: 'Router response' }; },
+    async draftMemory() { return 'Use one finding per line.'; },
   });
   server.listen(0, '127.0.0.1');
   await once(server, 'listening');
@@ -1154,6 +1159,10 @@ test('memory answers and desktop conversation routing share model admission', as
   const busy = await post('/v1/conversation', { workspace: 'work', text: 'Tell me about the project' }, 'chat-1');
   assert.equal(busy.status, 429);
   await busy.arrayBuffer();
+  const draft = () => post('/v1/memory/draft', { workspace: 'work', id: source, version: 1 }, 'draft-1');
+  const busyDraft = await draft();
+  assert.equal(busyDraft.status, 429);
+  await busyDraft.arrayBuffer();
   finish.resolve('Review answer');
   for (const answer of await answers) {
     assert.equal(answer.status, 200);
@@ -1162,4 +1171,5 @@ test('memory answers and desktop conversation routing share model admission', as
   const admitted = await post('/v1/conversation', { workspace: 'work', text: 'Tell me about the project' }, 'chat-1');
   assert.equal(admitted.status, 200);
   await admitted.arrayBuffer();
+  assert.deepEqual(await (await draft()).json(), { body: 'Use one finding per line.' });
 });

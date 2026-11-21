@@ -3,6 +3,7 @@ import { documentAppCatalog, documentCapabilityState, isDocumentCapability, type
 import { invokeDocumentCapability } from '../application/document-sync.ts';
 import { answerFromDocuments } from '../application/document-answer.ts';
 import type { ModelAdmission } from '../application/model-admission.ts';
+import { answerFromMemory } from '../application/memory-answer.ts';
 import { requestMemoryDraft } from '../application/memory-draft.ts';
 import type { MemoryAnswer, MemoryDraft } from '../harness.ts';
 import type { MemoryStore, ResourceRef } from '../memory.ts';
@@ -128,76 +129,16 @@ export async function handleMemory(
     if (!/^[a-f0-9-]{36}$/.test(id) || typeof version !== 'number' || !Number.isSafeInteger(version) || version < 1) {
       throw new RequestError(400, 'Invalid memory evidence');
     }
-    reply(response, 200, await requestMemoryDraft(store, draftMemory, owner, workspace, { id, version }));
+    await replyWhileConnected(response, signal => requestMemoryDraft(store, draftMemory, owner, workspace, { id, version }, signal, reserve));
     return true;
   }
   if (pathname === '/v1/memory/answer' && method === 'POST') {
     const data = await jsonObject(request);
     const workspace = requiredText(data.workspace, 'workspace', 128);
     const question = requiredText(data.question, 'question', 4_000);
-    if (data.documents !== undefined) {
-      const controller = new AbortController();
-      const disconnect = () => controller.abort();
-      response.once('close', disconnect);
-      if (response.destroyed) disconnect();
-      try {
-        const result = await answerFromDocuments(store, documents ?? [], answerMemory, owner, workspace,
-          question, data.documents, controller.signal, reserve);
-        if (!controller.signal.aborted) reply(response, 200, result);
-      } catch (error) {
-        if (!controller.signal.aborted) throw error;
-      } finally {
-        response.removeListener('close', disconnect);
-      }
-      return true;
-    }
-    const query = requiredText(data.query, 'search terms', 256);
-    if (!Array.isArray(data.sources) || data.sources.length > 25 ||
-        data.sources.some(source => typeof source !== 'string' || !/^[a-f0-9-]{36}$/.test(source))) {
-      throw new RequestError(400, 'Invalid source filter');
-    }
-    const selected = data.sources as string[];
-    if (data.includePersonal !== undefined && typeof data.includePersonal !== 'boolean') {
-      throw new RequestError(400, 'Invalid personal memory option');
-    }
-    const recall = () => store.recall(owner, workspace, query, selected, false, data.includePersonal !== false).slice(0, 6);
-    const sources = recall();
-    if (!sources.length) {
-      reply(response, 200, { answer: null, sources: [] });
-      return true;
-    }
-    if (!answerMemory) throw new RequestError(503, 'Blazar has no Router model configured');
-    const connections = new Set(sources.flatMap(row => typeof row.connection === 'string' ? [row.connection] : []));
-    const scopeVersion = (id: string) => store.connection(owner, id, workspace)?.scopeVersion;
-    const sourceScopes = [...connections].map(id => [id, scopeVersion(id)] as const);
-    const evidence = sources.map(row => ({
-      id: String(row.id), body: String(row.body).slice(0, 2_000).toWellFormed(),
-      resource: row.resource === null ? null : String(row.resource),
-      revision: row.revision === null ? null : String(row.revision),
-    }));
-    const checkSources = () => {
-      const current = recall();
-      if (sourceScopes.some(([id, version]) => scopeVersion(id) !== version) ||
-          sources.some(row => !current.some(item => item.id === row.id && item.version === row.version))) {
-        throw new RequestError(409, 'Memory sources changed while answering. Run the search again.');
-      }
-    };
-    const release = await reserve();
-    let answer: string;
-    try {
-      checkSources();
-      answer = (await answerMemory(question, evidence, AbortSignal.timeout(15_000))).trim();
-      if (!answer || answer.length > 8_000) throw new Error('Invalid model response');
-    } catch {
-      checkSources();
-      throw new RequestError(503, 'Blazar could not answer from memory. Please retry.');
-    } finally {
-      release();
-    }
-    checkSources();
-    reply(response, 200, { answer, sources: sources.map(({ id, connection, resource, revision }) => ({
-      id, connection, resource, revision,
-    })) });
+    await replyWhileConnected(response, signal => data.documents !== undefined
+      ? answerFromDocuments(store, documents ?? [], answerMemory, owner, workspace, question, data.documents, signal, reserve)
+      : answerFromMemory(store, answerMemory, owner, workspace, question, data, signal, reserve));
     return true;
   }
 
@@ -283,4 +224,21 @@ export async function handleMemory(
     return true;
   }
   return false;
+}
+
+
+async function replyWhileConnected(response: ServerResponse, operation: (signal: AbortSignal) => Promise<unknown>) {
+  const controller = new AbortController();
+  const disconnect = () => controller.abort();
+  response.once('close', disconnect);
+  if (response.destroyed) disconnect();
+  try {
+    controller.signal.throwIfAborted();
+    const result = await operation(controller.signal);
+    if (!controller.signal.aborted) reply(response, 200, result);
+  } catch (error) {
+    if (!controller.signal.aborted) throw error;
+  } finally {
+    response.removeListener('close', disconnect);
+  }
 }
