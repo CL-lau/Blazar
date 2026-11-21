@@ -226,6 +226,9 @@ private struct TaskScreen: View {
                                             Text("Observe \(action.alias) on device \(action.deviceId)").font(.caption)
                                         }
                                     }
+                                    if let limit = step.runLimitSeconds {
+                                        Text("Time limit: \(limit) seconds").font(.caption)
+                                    }
                                     if let capability = step.workerCapability {
                                         Text(capability == "steer" ? "Requires live instructions" : "Requires full input artifacts")
                                             .font(.caption)

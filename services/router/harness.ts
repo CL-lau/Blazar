@@ -33,6 +33,7 @@ const instructions = [
   'If the user explicitly requests desktop observation as a workflow step, use workspace_capabilities to get its exact deviceId and alias. Set action to {"kind":"desktop.observe","deviceId":"ID","alias":"alias"}. Keep goal as a human-readable description. Ask for clarification if the target is ambiguous.',
   'For an explicitly requested desktop click with a supplied window ID, window identity and button, a proposed step may use desktop.click with windowId, windowIdentity and button. Never guess window references. Include expectedText when the user specifies text that should appear after the click. Execution will ask for separate approval.',
   'When the user explicitly requests a Worker protocol for a task step, set workerProtocols to the allowed protocol names. For an explicit requirement to add instructions live use workerCapability steer, or use full-input-artifacts when the step requires full predecessor files.',
+  'When the user gives a step time limit between 30 and 600 seconds, include runLimitSeconds on that step.',
   'A proposed workflow is reviewed by the user before anything is queued.',
   'If the request needs clarification, return {"kind":"clarify","text":"Your question"}.',
   'For a question you can answer from the message and any relevant supplied reference data, return {"kind":"reply","text":"Answer"}.',

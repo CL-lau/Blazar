@@ -1003,3 +1003,21 @@ test('workflow steps dispatch only to allowed Worker protocols and pass results 
   assert.equal(review.task.id, workflow.steps[1].taskId);
   assert.equal(review.predecessors[0].result, 'Draft notes');
 });
+
+test('workflow run deadlines use the stricter step or workspace budget', t => {
+  const db = new TaskStore(':memory:');
+  t.after(() => db.close());
+  const worker = { label: 'Fixture', protocol: 'jsonl' };
+  db.setWorkspaceWorkerPolicy('owner', 'project', ['jsonl'], undefined, 90);
+  db.createWorkflow('owner', 'budgeted', 'project', [
+    { key: 'draft', goal: 'Prepare notes', needs: [], runLimitSeconds: 30 },
+    { key: 'review', goal: 'Review notes', needs: ['draft'], runLimitSeconds: 180 },
+  ]);
+  const claim = (now: number) => db.claim('owner', 'project', 'device', now, 45_000, '', '/preview ', undefined, worker)!.run;
+  const draft = claim(0);
+  assert.equal(draft.expires, 30_000);
+  assert.equal(db.renew(draft.id, draft.device, 10_000, 45_000), 30_000);
+  assert.ok(db.finish(draft.id, draft.device, 20_000, { status: 'succeeded', result: 'Drafted' }));
+  const review = claim(20_000);
+  assert.equal(db.renew(review.id, review.device, 60_000, 90_000), 110_000);
+});

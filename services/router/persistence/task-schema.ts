@@ -83,6 +83,9 @@ export function initializeTaskSchema(db: DatabaseSync, runLimitMs: number) {
     CREATE TABLE IF NOT EXISTS desktop_reconciliation (
       task_id TEXT PRIMARY KEY REFERENCES task(id) ON DELETE CASCADE, inputs TEXT NOT NULL
     );
+    CREATE TABLE IF NOT EXISTS task_run_budget (
+      task_id TEXT PRIMARY KEY REFERENCES task(id) ON DELETE CASCADE, seconds INTEGER NOT NULL
+    );
     CREATE TABLE IF NOT EXISTS task_worker_capability (
       task_id TEXT PRIMARY KEY REFERENCES task(id) ON DELETE CASCADE, capability TEXT NOT NULL
     );

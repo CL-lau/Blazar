@@ -528,6 +528,7 @@ function App() {
                     {step.action && <p>{step.action.kind === 'desktop.click'
                       ? `Click ${step.action.button} in ${step.action.alias}, window ${step.action.windowId}`
                       : `Observe ${step.action.alias}`} on device {step.action.deviceId}</p>}
+                    {step.runLimitSeconds && <p>Time limit: {step.runLimitSeconds} seconds</p>}
                     {step.workerCapability && <p>Requires {step.workerCapability === 'steer' ? 'live instructions' : 'full input artifacts'}</p>}
                     {step.workerProtocols?.length > 0 && <p>Worker protocols: {step.workerProtocols.join(', ')}</p>}
                     {step.action?.expectedText && <p>Expected text: {step.action.expectedText}</p>}

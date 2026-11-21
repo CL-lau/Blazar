@@ -760,6 +760,9 @@ export class TaskStore {
         }
         this.db.prepare('INSERT INTO workflow_step VALUES(?,?,?)').run(id, name, taskId);
         if (step.requireReview) this.db.prepare('INSERT INTO task_review VALUES(?)').run(taskId);
+        if (step.runLimitSeconds !== undefined) {
+          this.db.prepare('INSERT INTO task_run_budget VALUES(?,?)').run(taskId, step.runLimitSeconds);
+        }
         if (step.workerCapability) this.db.prepare('INSERT INTO task_worker_capability VALUES(?,?)').run(taskId, step.workerCapability);
         for (const protocol of step.workerProtocols ?? []) {
           this.db.prepare('INSERT INTO task_worker_protocol VALUES(?,?)').run(taskId, protocol);
@@ -776,6 +779,7 @@ export class TaskStore {
         }
         this.event(taskId, 'task.created', { goal: step.goal, workspace, workflowId: id, stepKey: name, predecessors, status,
           ...(step.action && { action: step.action }),
+          ...(step.runLimitSeconds !== undefined && { runLimitSeconds: step.runLimitSeconds }),
           ...(step.workerCapability && { workerCapability: step.workerCapability }),
           ...(step.workerProtocols && { workerProtocols: step.workerProtocols }),
           ...(appEvidence && { appEvidence: appEvidence.refs }),
@@ -1039,7 +1043,9 @@ export class TaskStore {
       }
       const { task, fingerprint, workerLimitSeconds } = selection;
       const workerTask = !/^\/(observe|click|preview) /.test(task.goal);
-      const limitMs = workerTask && workerLimitSeconds !== undefined ? workerLimitSeconds * 1_000 : runLimitMs;
+      const workspaceLimitMs = workerTask && workerLimitSeconds !== undefined ? workerLimitSeconds * 1_000 : runLimitMs;
+      const stepLimit = this.db.prepare('SELECT seconds FROM task_run_budget WHERE task_id=?').get(task.id);
+      const limitMs = stepLimit ? Math.min(workspaceLimitMs, Number(stepLimit.seconds) * 1_000) : workspaceLimitMs;
       const run: Run = { id: randomUUID(), taskId: task.id, version: task.version, device, expires: now + Math.min(leaseMs, limitMs) };
       this.db.prepare('INSERT INTO run VALUES(?,?,?,?,?)').run(run.id, task.id, device, run.version, run.expires);
       this.db.prepare('INSERT INTO run_deadline VALUES(?,?)').run(run.id, now + limitMs);

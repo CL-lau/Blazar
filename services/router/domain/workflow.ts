@@ -32,10 +32,16 @@ export function workflowSteps(input: unknown): WorkflowStep[] {
     if (value.workerCapability !== undefined && (!capability || action || /^\/(observe|click|preview) /.test(value.goal))) {
       throw new InvalidWorkflow('Invalid workflow Worker capability');
     }
+    const runLimitSeconds = value.runLimitSeconds;
+    if (runLimitSeconds !== undefined && (typeof runLimitSeconds !== 'number' ||
+        !Number.isSafeInteger(runLimitSeconds) || runLimitSeconds < 30 || runLimitSeconds > 600)) {
+      throw new InvalidWorkflow('Invalid workflow step time limit');
+    }
     const acceptanceCriteria: string[] = Array.isArray(value.acceptanceCriteria)
       ? [...new Set<string>(value.acceptanceCriteria.map((criterion: string) => criterion.trim()))] : [];
     return { key: value.key as string, goal: value.goal as string, needs: [...new Set<string>(value.needs)],
       ...(action && { action }),
+      ...(runLimitSeconds !== undefined && { runLimitSeconds }),
       ...(capability && { workerCapability: capability }),
       ...(protocols && { workerProtocols: [...new Set<string>(protocols)].sort() }),
       ...(acceptanceCriteria.length && { acceptanceCriteria }), ...(value.requireReview === true && { requireReview: true }) };
