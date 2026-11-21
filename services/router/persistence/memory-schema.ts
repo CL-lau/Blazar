@@ -77,6 +77,14 @@ export function initializeMemorySchema(db: DatabaseSync): boolean {
   if (!db.prepare("SELECT 1 FROM pragma_table_info('app_connection') WHERE name='scope_version'").get()) {
     db.exec('ALTER TABLE app_connection ADD COLUMN scope_version INTEGER NOT NULL DEFAULT 1');
   }
+  db.exec(`
+    CREATE TRIGGER IF NOT EXISTS document_sync_connection_changed
+    AFTER UPDATE OF active,scope_version ON app_connection
+    WHEN old.active<>new.active OR old.scope_version<>new.scope_version
+    BEGIN
+      UPDATE document_sync SET lease_token=NULL,lease_expires=NULL WHERE connection=new.id;
+    END;
+  `);
   if (!db.prepare("SELECT 1 FROM pragma_table_info('app_connection') WHERE name='workspace'").get()) {
     db.exec('ALTER TABLE app_connection ADD COLUMN workspace TEXT');
   }

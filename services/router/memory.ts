@@ -149,8 +149,8 @@ export class MemoryStore {
 
   finishDocumentSync(sync: DocumentSyncLease, next: string | null, now = Date.now()) {
     this.db.prepare(`UPDATE document_sync SET cursor=?,due=?+CASE WHEN ? IS NULL THEN interval_minutes*60000 ELSE 0 END,
-      lease_token=NULL,lease_expires=NULL WHERE connection=? AND workspace=? AND lease_token=?`)
-      .run(next ?? '', now, next, sync.connection, sync.workspace, sync.token);
+      lease_token=NULL,lease_expires=NULL WHERE connection=? AND workspace=? AND lease_token=? AND lease_expires>?`)
+      .run(next ?? '', now, next, sync.connection, sync.workspace, sync.token, now);
   }
 
   recordDocumentAccess(connection: string, resource: string, requestId: number | bigint, allowed: boolean) {

@@ -25,6 +25,15 @@ test('document sync resumes its saved cursor and rejects stale schedule leases a
   assert.equal(store.documentSyncActive(next, 110), true);
   assert.equal(store.setConnectionWorkspace('owner', connection, 'private'), true);
   assert.equal(store.documentSyncActive(next, 110), false);
+  store.finishDocumentSync(next, 'skip.md', 111);
+  assert.equal(store.setConnectionWorkspace('owner', connection, 'work'), true);
+  assert.equal(store.documentSyncActive(next, 111), false);
+  const restored = store.leaseDocumentSync(111)!;
+  assert.equal(restored.cursor, 'guide.md');
+  assert.equal(store.setConnectionWorkspace('owner', connection, 'work'), true);
+  assert.equal(store.documentSyncActive(restored, 111), true);
+  store.finishDocumentSync(restored, 'expired.md', 45_112);
+  assert.equal(store.leaseDocumentSync(45_112)?.cursor, 'guide.md');
 });
 
 test('personal context finds unpinned Chinese preferences in a longer sentence', t => {
