@@ -482,5 +482,12 @@ test('Router authenticates, deduplicates commands and replays task changes over 
   assert.deepEqual(await (await post('/v1/conversation', 'append-proposal', append)).json(), proposal);
   assert.equal((await post('/v1/tasks/' + existing.id + '/commands', 'stale-follow-up', command)).status, 409);
   assert.equal(store.get('test', existing.id)?.version, 2);
+  store.create('test', 'fixture', 'hidden-status', 'private', 'Draft the review privately');
+  const priorDecisions = decisions;
+  const status = await post('/v1/conversation', 'lookup-status', { workspace: 'follow-up', text: '/status Draft the review' });
+  assert.deepEqual(await status.json(), { kind: 'reply', text: 'queued · Draft the review' });
+  const localStatus = await post('/v1/conversation', 'lookup-status-zh', { workspace: 'follow-up', text: '/状态' });
+  assert.deepEqual(await localStatus.json(), { kind: 'reply', text: '排队中 · Draft the review' });
+  assert.equal(decisions, priorDecisions);
 
 });

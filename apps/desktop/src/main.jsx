@@ -333,7 +333,7 @@ function App() {
                     return <li key={source.id}>{account ? account.app + ' · ' + account.account + ' · ' + source.resource : 'Personal note'}</li>;
                   })}</ul>
                 </section>}
-                {answer && <p role="status">{answer}</p>}
+                {answer && <p className="conversation-reply" role="status">{answer}</p>}
                 {followUp && <section className="approval" aria-label="Proposed follow-up">
                   <h3>Proposed follow-up</h3>
                   <p>{snapshot.tasks.find(item => item.id === followUp.taskId)?.goal ?? followUp.taskId}</p>

@@ -792,7 +792,21 @@ export function routerServer(store: TaskStore, config: { owner: string; token: s
         let decision = store.routingDecision(owner, key, input);
         if (decision) metrics.route('replayed');
         else {
-          if (input.text.startsWith('/preview ') || input.text.startsWith('/observe ') || input.text.startsWith('/click ')) {
+          const status = /^\/(status|状态)(?: (.*))?$/.exec(input.text);
+          if (status) {
+            const query = status[2]?.trim() ?? '';
+            if (query.length > 128) throw new RequestError(400, 'Invalid task query');
+            const tasks = store.findRouterTasks(owner, input.workspace, query);
+            const labels: Record<string, string> = {
+              queued: '排队中', running: '运行中', cancelling: '正在取消', cancelled: '已取消',
+              succeeded: '已完成', failed: '失败', waiting_user: '等待用户', waiting_dependency: '等待依赖',
+              waiting_device: '等待设备', pausing: '正在暂停', paused: '已暂停', waiting_review: '等待验收',
+            };
+            decision = { kind: 'reply', text: tasks.length ? tasks.map(task =>
+              `${status[1] === '状态' ? labels[task.status] ?? task.status : task.status.replaceAll('_', ' ')} · ${task.goal.replace(/\s+/g, ' ')}`
+            ).join('\n') : status[1] === '状态' ? '没有找到匹配的任务。' : 'No matching tasks.' };
+            metrics.route('deterministic');
+          } else if (input.text.startsWith('/preview ') || input.text.startsWith('/observe ') || input.text.startsWith('/click ')) {
             decision = { kind: 'create_task' };
             metrics.route('deterministic');
           }
