@@ -37,6 +37,14 @@ jobs:
             BLAZAR_TEST_PI_EXECUTABLE="$tool_dir/node_modules/.bin/pi" \
             BLAZAR_TEST_OPENCODE_EXECUTABLE="$tool_dir/node_modules/opencode-linux-x64/bin/opencode" \
             node --test services/router/{deepseek,pi,opencode}-runtime.test.ts
+      - name: Verify Aider with a local model endpoint
+        if: matrix.node == '24'
+        shell: bash
+        run: |
+          tool_dir="$(mktemp -d)"
+          python3 -m venv "$tool_dir/venv"
+          "$tool_dir/venv/bin/python" -m pip install --disable-pip-version-check aider-chat==0.86.2
+          BLAZAR_TEST_AIDER_EXECUTABLE="$tool_dir/venv/bin/aider" node --test services/router/aider-runtime.test.ts
 
   apple:
     runs-on: macos-26

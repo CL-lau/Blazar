@@ -14,7 +14,7 @@ const builtInWorkers = new Map<string, Worker>([
     args: ['--chat-mode', 'ask', '--no-stream', '--no-pretty', '--no-git', '--dry-run',
       '--no-auto-commits', '--no-auto-lint', '--no-auto-test', '--no-suggest-shell-commands',
       '--no-check-update', '--no-analytics'],
-    env: ['ANTHROPIC_API_KEY', 'OPENAI_API_KEY', 'OPENROUTER_API_KEY', 'AIDER_MODEL'] }],
+    env: ['ANTHROPIC_API_KEY', 'OPENAI_API_KEY', 'OPENROUTER_API_KEY', 'AIDER_MODEL', 'AIDER_OPENAI_API_BASE'] }],
   ['claude', { executable: 'claude', label: 'Claude Code', protocol: 'claude',
     args: [],
     env: ['ANTHROPIC_API_KEY', 'CLAUDE_CODE_OAUTH_TOKEN', 'CLAUDE_CONFIG_DIR'] }],
