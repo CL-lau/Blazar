@@ -78,6 +78,12 @@ export class RunInputRepository {
     }));
   }
 
+  expectedArtifact(taskId: string): string | undefined {
+    const row = this.db.prepare(`SELECT json_extract(data,'$.outputArtifact') AS name
+      FROM event WHERE taskId=? AND type='task.created' ORDER BY seq LIMIT 1`).get(taskId);
+    return typeof row?.name === 'string' ? row.name : undefined;
+  }
+
   assignment(task: Task, run: Run, predecessors: PredecessorInput[], requireReadOnly: boolean, action?: WorkflowAction) {
     const instructionEvents = this.db.prepare(`SELECT data FROM event WHERE taskId=?
       AND type='task.instruction_added' ORDER BY seq`).all(run.taskId)
@@ -93,9 +99,11 @@ export class RunInputRepository {
     const expected = action && 'expectedText' in action ? action.expectedText : undefined;
     const observationWaitSeconds = action?.kind === 'desktop.observe' && action.mode === 'window' ? action.waitSeconds : undefined;
     const required = this.db.prepare('SELECT capability FROM task_worker_capability WHERE task_id=?').get(run.taskId)?.capability;
+    const expectedArtifact = this.expectedArtifact(task.id);
     const runHistory = run.version > 1 ? this.runHistory(run.taskId) : [];
     return { run, task, instructions, predecessors, acceptanceCriteria,
       ...(runHistory.length && { runHistory }),
+      ...(expectedArtifact && { expectedArtifact }),
       ...(previousQuestion && { previousQuestion }),
       ...(required === 'full-input-artifacts' && { fullInputRequired: true }),
       ...(required === 'git-patch-inputs' && { gitPatchInputsRequired: true }),

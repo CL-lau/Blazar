@@ -865,6 +865,7 @@ export class TaskStore {
           ...(step.workerCapability && { workerCapability: step.workerCapability }),
           ...(step.workerProtocols && { workerProtocols: step.workerProtocols }),
           ...(step.inputArtifacts && { inputArtifacts: step.inputArtifacts }),
+          ...(step.outputArtifact && { outputArtifact: step.outputArtifact }),
           ...(appEvidence && { appEvidence: appEvidence.refs }),
         });
       }
@@ -1423,6 +1424,12 @@ export class TaskStore {
         if (action?.kind === 'desktop.observe' && action.mode === 'window' && action.expectedText &&
             !outcome.artifact?.text.includes(action.expectedText)) {
           outcome = { status: 'failed', result: 'The target window observation did not verify the expected visible text.' };
+        }
+      }
+      if (outcome.status === 'succeeded') {
+        const output = this.runInputs.expectedArtifact(taskId);
+        if (output && ![outcome.artifact, ...(outcome.additionalArtifacts ?? [])].some(file => file?.name === output)) {
+          outcome = { status: 'failed', result: `The Worker did not publish the required artifact "${output}".` };
         }
       }
       const pendingReview = outcome.status === 'succeeded' && !row.staleInputs && row.runVersion === row.version &&

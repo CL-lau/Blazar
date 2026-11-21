@@ -1,9 +1,12 @@
+import { createHash } from 'node:crypto';
 import { execFile } from 'node:child_process';
 import { lstat, mkdir, mkdtemp, readFile, realpath, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { isAbsolute, join, relative, sep } from 'node:path';
 import { maxTextArtifactBytes } from '../../../packages/protocol/artifact.ts';
 import type { PredecessorInput } from '../../../packages/protocol/task.ts';
+import { setTimeout as delay } from 'node:timers/promises';
+import { lockDatabaseFile } from '../../../packages/storage/exclusive.ts';
 import { promisify } from 'node:util';
 
 const exec = promisify(execFile);
@@ -33,16 +36,37 @@ export async function gitRunWorktrees(workspace: string, stateDirectory: string,
   if (!isAbsolute(fromRepository) && fromRepository !== '..' && !fromRepository.startsWith('..' + sep)) {
     throw new Error('Git worktree storage must be outside the workspace');
   }
-  const prepare = async (runId: string) => {
+  const common = await realpath(await git('rev-parse', '--path-format=absolute', '--git-common-dir'));
+  const commonHash = createHash('sha256').update(common).digest('hex');
+  const checkoutLock = join(stateDirectory, 'git-worktree-' + commonHash + '.sqlite');
+  const prepare = async (runId: string, signal?: AbortSignal) => {
     const root = runPath(storage, runId);
-    // Reserve the path before Git setup. A repeated run must never reuse an earlier checkout.
+    const deadline = AbortSignal.timeout(15_000);
+    const active = signal ? AbortSignal.any([signal, deadline]) : deadline;
+    let release: (() => void) | undefined;
     try {
+      while (!release) {
+        active.throwIfAborted();
+        try {
+          release = lockDatabaseFile(checkoutLock, 'Another device is preparing a Git worktree');
+        } catch (error) {
+          const cause = (error as Error).cause as { errcode?: number } | undefined;
+          if (cause?.errcode !== 5) throw error;
+          await delay(50, undefined, { signal: active });
+        }
+      }
+      // A repeated run must never reuse an earlier checkout.
       await mkdir(root, { mode: 0o700 });
       const commit = await git('rev-parse', '--verify', 'HEAD^{commit}');
       await writeFile(root + '.base', commit + '\n', { flag: 'wx', mode: 0o600 });
+      active.throwIfAborted();
       await git('worktree', 'add', '--detach', '--', root, commit);
+      active.throwIfAborted();
     } catch (cause) {
+      signal?.throwIfAborted();
       throw new Error('Unable to prepare the run Git worktree. Inspect the run checkout before retrying.', { cause });
+    } finally {
+      release?.();
     }
     return root;
   };

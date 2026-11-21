@@ -16,7 +16,7 @@ import { completeInputArtifacts } from './execution/input-artifacts.ts';
 import { WorkerQuestion } from '../../packages/workers/custom-jsonl.ts';
 import { executeWorker } from './execution/worker.ts';
 
-type Assignment = { clickExpectedText?: string; observationExpectedText?: string; observationWaitSeconds?: number; fullInputRequired?: boolean; readOnlyRequired?: boolean; gitPatchInputsRequired?: boolean; run: Run; task: Task; instructions: string[]; predecessors: PredecessorInput[]; runHistory?: RunHistoryEntry[]; previousQuestion?: string; acceptanceCriteria?: string[]; memoryInputs?: TaskMemoryInput[]; attachments?: TaskAttachment[] };
+type Assignment = { clickExpectedText?: string; observationExpectedText?: string; observationWaitSeconds?: number; fullInputRequired?: boolean; readOnlyRequired?: boolean; gitPatchInputsRequired?: boolean; run: Run; task: Task; instructions: string[]; predecessors: PredecessorInput[]; runHistory?: RunHistoryEntry[]; previousQuestion?: string; expectedArtifact?: string; acceptanceCriteria?: string[]; memoryInputs?: TaskMemoryInput[]; attachments?: TaskAttachment[] };
 
 export class DeviceClient {
   private socket: DeviceSocket;
@@ -198,7 +198,7 @@ export class DeviceClient {
               return () => this.consumeApproval(prefix, decision.id, signal);
             }, assignment.clickExpectedText ?? assignment.observationExpectedText, assignment.observationWaitSeconds);
         } else if (this.worker) {
-          const root = this.worktrees ? await this.worktrees.prepare(assignment.run.id) : this.root;
+          const root = this.worktrees ? await this.worktrees.prepare(assignment.run.id, active) : this.root;
           active.throwIfAborted();
           if (assignment.gitPatchInputsRequired) {
             await completeInputArtifacts((path, body, signal) => this.post(path, body, signal),
@@ -213,11 +213,11 @@ export class DeviceClient {
             consumeApproval: (path, id, signal) => this.consumeApproval(path, id, signal),
           }, this.worker, prefix, assignment.task.id, {
             goal: assignment.task.goal, instructions: assignment.instructions, predecessors: assignment.predecessors,
-            runHistory: assignment.runHistory, previousQuestion: assignment.previousQuestion,
+            runHistory: assignment.runHistory, previousQuestion: assignment.previousQuestion, expectedArtifact: assignment.expectedArtifact,
             acceptanceCriteria: assignment.acceptanceCriteria, memoryInputs: assignment.memoryInputs, attachments: assignment.attachments,
           }, stop, active, assignment.fullInputRequired);
           checkpoint = this.worktrees ? undefined : session;
-          let artifact = workerArtifact ?? { name: 'worker-result.txt', text: result };
+          let artifact = workerArtifact ?? (assignment.expectedArtifact ? undefined : { name: 'worker-result.txt', text: result });
           if (this.worktrees) {
             try {
               artifact = await this.worktrees.artifact(assignment.run.id, active);

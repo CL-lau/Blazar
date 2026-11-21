@@ -52,6 +52,12 @@ export function workflowSteps(input: unknown): WorkflowStep[] {
       }
       if (names.length) inputArtifacts = Object.fromEntries(names.sort(([a], [b]) => a < b ? -1 : a > b ? 1 : 0));
     }
+    const outputArtifact = artifactName(value.outputArtifact);
+    if (value.outputArtifact !== undefined && (!outputArtifact || outputArtifact === 'git-changes.json' || action ||
+        /^\/(observe|click|preview) /.test(value.goal) || (protocols && !protocols.includes('jsonl')) ||
+        capability === 'read-only' || capability === 'steer')) {
+      throw new InvalidWorkflow('A declared text output requires a compatible JSONL Worker');
+    }
     const runLimitSeconds = value.runLimitSeconds;
     if (runLimitSeconds !== undefined && (typeof runLimitSeconds !== 'number' ||
         !Number.isSafeInteger(runLimitSeconds) || runLimitSeconds < 30 || runLimitSeconds > 600)) {
@@ -64,7 +70,9 @@ export function workflowSteps(input: unknown): WorkflowStep[] {
       ...(runLimitSeconds !== undefined && { runLimitSeconds }),
       ...(capability && { workerCapability: capability }),
       ...(inputArtifacts && { inputArtifacts }),
-      ...(protocols && { workerProtocols: [...new Set<string>(protocols)].sort() }),
+      ...(outputArtifact && { outputArtifact }),
+      ...(outputArtifact ? { workerProtocols: ['jsonl'] } :
+        protocols && { workerProtocols: [...new Set<string>(protocols)].sort() }),
       ...(acceptanceCriteria.length && { acceptanceCriteria }), ...(value.requireReview === true && { requireReview: true }) };
   });
   orderWorkflow(steps);

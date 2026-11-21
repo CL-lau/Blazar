@@ -42,6 +42,7 @@ test('isolated Worker runs keep their changes in independent retained worktrees'
       const original = fs.readFileSync('notes.txt', 'utf8');
       const expected = input.goal === 'Read patched A' ? 'Parallel A' : 'Committed source';
       if (original !== expected) process.exit(1);
+      if (input.goal.startsWith('Parallel ') && input.expectedArtifact !== 'report.md') process.exit(6);
       fs.writeFileSync('notes.txt', input.goal);
       function finish() {
         process.stdout.write(JSON.stringify({ version: 1, type: 'completed', result: input.goal,
@@ -121,8 +122,8 @@ test('isolated Worker runs keep their changes in independent retained worktrees'
     store.close();
   };
   store.createWorkflow('owner', 'git-handoff', 'project', [
-    { key: 'a', goal: 'Parallel A', needs: [], workerCapability: 'git-worktree' },
-    { key: 'b', goal: 'Parallel B', needs: [], workerCapability: 'git-worktree' },
+    { key: 'a', goal: 'Parallel A', needs: [], workerCapability: 'git-worktree', outputArtifact: 'report.md', workerProtocols: ['jsonl'] },
+    { key: 'b', goal: 'Parallel B', needs: [], workerCapability: 'git-worktree', outputArtifact: 'report.md', workerProtocols: ['jsonl'] },
     { key: 'review', goal: 'Review changes', needs: ['a', 'b'] },
     { key: 'apply', goal: 'Read patched A', needs: ['a'], workerCapability: 'git-patch-inputs' },
     { key: 'conflict', goal: 'Conflicting patch inputs', needs: ['a', 'b'], workerCapability: 'git-patch-inputs' },
@@ -172,6 +173,17 @@ test('isolated Worker runs keep their changes in independent retained worktrees'
   const event = store.timeline('owner', conflict!.id)?.events.find(event => event.type === 'run.finished');
   assert.equal(event?.data.waitingReason, 'git_patch_inputs');
   assert.equal(afterApply.find(item => item.goal === 'Read merged changes')?.status, 'waiting_dependency');
+  const wrong = store.createWorkflow('owner', 'output-contract', 'project', [
+    { key: 'output', goal: 'Produce wrong filename', needs: [], outputArtifact: 'required.md', workerProtocols: ['jsonl'] },
+    { key: 'review', goal: 'Review required file', needs: ['output'] },
+  ]);
+  const [producer, dependent] = wrong.steps;
+  assert.equal(await clients[0].runOnce(AbortSignal.timeout(5_000)), true);
+  const failed = store.get('owner', String(producer.taskId));
+  assert.equal(failed?.status, 'failed');
+  assert.match(failed?.result ?? '', /required artifact "required\.md"/);
+  assert.equal(store.get('owner', String(dependent.taskId))?.status, 'waiting_dependency');
+  assert.equal(store.snapshot('owner').artifacts.some(artifact => artifact.taskId === producer.taskId), false);
   assert.equal(store.command('owner', conflict!.id, conflict!.version, { action: 'retry' })?.status, 'queued');
 
   assert.equal(await readFile(notes, 'utf8'), 'Uncommitted user edit');

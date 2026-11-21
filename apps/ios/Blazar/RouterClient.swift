@@ -235,6 +235,7 @@ struct RouterClient: Equatable {
         var workerProtocols: [String]? = nil
         var workerCapability: String? = nil
         var inputArtifacts: [String: String]? = nil
+        var outputArtifact: String? = nil
         var runLimitSeconds: Int? = nil
         let key: String
         let goal: String

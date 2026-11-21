@@ -572,6 +572,7 @@ function App() {
                     {step.action && <p>{step.action.kind === 'desktop.click'
                       ? `Click ${step.action.button} in ${step.action.alias}, window ${step.action.windowFrom?.title ?? step.action.windowId}`
                       : `${step.action.mode === 'windows' ? 'List windows for' : step.action.mode === 'visual' ? 'Capture screenshot of' : 'Observe'} ${step.action.alias}${step.action.windowFrom ? `, window ${step.action.windowFrom.title}` : ''}`} on device {step.action.deviceId}</p>}
+                    {step.outputArtifact && <p>Required output {step.outputArtifact}</p>}
                     {step.inputArtifacts && <ul aria-label="Named input artifacts">{Object.entries(step.inputArtifacts).map(([source, filename]) =>
                       <li key={source}>{filename} from {source}</li>)}</ul>}
                     {step.runLimitSeconds && <p>Time limit: {step.runLimitSeconds} seconds</p>}
