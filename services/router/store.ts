@@ -1,13 +1,14 @@
 import { sqliteTransaction } from '../../packages/storage/sqlite.ts';
 import { DeviceRepository } from './persistence/device-repository.ts';
+import { TaskReadRepository } from './persistence/task-read-repository.ts';
 import { initializeTaskSchema } from './persistence/task-schema.ts';
 import { IdempotencyConflict } from './domain/idempotency.ts';
 import { MobileRepository } from './persistence/mobile-repository.ts';
 import { orderWorkflow, workflowActionGoal } from './domain/workflow.ts';
-import type { ConversationTurn, Decision, RouteRequest } from './harness.ts';
+import type { Decision, RouteRequest } from './harness.ts';
 import { createHash, randomBytes, randomUUID } from 'node:crypto';
 import { DatabaseSync } from 'node:sqlite';
-import type { PredecessorInput, Run, RunOutcome, Task, TaskAttachment, TaskEvent, TaskMemoryInput, WorkerConfiguration, WorkflowStep } from '../../packages/protocol/task.ts';
+import type { PredecessorInput, Run, RunOutcome, Task, TaskAttachment, TaskMemoryInput, WorkerConfiguration, WorkflowStep } from '../../packages/protocol/task.ts';
 import { displayTaskStatus, windowImageLifetimeMs } from '../../packages/protocol/task.ts';
 
 const runLimitMs = 10 * 60_000;
@@ -24,6 +25,7 @@ export class TaskStore {
   private db: DatabaseSync;
   private readonly deviceRepository: DeviceRepository;
   private readonly mobileRepository: MobileRepository;
+  private readonly taskReads: TaskReadRepository;
   private readonly canUseChannelAppEvidence?: (owner: string, workspace: string, refs: AppEvidence['refs']) => boolean;
 
   constructor(path: string, canUseChannelAppEvidence?: TaskStore['canUseChannelAppEvidence']) {
@@ -31,6 +33,7 @@ export class TaskStore {
     this.db = new DatabaseSync(path);
     this.deviceRepository = new DeviceRepository(this.db);
     this.mobileRepository = new MobileRepository(this.db);
+    this.taskReads = new TaskReadRepository(this.db);
     try {
       initializeTaskSchema(this.db, runLimitMs);
       this.transaction(() => this.updateWorkflowReadiness());
@@ -123,17 +126,16 @@ export class TaskStore {
     }
   }
 
-  get(owner: string, taskId: string): Task | undefined {
-    return this.db.prepare('SELECT * FROM task WHERE owner=? AND id=?').get(owner, taskId) as unknown as Task | undefined;
+  get(...args: Parameters<TaskReadRepository['get']>) {
+    return this.taskReads.get(...args);
   }
 
-  eventCursor(): number {
-    const row = this.db.prepare("SELECT COALESCE((SELECT seq FROM sqlite_sequence WHERE name='event'),0) AS cursor").get();
-    return Number(row?.cursor);
+  eventCursor(...args: Parameters<TaskReadRepository['eventCursor']>) {
+    return this.taskReads.eventCursor(...args);
   }
 
-  eventReplayFloor(): number {
-    return Number(this.db.prepare('SELECT replay_floor FROM event_retention WHERE id=1').get()?.replay_floor ?? 0);
+  eventReplayFloor(...args: Parameters<TaskReadRepository['eventReplayFloor']>) {
+    return this.taskReads.eventReplayFloor(...args);
   }
 
   pruneProgressEvents(before: number, limit = -1) {
@@ -151,112 +153,36 @@ export class TaskStore {
     });
   }
 
-  snapshot(owner: string) {
-    return this.transaction(() => {
-      const rows = this.db.prepare('SELECT * FROM task WHERE owner=? ORDER BY rowid DESC').all(owner) as unknown as Task[];
-      const pendingStops = new Set(this.db.prepare(`SELECT s.task_id FROM expired_approval_stop s
-        JOIN task t ON t.id=s.task_id WHERE t.owner=? AND s.expires>?`).all(owner, Date.now()).map(row => row.task_id));
-      const reconciliation = new Set(this.db.prepare(`SELECT r.task_id FROM desktop_reconciliation r
-        JOIN task t ON t.id=r.task_id WHERE t.owner=?`).all(owner).map(row => row.task_id));
-      const tasks = rows.map(task => ({
-        ...task,
-        ...(pendingStops.has(task.id) && ['queued', 'waiting_device'].includes(task.status) && { waitingForPreviousRun: true }),
-        ...(task.status === 'waiting_user' && reconciliation.has(task.id) && { desktopReconciliationRequired: true }),
-      }));
-      const cursor = this.eventCursor();
-      const artifacts = this.db.prepare(`SELECT a.id,a.taskId,a.runId,a.name,a.sha256,a.size,
-        CASE WHEN i.artifact_id IS NOT NULL THEN 'image/png' END AS mime,i.expires,v.task_version AS version
-        FROM artifact a JOIN task t ON t.id=a.taskId LEFT JOIN artifact_image i ON i.artifact_id=a.id
-        LEFT JOIN artifact_version v ON v.artifact_id=a.id
-        WHERE t.owner=? AND (i.expires IS NULL OR i.expires>?) ORDER BY a.rowid DESC`).all(owner, Date.now());
-      const approvals = this.db.prepare(`SELECT a.id,a.taskId,a.version,a.summary,a.expires
-        FROM approval a JOIN task t ON t.id=a.taskId JOIN run r ON r.id=a.runId
-        WHERE NOT EXISTS(SELECT 1 FROM invalid_workflow_run i WHERE i.id=r.id)
-        AND t.owner=? AND t.status='waiting_user' AND a.version=t.version AND a.decision IS NULL
-        AND a.expires>? AND r.expires>? ORDER BY a.rowid DESC`).all(owner, Date.now(), Date.now());
-      const progress = this.db.prepare(`SELECT r.taskId,r.id AS runId,
-        CASE WHEN a.stalled=1 THEN 'No recent Worker output. The run is still active.' ELSE p.message END AS message
-        FROM run r JOIN task t ON t.id=r.taskId JOIN run_activity a ON a.run_id=r.id
-        LEFT JOIN run_progress p ON p.run_id=r.id
-          AND p.device_seq=(SELECT MAX(device_seq) FROM run_progress WHERE run_id=r.id)
-        WHERE t.owner=? AND t.status='running' AND r.version=t.version
-        AND (p.device_seq IS NOT NULL OR a.stalled=1)`).all(owner);
-      const workflowSteps = this.db.prepare(`SELECT s.workflow_id AS workflowId,s.step_key AS stepKey,
-        s.task_id AS taskId,d.predecessor AS predecessorId FROM workflow_step s
-        JOIN workflow w ON w.id=s.workflow_id LEFT JOIN workflow_dependency d ON d.task_id=s.task_id
-        WHERE w.owner=? ORDER BY s.rowid`).all(owner);
-      const criteria = this.db.prepare(`SELECT c.task_id AS taskId,c.criterion FROM task_criterion c
-        JOIN task t ON t.id=c.task_id WHERE t.owner=? ORDER BY c.task_id,c.position`).all(owner);
-      const attachments = this.db.prepare(`SELECT a.task_id AS taskId,a.position,a.name,length(CAST(a.text AS BLOB)) AS size
-        FROM task_attachment a JOIN task t ON t.id=a.task_id WHERE t.owner=? ORDER BY a.task_id,a.position`).all(owner);
-      return { tasks, artifacts, attachments, approvals, progress, workflowSteps, criteria, cursor };
-    });
+  snapshot(...args: Parameters<TaskReadRepository['snapshot']>) {
+    return this.taskReads.snapshot(...args);
   }
 
-  taskAttachment(owner: string, taskId: string, position: number) {
-    return this.db.prepare(`SELECT a.name,a.text FROM task_attachment a JOIN task t ON t.id=a.task_id
-      WHERE t.owner=? AND a.task_id=? AND a.position=?`).get(owner, taskId, position);
+  taskAttachment(...args: Parameters<TaskReadRepository['taskAttachment']>) {
+    return this.taskReads.taskAttachment(...args);
   }
 
-  artifact(owner: string, id: string, now = Date.now()) {
-    return this.db.prepare(`SELECT a.taskId,a.name,a.sha256,a.content,v.task_version AS version,
-      CASE WHEN i.artifact_id IS NOT NULL THEN 'image/png' END AS mime FROM artifact a
-      JOIN task t ON t.id=a.taskId LEFT JOIN artifact_image i ON i.artifact_id=a.id
-      LEFT JOIN artifact_version v ON v.artifact_id=a.id
-      WHERE t.owner=? AND a.id=? AND (i.expires IS NULL OR i.expires>?)`).get(owner, id, now) as
-      { taskId: string; name: string; sha256: string; content: Uint8Array; mime: 'image/png' | null; version: number | null } | undefined;
+  artifact(...args: Parameters<TaskReadRepository['artifact']>) {
+    return this.taskReads.artifact(...args);
   }
 
-  timeline(owner: string, taskId: string, before?: number) {
-    if (!this.get(owner, taskId)) return undefined;
-    const rows = this.db.prepare(`SELECT seq,type,data FROM event
-      WHERE taskId=? AND (? IS NULL OR seq<?) ORDER BY seq DESC LIMIT 51`)
-      .all(taskId, before ?? null, before ?? null);
-    const page = rows.slice(0, 50);
-    return {
-      events: page.map(row => ({ seq: Number(row.seq), type: String(row.type), data: JSON.parse(String(row.data)) })),
-      before: rows.length > 50 ? Number(page.at(-1)?.seq) : null,
-    };
+  timeline(...args: Parameters<TaskReadRepository['timeline']>) {
+    return this.taskReads.timeline(...args);
   }
 
-  recentTaskEventTypes(owner: string, workspace: string, taskId: string) {
-    return this.db.prepare(`SELECT e.seq,e.type FROM event e JOIN task t ON t.id=e.taskId
-      WHERE t.owner=? AND t.workspace=? AND t.id=? ORDER BY e.seq DESC LIMIT 20`)
-      .all(owner, workspace, taskId).reverse().map(row => ({ seq: Number(row.seq), type: String(row.type) }));
+  recentTaskEventTypes(...args: Parameters<TaskReadRepository['recentTaskEventTypes']>) {
+    return this.taskReads.recentTaskEventTypes(...args);
   }
 
-  events(owner: string, after: number, through = Number.MAX_SAFE_INTEGER): TaskEvent[] {
-    return this.db.prepare(`SELECT e.* FROM event e JOIN task t ON e.taskId=t.id
-      WHERE t.owner=? AND e.seq>? AND e.seq<=? ORDER BY e.seq LIMIT 100`).all(owner, after, through) as unknown as TaskEvent[];
+  events(...args: Parameters<TaskReadRepository['events']>) {
+    return this.taskReads.events(...args);
   }
 
-  findRouterTasks(owner: string, workspace: string, query: string, includeAppEvidence = false) {
-    return this.db.prepare(`SELECT id,substr(goal,1,320) AS goal,status,version FROM task WHERE owner=? AND workspace=?
-      AND (?='' OR id=? OR instr(lower(goal),lower(?))>0)
-      AND (? OR NOT EXISTS(SELECT 1 FROM task_app_evidence e WHERE e.task_id=task.id))
-      ORDER BY rowid DESC LIMIT 8`).all(owner, workspace, query, query, query, Number(includeAppEvidence))
-      .map(row => ({ id: String(row.id), goal: String(row.goal).toWellFormed(), status: String(row.status), version: Number(row.version) }));
+  findRouterTasks(...args: Parameters<TaskReadRepository['findRouterTasks']>) {
+    return this.taskReads.findRouterTasks(...args);
   }
 
-  recentConversation(owner: string, workspace: string, caller = 'admin'): ConversationTurn[] {
-    return this.db.prepare(`SELECT json_extract(request,'$[1]') AS text,decision FROM routing_decision
-      WHERE owner=? AND caller=? AND json_extract(request,'$[0]')=? AND json_array_length(request)=2
-      AND NOT (
-        json_extract(request,'$[1]') IN ('/status','/状态')
-        OR json_extract(request,'$[1]') GLOB '/status *' OR json_extract(request,'$[1]') GLOB '/状态 *'
-      ) ORDER BY rowid DESC LIMIT 6`)
-      .all(owner, caller, workspace).reverse().map(row => {
-        const decision = JSON.parse(String(row.decision)) as Decision;
-        if (decision.kind === 'propose_workflow') {
-          decision.text = decision.text.slice(0, 2_000);
-          decision.steps = decision.steps.map(step => ({ ...step, goal: step.goal.slice(0, 200) }));
-        } else if (decision.kind === 'append_task') {
-          decision.text = decision.text.slice(0, 2_000);
-          decision.instruction = decision.instruction.slice(0, 2_000);
-        } else if (decision.kind !== 'create_task') decision.text = decision.text.slice(0, 2_000);
-        else if (decision.goal) decision.goal = decision.goal.slice(0, 2_000);
-        return { text: String(row.text).slice(0, 2_000), decision };
-      });
+  recentConversation(...args: Parameters<TaskReadRepository['recentConversation']>) {
+    return this.taskReads.recentConversation(...args);
   }
 
   routingDecision(owner: string, key: string, request: RouteRequest, decision?: Decision, caller = 'admin'): Decision | undefined {
