@@ -915,7 +915,7 @@ test('a click with no confirmed result holds dependent steps for reconciliation'
   const workflow = db.createWorkflow('owner', 'click-flow', 'project', [
     { key: 'click', goal: 'Add an item', needs: [], action: {
       kind: 'desktop.click', alias: 'notes', deviceId: device.id,
-      windowId: 'w-10', windowIdentity: 'a'.repeat(64), button: 'Add',
+      windowId: 'w-10', windowIdentity: 'a'.repeat(64), button: 'Add', expectedText: 'Item added',
     } },
     { key: 'review', goal: 'Review the result', needs: ['click'] },
   ]);
@@ -926,10 +926,14 @@ test('a click with no confirmed result holds dependent steps for reconciliation'
   const approval = db.requestApproval(run.id, device.id, 'Add an item', now)!;
   assert.ok(db.command('owner', task.id, task.version, { action: 'approve', approvalId: String(approval.id) }));
   assert.equal(db.consumeApproval(run.id, device.id, String(approval.id), now), true);
-  const outcome = { status: 'waiting_user', result: 'Check the application before retrying.' } as const;
+  const outcome = { status: 'succeeded', result: 'Clicked', artifact: {
+    name: 'application-observation.txt', text: 'Add button still visible',
+  } } as const;
   assert.equal(db.finish(run.id, device.id, now, outcome), true);
   assert.equal(db.finish(run.id, device.id, now, outcome), true);
   assert.equal(db.get('owner', task.id)?.status, 'waiting_user');
+  assert.match(db.get('owner', task.id)?.result ?? '', /did not verify the expected visible text/);
+  assert.equal(db.snapshot('owner').artifacts.length, 0);
   assert.equal(db.get('owner', String(workflow.steps[1].taskId))?.status, 'waiting_dependency');
   assert.equal(db.claim('owner', 'project', device.id, now, 45_000, '/observe '), undefined);
   assert.equal(db.snapshot('owner').tasks.find(item => item.id === task.id)?.desktopReconciliationRequired, true);

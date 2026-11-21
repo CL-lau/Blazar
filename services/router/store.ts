@@ -1434,6 +1434,14 @@ export class TaskStore {
             !outcome.additionalArtifacts[0].text.trim())) {
         outcome = { status: 'failed', result: 'The semantic window observation was unavailable.' };
       }
+      if (outcome.status === 'succeeded' && click) {
+        const action = this.runInputs.desktopAction({ id: taskId, goal: String(row.goal) });
+        if (action?.kind === 'desktop.click' && action.expectedText &&
+            (outcome.artifact?.name !== 'application-observation.txt' || outcome.artifact.mime ||
+              !outcome.artifact.text.includes(action.expectedText))) {
+          outcome = { status: 'waiting_user', result: 'The click may have been applied. The device did not verify the expected visible text.' };
+        }
+      }
       if (outcome.status === 'succeeded' && observing) {
         const action = observation;
         if (action?.kind === 'desktop.observe' && action.mode === 'window' && action.expectedText &&
