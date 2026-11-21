@@ -10,7 +10,7 @@ import { resolveWorker } from '../../packages/workers/registry.ts';
 
 const executable = process.env.BLAZAR_TEST_QWEN_EXECUTABLE;
 
-test('Qwen Code completes, restores, and cancels ACP tasks with the configured local model', {
+test('Qwen Code completes, restores, authorizes reads, and cancels ACP tasks', {
   skip: !executable && 'Set BLAZAR_TEST_QWEN_EXECUTABLE to an installed qwen executable',
 }, async t => {
   const root = await realpath(await mkdtemp(join(tmpdir(), 'blazar-qwen-runtime-')));
@@ -18,8 +18,11 @@ test('Qwen Code completes, restores, and cancels ACP tasks with the configured l
   const qwenConfig = join(root, 'config');
   const workspace = join(root, 'workspace');
   await Promise.all([mkdir(qwenConfig), mkdir(workspace)]);
+  const fixtureFile = join(workspace, 'review.txt');
+  await writeFile(fixtureFile, 'QWEN_APPROVED_FILE_CONTENT');
 
   const prompts: string[] = [];
+  let toolRequested = false;
   const streaming = Promise.withResolvers<void>();
   const streamClosed = Promise.withResolvers<void>();
   const server = createServer(async (request, response) => {
@@ -42,7 +45,14 @@ test('Qwen Code completes, restores, and cancels ACP tasks with the configured l
       streaming.resolve();
       return;
     }
-    const choices = [
+    const useTool = body.includes('Read the approval fixture') && !toolRequested;
+    if (useTool) toolRequested = true;
+    const choices = useTool ? [
+      [{ index: 0, delta: { role: 'assistant', tool_calls: [{ index: 0, id: 'call_fixture_read',
+        type: 'function', function: { name: 'read_file', arguments: JSON.stringify({ file_path: fixtureFile }) } }] },
+        finish_reason: null }],
+      [{ index: 0, delta: {}, finish_reason: 'tool_calls' }],
+    ] : [
       [{ index: 0, delta: { role: 'assistant', content: 'QWEN_ACP_OK' }, finish_reason: null }],
       [{ index: 0, delta: {}, finish_reason: 'stop' }],
     ];
@@ -76,6 +86,7 @@ test('Qwen Code completes, restores, and cancels ACP tasks with the configured l
   });
   await writeFile(join(qwenConfig, 'settings.json'), JSON.stringify({
     security: { auth: { selectedType: 'openai' } },
+    permissions: { ask: ['ReadFile'] },
     general: { enableAutoUpdate: false }, telemetry: { enabled: false },
   }));
   const worker = await resolveWorker('qwen', undefined, executable);
@@ -95,6 +106,26 @@ test('Qwen Code completes, restores, and cancels ACP tasks with the configured l
   }, signal, undefined, undefined, { resumeId: session, onCompleted: id => assert.equal(id, session) }), 'QWEN_ACP_OK');
   const resumed = prompts.find(body => body.includes('Continue the fixture conversation'));
   assert.ok(resumed?.includes('Return the fixture response'), 'Restored model context must include the previous user turn');
+  const approvals: string[] = [];
+  assert.equal(await runAcp(worker, workspace, {
+    goal: 'Read the approval fixture', instructions: [], predecessors: [],
+  }, signal, async summary => {
+    approvals.push(summary);
+    return 'approved';
+  }), 'QWEN_ACP_OK');
+  assert.equal(approvals.length, 1);
+  assert.match(approvals[0], /"review\.txt"/);
+  assert.ok(prompts.some(body => body.includes('QWEN_APPROVED_FILE_CONTENT')));
+  const firstDeniedPrompt = prompts.length;
+  toolRequested = false;
+  await assert.rejects(runAcp(worker, workspace, {
+    goal: 'Read the approval fixture without approval', instructions: [], predecessors: [],
+  }, signal, async summary => {
+    approvals.push(summary);
+    return 'denied';
+  }), /did not return a completed response/);
+  assert.equal(approvals.length, 2);
+  assert.ok(!prompts.slice(firstDeniedPrompt).some(body => body.includes('QWEN_APPROVED_FILE_CONTENT')));
   const stop = new AbortController();
   const interrupted = assert.rejects(runAcp(worker, workspace, {
     goal: 'Cancel this fixture run', instructions: [], predecessors: [],
