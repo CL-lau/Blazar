@@ -708,3 +708,23 @@ test('workspace Worker concurrency counts active leases until the device acknowl
   assert.equal(get('second-device', 'after-ack')?.task.id, second.id);
   assert.deepEqual(store.workspaceWorkerPolicies('owner'), [{ workspace: 'project', protocols: ['acp'], maxConcurrent: 1 }]);
 });
+
+test('an approval timeout occupies a workspace Worker slot until the original device stops', t => {
+  const db = new TaskStore(':memory:');
+  t.after(() => db.close());
+  const now = Date.now();
+  const worker = { protocol: 'acp', label: 'Fixture' };
+  db.setWorkspaceWorkerPolicy('owner', 'project', ['acp'], 1);
+  db.create('owner', 'fixture', 'first', 'project', 'Prepare notes');
+  const run = db.claim('owner', 'project', 'first', now, 400_000, '', '/preview ', undefined, worker)!.run;
+  const expiry = Number(db.requestApproval(run.id, run.device, 'Review notes', now)?.expires);
+  assert.equal(db.expire(expiry), 1);
+
+  const queued = db.create('owner', 'fixture', 'second', 'project', 'Revise the document');
+  const claim = () => db.claim('owner', 'project', 'second', expiry, 45_000, '', '/preview ', undefined, worker);
+  assert.equal(claim(), undefined);
+  assert.equal(db.acknowledgeStop(run.id, 'second', expiry), false);
+  assert.equal(claim(), undefined);
+  assert.equal(db.acknowledgeStop(run.id, run.device, expiry), true);
+  assert.equal(claim()?.task.id, queued.id);
+});

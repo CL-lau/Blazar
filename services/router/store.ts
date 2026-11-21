@@ -205,7 +205,7 @@ export class TaskStore {
         last_output INTEGER NOT NULL, stalled INTEGER NOT NULL DEFAULT 0
       );
       CREATE TABLE IF NOT EXISTS expired_approval_stop (
-        run_id TEXT PRIMARY KEY, device_id TEXT NOT NULL, expires INTEGER NOT NULL
+        run_id TEXT PRIMARY KEY, device_id TEXT NOT NULL, expires INTEGER NOT NULL, task_id TEXT REFERENCES task(id)
       );
       CREATE INDEX IF NOT EXISTS expired_approval_stop_device ON expired_approval_stop(device_id);
       CREATE TABLE IF NOT EXISTS run_deadline (
@@ -320,6 +320,15 @@ export class TaskStore {
       `));
     }
     this.db.exec("CREATE INDEX IF NOT EXISTS routing_workspace ON routing_decision(owner,caller,json_extract(request,'$[0]'))");
+    if (!this.db.prepare("SELECT 1 FROM pragma_table_info('expired_approval_stop') WHERE name='task_id'").get()) {
+      this.transaction(() => this.db.exec(`
+        ALTER TABLE expired_approval_stop ADD COLUMN task_id TEXT REFERENCES task(id);
+        UPDATE expired_approval_stop SET task_id=(
+          SELECT e.taskId FROM event e WHERE e.type='approval.expired'
+          AND json_extract(e.data,'$.runId')=expired_approval_stop.run_id ORDER BY e.seq DESC LIMIT 1
+        );
+      `));
+    }
     const workerColumns = new Set(this.db.prepare("SELECT name FROM pragma_table_info('device_worker')").all()
       .map(column => column.name));
     if (!workerColumns.has('revision')) this.db.exec('ALTER TABLE device_worker ADD COLUMN revision TEXT');
@@ -1542,7 +1551,11 @@ export class TaskStore {
         .get(device, now, device, now)) return undefined;
       let workerHasCapacity = true;
       if (policy?.max_concurrent != null && goalPrefix !== '/preview ' && goalPrefix !== '/observe ') {
-        const active = this.db.prepare(`SELECT COUNT(*) AS count FROM run r JOIN task t ON t.id=r.taskId
+        const active = this.db.prepare(`WITH occupied AS (
+          SELECT taskId AS task_id,expires FROM run
+          UNION ALL SELECT task_id,expires FROM expired_approval_stop
+        )
+          SELECT COUNT(*) AS count FROM occupied r JOIN task t ON t.id=r.task_id
           WHERE t.owner=? AND t.workspace=? AND r.expires>?
           AND substr(t.goal,1,9) NOT IN ('/observe ','/preview ') AND substr(t.goal,1,7)<>'/click '`)
           .get(owner, workspace, now);
@@ -1953,8 +1966,8 @@ export class TaskStore {
       for (const approval of approvals) {
         const taskId = String(approval.taskId);
         if (Number(approval.leaseExpires) > now) {
-          this.db.prepare('INSERT INTO expired_approval_stop VALUES(?,?,?)')
-            .run(approval.runId!, approval.device!, approval.leaseExpires!);
+          this.db.prepare('INSERT INTO expired_approval_stop(run_id,device_id,expires,task_id) VALUES(?,?,?,?)')
+            .run(approval.runId!, approval.device!, approval.leaseExpires!, taskId);
         }
         this.db.prepare('DELETE FROM run WHERE id=?').run(approval.runId!);
         this.db.prepare("UPDATE task SET status='failed',result=? WHERE id=?")
