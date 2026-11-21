@@ -857,7 +857,7 @@ export class TaskStore {
   }
 
   create(owner: string, source: string, key: string, workspace: string, goal: string, desktopDevice?: string,
-         memoryInputs?: TaskMemoryInput[], appEvidence?: AppEvidence, attachments?: TaskAttachment[]): Task {
+         memoryInputs?: TaskMemoryInput[], appEvidence?: AppEvidence, attachments?: TaskAttachment[], copiedFromTask?: string): Task {
     return this.transaction(() => {
       const parameters: unknown[] = appEvidence
         ? [workspace, goal, { query: appEvidence.query, sources: appEvidence.sources, usePersonalMemory: Boolean(memoryInputs) }]
@@ -868,6 +868,7 @@ export class TaskStore {
         name, sha256: createHash('sha256').update(text).digest('hex'), size: Buffer.byteLength(text),
       }));
       if (attachmentRefs?.length) parameters.push({ attachments: attachmentRefs });
+      if (copiedFromTask) parameters.push({ copiedFromTask });
       const fingerprint = JSON.stringify(parameters);
       const receipt = this.db.prepare('SELECT fingerprint, taskId FROM receipt WHERE owner=? AND source=? AND key=?')
         .get(owner, source, key);
@@ -895,6 +896,7 @@ export class TaskStore {
         ...(memoryInputs?.length && { memoryInputs: memoryInputs.map(({ id, version }) => ({ id, version })) }),
         ...(appEvidence && { appEvidence: appEvidence.refs }),
         ...(attachmentRefs?.length && { attachments: attachmentRefs }),
+        ...(copiedFromTask && { copiedFromTask }),
       });
       return this.get(owner, id)!;
     });

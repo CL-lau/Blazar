@@ -1183,7 +1183,20 @@ export function routerServer(store: TaskStore, config: { owner: string; token: s
             throw new RequestError(400, 'Attachments require a Worker task');
           }
           const attachments = data.attachments === undefined ? undefined : textAttachments(data.attachments);
-          const task = store.create(owner, 'desktop-api', key, workspace, goal, desktopDevice, memoryInputs, appEvidence, attachments);
+          let copiedFromTask;
+          if (data.copiedFromTask !== undefined) {
+            if (!admin) throw new RequestError(403, 'Administrator required');
+            copiedFromTask = requiredText(data.copiedFromTask, 'source task ID', 36);
+            if (!/^[a-f0-9-]{36}$/.test(copiedFromTask)) throw new RequestError(400, 'Invalid source task ID');
+            if (store.get(owner, copiedFromTask)?.workspace !== workspace) {
+              throw new RequestError(404, 'Source task not found in this workspace');
+            }
+            if (store.appEvidence(copiedFromTask) && !appEvidence) {
+              throw new RequestError(400, 'Select application memory for the new task');
+            }
+          }
+          const task = store.create(owner, 'desktop-api', key, workspace, goal, desktopDevice, memoryInputs,
+            appEvidence, attachments, copiedFromTask);
           metrics.observe('event', performance.now() - started);
           reply(response, 202, taskResponse(task));
           return;

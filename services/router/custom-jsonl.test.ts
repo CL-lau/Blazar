@@ -519,6 +519,27 @@ test('a registered JSONL extension executes a real subprocess through Router and
   assert.equal(store.get('owner', recoveryTask.id)?.version, priorVersion);
   assert.equal(await client.runOnce(AbortSignal.timeout(5_000)), false);
 
+  const copyTask = (key: string, data: object, token = 'local') => fetch(base + '/v1/events', {
+    method: 'POST', headers: {
+      Authorization: 'Bearer ' + token, 'Content-Type': 'application/json', 'Idempotency-Key': key,
+    }, body: JSON.stringify({
+      workspace: 'project', text: 'Use the new review template', copiedFromTask: recoveryTask.id, ...data,
+    }),
+  });
+  assert.equal((await copyTask('copy-by-phone', {}, phone.token)).status, 403);
+  assert.equal((await copyTask('copy-other-workspace', { workspace: 'another-project' })).status, 404);
+  assert.equal((await copyTask('copy-without-evidence', {})).status, 400);
+  const copyInput = { appMemory: { query: 'review', sources: [recoveryConnection] } };
+  const copied = await copyTask('copy-with-current-evidence', copyInput);
+  assert.equal(copied.status, 202);
+  const fresh = await copied.json();
+  assert.notEqual(fresh.id, recoveryTask.id);
+  assert.equal((await (await copyTask('copy-with-current-evidence', copyInput)).json()).id, fresh.id);
+  assert.equal(store.timeline('owner', fresh.id)?.events[0].data.copiedFromTask, recoveryTask.id);
+  assert.equal(store.get('owner', recoveryTask.id)?.version, priorVersion);
+  assert.deepEqual(store.appEvidence(fresh.id)?.map(item => item.id),
+    memory.recall('owner', 'project', 'review', [recoveryConnection], false, false).map(item => item.id));
+
   const personalArtifact = store.snapshot('owner').artifacts.find(item => item.taskId === task.id)!;
   const personalArtifactPath = '/v1/artifacts/' + personalArtifact.id;
   assert.equal((await readAttachment(personalArtifactPath, phone.token)).status, 200);

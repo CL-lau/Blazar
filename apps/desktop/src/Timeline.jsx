@@ -54,6 +54,7 @@ export function Timeline({ taskId, token, cursor }) {
         return <li key={event.seq}>
           <strong>{labels[event.type] ?? event.type}</strong>
           {detail && <p>{detail}</p>}
+          {data?.copiedFromTask && <p>Copied goal from task <code>{data.copiedFromTask}</code></p>}
         </li>;
       })}</ul>
       {(older ? older.before : latest?.before) && <button disabled={loading} onClick={loadOlder}>Load older activity</button>}

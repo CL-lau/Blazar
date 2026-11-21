@@ -32,6 +32,7 @@ function App() {
   const [selected, setSelected] = useState('');
   const [workspace, setWorkspace] = useState('default');
   const [goal, setGoal] = useState('');
+  const [copiedFromTask, setCopiedFromTask] = useState(null);
   const [attachments, setAttachments] = useState([]);
   const [usePersonalMemory, setUsePersonalMemory] = useState(false);
   const [answer, setAnswer] = useState('');
@@ -150,6 +151,22 @@ function App() {
     setAnswer('');
     await reload();
   });
+  function startDraftFromTask() {
+    setGoal(task.goal);
+    setWorkspace(task.workspace);
+    setCopiedFromTask({ id: task.id, requiresAppMemory: task.usesAppMemory === true });
+    setUsePersonalMemory(false);
+    setMemorySources([]);
+    setMemoryQuery('');
+    setAttachments([]);
+    setAnswer('');
+    setMemoryAnswer(null);
+    setFollowUp(null);
+    setPlan(null);
+    setPreview(null);
+    setKey(crypto.randomUUID());
+    setSelected('');
+  }
   const reload = () => refreshSnapshot(connected);
   const command = (action, extra = {}) => submit(async () => {
     await api(`/tasks/${task.id}/commands`, {
@@ -256,6 +273,9 @@ function App() {
                 {task.personalMemoryUnavailable && <p role="status">
                   The personal memory used by this task is unavailable. Create a new task with the current memory.
                 </p>}
+                {memoryUnavailable && <button type="button" disabled={busy} onClick={startDraftFromTask}>
+                  Create new task from this goal
+                </button>}
                 {progress && <p role="status">{progress.message}</p>}
                 {task.result && <pre>{task.result}</pre>}
                 {task.usesAppMemory && <section aria-label="Paired phone result access">
@@ -386,6 +406,7 @@ function App() {
                   const result = await api(ask ? '/conversation' : '/events', {
                     method: 'POST', key, body: { workspace, text: goal, usePersonalMemory, appMemory,
                       ...(!ask && attachments.length > 0 && { attachments }),
+                      ...(!ask && copiedFromTask && { copiedFromTask: copiedFromTask.id }),
                     },
                   });
                   if (ask && result.kind !== 'create_task') {
@@ -399,6 +420,7 @@ function App() {
                   setAnswer('');
                   setPlan(null);
                   setGoal('');
+                  setCopiedFromTask(null);
                   setAttachments([]);
                   setKey(crypto.randomUUID());
                   setSelected(created.id);
@@ -406,7 +428,10 @@ function App() {
                 });
               }}>
                 <h2>New task</h2>
-                <label>Workspace<input value={workspace} onChange={event => {
+                {copiedFromTask && <p>{copiedFromTask.requiresAppMemory
+                  ? 'Goal copied from an application-backed task. Select current app sources to create the new task.'
+                  : 'Goal copied from another task. Select any current memory sources to include.'}</p>}
+                <label>Workspace<input value={workspace} readOnly={Boolean(copiedFromTask)} onChange={event => {
                   setWorkspace(event.target.value);
                   setMemorySources([]);
                   setMemoryAnswer(null);
@@ -434,12 +459,20 @@ function App() {
                       setKey(crypto.randomUUID());
                     }}>Remove</button>
                   </li>)}</ul>}
-                <button className="primary" disabled={busy || !workspace.trim() || !goal.trim()}>Create task</button>
+                <button className="primary" disabled={busy || copiedFromTask?.requiresAppMemory || !workspace.trim() || !goal.trim()}>Create task</button>
+                {copiedFromTask && <button type="button" disabled={busy} onClick={() => {
+                  setCopiedFromTask(null);
+                  setGoal('');
+                  setAttachments([]);
+                  setMemorySources([]);
+                  setMemoryQuery('');
+                  setKey(crypto.randomUUID());
+                }}>Discard copied draft</button>}
                 <label className="checkbox-label"><input type="checkbox" checked={usePersonalMemory} onChange={event => {
                   setUsePersonalMemory(event.target.checked);
                   setKey(crypto.randomUUID());
                 }} /> Include personal memory</label>
-                <button type="submit" value="ask" disabled={busy || attachments.length > 0 || !workspace.trim() || !goal.trim()}>Ask Blazar</button>
+                <button type="submit" value="ask" disabled={busy || Boolean(copiedFromTask) || attachments.length > 0 || !workspace.trim() || !goal.trim()}>Ask Blazar</button>
                 {availableSources.length > 0 && <details>
                   <summary>Ask with app memory</summary>
                   <label>Search terms<input value={memoryQuery} maxLength={256} onChange={event => {
@@ -455,7 +488,7 @@ function App() {
                       setKey(crypto.randomUUID());
                     }} /> {account.app} · {account.account}
                   </label>)}
-                  <button type="submit" value="app-memory" disabled={busy || attachments.length > 0 || !goal.trim() || goal.trim().length > 4000 ||
+                  <button type="submit" value="app-memory" disabled={busy || Boolean(copiedFromTask) || attachments.length > 0 || !goal.trim() || goal.trim().length > 4000 ||
                     !memoryQuery.trim() || !chosenSources.length || chosenSources.length > 25}>Ask with selected apps</button>
                   <button type="submit" value="app-task" disabled={busy || !goal.trim() ||
                     !memoryQuery.trim() || !chosenSources.length || chosenSources.length > 25}>Create task with selected apps</button>
