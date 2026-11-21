@@ -194,6 +194,15 @@ authenticated page, `storageState` can point to an account-specific local Playwr
 The form accepts one approved string field and one same-origin POST. A matching 2xx response
 completes the write. A lost response or redirect after submission leaves the result uncertain.
 
+To run the form on a separate computer, start `npm run device:browser` there. Set
+`BLAZAR_BROWSER_TOKEN`, `BLAZAR_BROWSER_TOOL`, `BLAZAR_BROWSER_URL`, `BLAZAR_BROWSER_SUBMIT_URL`,
+`BLAZAR_BROWSER_INPUT_LABEL`, `BLAZAR_BROWSER_INPUT_KEY` and `BLAZAR_BROWSER_BUTTON`. Optional
+`BLAZAR_BROWSER_STORAGE_STATE` points to the account state file on that computer.
+The service binds to loopback on port 4201 by default. For a separate Router host, expose only
+`/mcp` through an authenticated private network and an HTTPS reverse proxy. Configure that endpoint
+as an MCP backend or fallback in Router, with a `BLAZAR_MCP_TOKEN_*` credential variable containing
+the device service token. Keep this credential exclusive to the Router because it authorizes form submission.
+
 
 
 Register the account in the desktop app with app type `mcp`, then use `review` as the document ID. For a server requiring bearer authentication, set `tokenEnv` to the name of a `BLAZAR_MCP_TOKEN_*` environment variable. The connector reads text resources by alias.

@@ -25,7 +25,8 @@
     "ios:test": "npm run ios:project && node apps/ios/scripts/test-simulator.mjs",
     "typecheck": "tsc --project tsconfig.json",
     "macos:setup-router": "node deploy/macos/setup-router.mjs",
-    "device:acp-registry": "node --experimental-strip-types services/device/acp-registry.ts"
+    "device:acp-registry": "node --experimental-strip-types services/device/acp-registry.ts",
+    "device:browser": "node --experimental-strip-types services/device/browser-main.ts"
   },
   "dependencies": {
     "@agentclientprotocol/sdk": "2.8.0",

@@ -250,7 +250,7 @@ test('Router requires explicit confirmation for a configured application write',
   assert.equal(dispatchedIds.length, 2);
 });
 
-test('a browser form fallback submits approved data once after MCP is unavailable', {
+test('local browser fallback and a browser device submit only authorized form data', {
   skip: !process.env.BLAZAR_TEST_BROWSER_ACTIONS,
 }, async t => {
   const { createServer } = await import('node:http');
@@ -290,4 +290,26 @@ test('a browser form fallback submits approved data once after MCP is unavailabl
   assert.deepEqual(received, []);
   assert.deepEqual(await run(true), { status: 'succeeded', output: { status: 200 } });
   assert.deepEqual(received, ['title=Approved+title']);
+
+  const { browserDeviceServer } = await import('../device/browser-service.ts');
+  const { mcpActionBackend } = await import('../../packages/apps/mcp-actions.ts');
+  const token = 'fixture-device-token-with-more-than-32-characters';
+  const device = browserDeviceServer({ token, tool: 'update', form: {
+    id: 'device-browser', capability: definition.capability, url: base + '/edit', submitUrl: base + '/save',
+    button: 'Save', inputLabel: 'Title', inputKey: 'title',
+  } });
+  device.listen(0, '127.0.0.1');
+  await once(device, 'listening');
+  t.after(() => new Promise<void>(resolve => device.close(() => resolve())));
+  const deviceAddress = device.address();
+  assert(deviceAddress && typeof deviceAddress !== 'string');
+  const endpoint = 'http://127.0.0.1:' + deviceAddress.port + '/mcp';
+  const deviceAction = { ...action, capability: definition.capability, input: { title: 'Approved on device' } };
+  const invokeDevice = (credential: string) => invokeApplicationAction(deviceAction, [mcpActionBackend({
+    id: 'device', connectionId: action.connectionId, capability: definition.capability,
+    effect: 'write', endpoint, tool: 'update', token: credential,
+  })], async () => true, AbortSignal.timeout(10_000));
+  assert.deepEqual(await invokeDevice('wrong'), { status: 'denied' });
+  assert.equal((await invokeDevice(token)).status, 'succeeded');
+  assert.deepEqual(received, ['title=Approved+title', 'title=Approved+on+device']);
 });
