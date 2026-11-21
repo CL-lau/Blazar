@@ -111,6 +111,14 @@ async function handleMemory(
     }
   }
 
+  const usagePath = /^\/v1\/app-connections\/([a-f0-9-]{36})\/usage$/.exec(pathname);
+  if (usagePath && method === 'GET') {
+    const usage = store.appUsage(owner, usagePath[1]);
+    if (!usage) throw new RequestError(404, 'Connection not found');
+    reply(response, 200, { usage });
+    return true;
+  }
+
   const importPath = /^\/v1\/app-connections\/([a-f0-9-]{36})\/(import-document|test-document)$/.exec(pathname);
   if (importPath && method === 'POST') {
     const data = await jsonObject(request);
@@ -124,22 +132,28 @@ async function handleMemory(
     }
     if (store.resourceRevoked(importPath[1], document)) throw new RequestError(409, 'Document access was revoked');
     if (!reader.accepts(document)) throw new RequestError(400, 'Invalid document reference');
+    const testAccess = importPath[2] === 'test-document';
+    const usageId = store.startAppUsage(importPath[1], workspace, testAccess ? 'test' : 'import');
     let content;
     try {
       content = await reader.read(document, AbortSignal.timeout(10_000));
     } catch (error) {
+      store.finishAppUsage(usageId, 'failed');
       throw new RequestError(502, error instanceof DocumentUnavailable ? error.message : 'Document read failed');
     }
-    if (importPath[2] === 'test-document') {
+    if (testAccess) {
       if (!store.connection(owner, importPath[1], workspace) || store.resourceRevoked(importPath[1], document)) {
+        store.finishAppUsage(usageId, 'access_changed');
         throw new RequestError(409, 'Source access changed during the test');
       }
+      store.finishAppUsage(usageId, 'succeeded');
       reply(response, 200, { readable: true });
       return true;
     }
     const id = store.importDocument(owner, workspace, content.text, {
       connection: importPath[1], resource: document, revision: content.revision,
     });
+    store.finishAppUsage(usageId, id ? 'succeeded' : 'access_changed');
     if (!id) throw new RequestError(409, 'Source access changed during import');
     reply(response, 200, { id, revision: content.revision });
     return true;

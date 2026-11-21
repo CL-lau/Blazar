@@ -28,6 +28,11 @@ export class MemoryStore {
         connection TEXT NOT NULL REFERENCES app_connection(id), resource TEXT NOT NULL,
         PRIMARY KEY(connection,resource)
       );
+      CREATE TABLE IF NOT EXISTS app_usage (
+        id INTEGER PRIMARY KEY, connection TEXT NOT NULL REFERENCES app_connection(id),
+        workspace TEXT NOT NULL, operation TEXT NOT NULL, status TEXT NOT NULL, started INTEGER NOT NULL
+      );
+      CREATE INDEX IF NOT EXISTS app_usage_connection ON app_usage(connection,id);
       CREATE TABLE IF NOT EXISTS memory (
         id TEXT PRIMARY KEY, owner TEXT NOT NULL, workspace TEXT NOT NULL,
         body TEXT NOT NULL, connection TEXT REFERENCES app_connection(id),
@@ -132,6 +137,21 @@ export class MemoryStore {
     return this.db.prepare(`SELECT app,account FROM app_connection WHERE owner=? AND id=? AND active=1
       AND (? IS NULL OR workspace IS NULL OR workspace=?)`)
       .get(owner, id, workspace ?? null, workspace ?? null) as { app: string; account: string } | undefined;
+  }
+
+  startAppUsage(connection: string, workspace: string, operation: 'import' | 'test') {
+    return this.db.prepare("INSERT INTO app_usage(connection,workspace,operation,status,started) VALUES(?,?,?,'started',?)")
+      .run(connection, workspace, operation, Date.now()).lastInsertRowid;
+  }
+
+  finishAppUsage(id: number | bigint, status: 'succeeded' | 'failed' | 'access_changed') {
+    this.db.prepare('UPDATE app_usage SET status=? WHERE id=?').run(status, id);
+  }
+
+  appUsage(owner: string, connection: string) {
+    if (!this.db.prepare('SELECT 1 FROM app_connection WHERE owner=? AND id=?').get(owner, connection)) return undefined;
+    return this.db.prepare('SELECT id,workspace,operation,status,started FROM app_usage WHERE connection=? ORDER BY id DESC LIMIT 50')
+      .all(connection);
   }
 
   importDocument(owner: string, workspace: string, body: string, source: ResourceRef): string | undefined {

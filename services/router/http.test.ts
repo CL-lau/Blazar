@@ -125,6 +125,14 @@ test('Router authenticates, deduplicates commands and replays task changes over 
   assert.deepEqual(memory.recall('test', 'private', 'findings', [scopedConnection]), []);
   assert.equal((await post(scopedImport, 'wrong-scope', { workspace: 'demo', document: 'doc123' })).status, 404);
   assert.equal((await post(scopedImport, 'right-scope', { workspace: 'private', document: 'doc123' })).status, 200);
+  const usagePath = '/v1/app-connections/' + scopedConnection + '/usage';
+  assert.equal((await fetch(url + usagePath)).status, 401);
+  const usage = await (await fetch(url + usagePath, { headers })).json();
+  assert.deepEqual(usage.usage.map(({ operation, status, workspace }) => ({ operation, status, workspace })), [
+    { operation: 'import', status: 'succeeded', workspace: 'private' },
+    { operation: 'test', status: 'succeeded', workspace: 'private' },
+  ]);
+  assert.doesNotMatch(JSON.stringify(usage), /doc123|Design review findings/);
   const { id: connection } = await registered.json();
   const entry = await post('/v1/memory', 'memory', {
     workspace: 'demo', body: 'Approved review template',

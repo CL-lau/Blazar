@@ -11,6 +11,7 @@ export function Knowledge({ token }) {
   const [error, setError] = useState('');
   const [notice, setNotice] = useState('');
   const [answer, setAnswer] = useState(null);
+  const [usage, setUsage] = useState(null);
 
   const request = (path, options) => callRouter(token, path, options);
 
@@ -139,8 +140,21 @@ export function Knowledge({ token }) {
               if (selected === connection.id) setSelected('');
               await refreshConnections();
             })}>Disconnect</button> : <small>Disconnected</small>}
+            <button type="button" onClick={() => perform(async () => {
+              const data = await request('/app-connections/' + connection.id + '/usage');
+              setUsage({ account: accountName(connection), items: data.usage });
+            })}>View usage</button>
           </li>
         ))}</ul>
+        {usage && <section aria-label="Application connection usage">
+          <h3>{usage.account}</h3>
+          {usage.items.length === 0 ? <p>No document activity yet.</p> : <ul>{usage.items.map(item => (
+            <li key={item.id}>
+              {item.operation === 'import' ? 'Document import' : 'Access test'} · {item.workspace} ·{' '}
+              {item.status.replaceAll('_', ' ')} · {new Date(item.started).toLocaleString()}
+            </li>
+          ))}</ul>}
+        </section>}
       </fieldset>
 
       {active.some(item => item.canImportDocument) && (
@@ -152,6 +166,7 @@ export function Knowledge({ token }) {
             const { connection, workspace, document } = Object.fromEntries(new FormData(form));
             const testAccess = event.nativeEvent.submitter?.value === 'test';
             void perform(async () => {
+              setUsage(null);
               await request('/app-connections/' + connection + (testAccess ? '/test-document' : '/import-document'), {
                 method: 'POST', body: { workspace, document },
               });
