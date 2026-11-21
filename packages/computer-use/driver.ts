@@ -18,12 +18,14 @@ export type DesktopSnapshot = {
   fingerprint: string;
   windowId?: string;
   pid?: number;
+  actionSession?: string;
 };
 
 export interface ComputerDriver {
   permissions(root: string, signal: AbortSignal): Promise<Record<string, string>>;
   windows(root: string, app: string, signal: AbortSignal): Promise<DesktopWindow[]>;
-  snapshot(root: string, app: string, signal: AbortSignal, windowId?: string): Promise<DesktopSnapshot>;
+  snapshot(root: string, app: string, signal: AbortSignal, windowId?: string, forAction?: boolean): Promise<DesktopSnapshot>;
   screenshot(root: string, app: string, windowId: string, path: string, signal: AbortSignal): Promise<void>;
-  click(root: string, reference: string, signal: AbortSignal): Promise<void>;
+  click(root: string, reference: string, signal: AbortSignal, actionSession?: string): Promise<void>;
+  releaseActionSession?(root: string, actionSession: string): Promise<void>;
 }

@@ -71,9 +71,6 @@ export function observationConfig(env: NodeJS.ProcessEnv, desktopLockPath?: stri
   if (!Array.isArray(visual) || visual.length > apps.size || visual.some(alias => !apps.has(alias))) {
     throw new Error('Configure visual capture with approved application aliases.');
   }
-  if (driverKind === 'cua' && [...buttons.values()].some(labels => labels.size)) {
-    throw new Error('The CUA observation driver does not support configured clicks.');
-  }
   return { executable, driver: driverKind === 'cua' ? cuaDesktop(executable) : agentDesktop(executable),
     apps, buttons, visualApps: new Set(visual), desktopLockPath,
     sessionLocked: process.platform === 'darwin' ? macSessionLocked : undefined };
@@ -260,29 +257,33 @@ export async function clickApp(config: ObservationConfig, root: string, goal: st
         throw new Error('The application changed after review. Request a new action.');
       }
     }
-    const current = await config.driver.snapshot(root, app, signal, windowId);
-    const latest = buttonIn(current.tree, label);
-    if (current.fingerprint !== initial.fingerprint || latest.path !== button.path ||
-        initial.windowId !== current.windowId || initial.pid !== current.pid) {
-      throw new Error('The application changed after review. Request a new action.');
-    }
-    await assertDesktopUnlocked(config, signal);
-    if (!await consume()) throw new Error('Desktop approval is no longer valid.');
-    signal.throwIfAborted();
+    const current = await config.driver.snapshot(root, app, signal, windowId, true);
     try {
-      await assertDesktopUnlocked(config, signal);
-      await config.driver.click(root, latest.ref, signal);
-      const refreshed = await config.driver.snapshot(root, app, signal, windowId);
-      if (initial.windowId !== refreshed.windowId || initial.pid !== refreshed.pid) throw new DesktopResultUnverified();
-      if (windowId) {
-        const verifiedWindow = await accessibleWindow(config, root, app, windowId, signal);
-        if (verifiedWindow.instance !== initialWindow?.instance) throw new DesktopResultUnverified();
+      const latest = buttonIn(current.tree, label);
+      if (current.fingerprint !== initial.fingerprint || latest.path !== button.path ||
+          initial.windowId !== current.windowId || initial.pid !== current.pid) {
+        throw new Error('The application changed after review. Request a new action.');
       }
-      const result = describeTree(refreshed.tree);
-      if (!result || result === summary || (expectedText && !result.includes(expectedText))) throw new DesktopResultUnverified();
-      return result;
-    } catch {
-      throw new DesktopResultUnverified();
+      await assertDesktopUnlocked(config, signal);
+      if (!await consume()) throw new Error('Desktop approval is no longer valid.');
+      signal.throwIfAborted();
+      try {
+        await assertDesktopUnlocked(config, signal);
+        await config.driver.click(root, latest.ref, signal, current.actionSession);
+        const refreshed = await config.driver.snapshot(root, app, signal, windowId);
+        if (initial.windowId !== refreshed.windowId || initial.pid !== refreshed.pid) throw new DesktopResultUnverified();
+        if (windowId) {
+          const verifiedWindow = await accessibleWindow(config, root, app, windowId, signal);
+          if (verifiedWindow.instance !== initialWindow?.instance) throw new DesktopResultUnverified();
+        }
+        const result = describeTree(refreshed.tree);
+        if (!result || result === summary || (expectedText && !result.includes(expectedText))) throw new DesktopResultUnverified();
+        return result;
+      } catch {
+        throw new DesktopResultUnverified();
+      }
+    } finally {
+      if (current.actionSession) await config.driver.releaseActionSession?.(root, current.actionSession);
     }
   });
 }

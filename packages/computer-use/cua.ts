@@ -1,4 +1,4 @@
-import { createHash } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import type { ComputerDriver, DesktopElement } from './driver.ts';
@@ -40,6 +40,10 @@ export function cuaDesktop(executable: string): ComputerDriver {
     return { accessibility: status(data?.accessibility), screen_recording: status(data?.screen_recording), automation: 'unknown' };
   }
 
+  async function releaseActionSession(root: string, session: string) {
+    await call(root, 'end_session', { session }, AbortSignal.timeout(2_000)).catch(() => {});
+  }
+
   return {
     permissions,
     async windows(root, app, signal) {
@@ -52,32 +56,43 @@ export function cuaDesktop(executable: string): ComputerDriver {
         instance,
       }));
     },
-    async snapshot(root, app, signal, windowId) {
+    async snapshot(root, app, signal, windowId, forAction) {
       const { pid } = await target(root, app, signal);
       const windows = await list(root, pid, signal);
       const matches = windowId ? windows.filter(window => 'w-' + window.window_id === windowId) : windows;
       if (matches.length !== 1) throw new Error('Choose one window from the current application inventory.');
       const id = matches[0].window_id;
-      const data = await call(root, 'get_window_state', {
-        pid, window_id: id, include_screenshot: false, tree_format: 'elements', max_elements: 200,
-      }, signal);
-      if (data?.pid !== pid || data?.window_id !== id || !Array.isArray(data.elements) || !data.elements.length) {
-        throw new Error('No application snapshot was available.');
+      const session = forAction ? 'blazar-' + randomUUID() : undefined;
+      try {
+        const data = await call(root, 'get_window_state', {
+          pid, window_id: id, include_screenshot: false, tree_format: 'elements', max_elements: 200, session,
+        }, signal);
+        if (data?.pid !== pid || data?.window_id !== id || !Array.isArray(data.elements) || !data.elements.length) {
+          throw new Error('No application snapshot was available.');
+        }
+        const tree: DesktopElement = { children: [] };
+        const elements = new Map<number, DesktopElement>();
+        for (const row of data.elements) {
+          if (!Number.isSafeInteger(row?.element_index) || elements.has(row.element_index)) continue;
+          const node: DesktopElement = {
+            role: typeof row.subrole === 'string' && /secure|password/i.test(row.subrole) ? row.subrole
+              : typeof row.role === 'string' ? row.role : undefined,
+            name: typeof row.label === 'string' ? row.label : undefined,
+            pressReference: row.role === 'AXButton' && Array.isArray(row.actions) && row.actions.includes('AXPress') &&
+              typeof row.element_token === 'string' && /^[a-zA-Z0-9_-]+:[0-9]+$/.test(row.element_token)
+              ? row.element_token : undefined,
+            children: [],
+          };
+          (elements.get(row.parent_index) ?? tree).children.push(node);
+          elements.set(row.element_index, node);
+        }
+        const snapshot = JSON.stringify(data.elements, (key, value) => key === 'element_token' ? undefined : value);
+        return { tree, fingerprint: createHash('sha256').update(snapshot).digest('hex'), windowId: 'w-' + id, pid,
+          actionSession: session };
+      } catch (error) {
+        if (session) await releaseActionSession(root, session);
+        throw error;
       }
-      const tree: DesktopElement = { children: [] };
-      const elements = new Map<number, DesktopElement>();
-      for (const row of data.elements) {
-        if (!Number.isSafeInteger(row?.element_index) || elements.has(row.element_index)) continue;
-        const node: DesktopElement = {
-          role: typeof row.role === 'string' ? row.role : undefined,
-          name: typeof row.label === 'string' ? row.label : undefined,
-          children: [],
-        };
-        (elements.get(row.parent_index) ?? tree).children.push(node);
-        elements.set(row.element_index, node);
-      }
-      const snapshot = JSON.stringify(data.elements, (key, value) => key === 'element_token' ? undefined : value);
-      return { tree, fingerprint: createHash('sha256').update(snapshot).digest('hex'), windowId: 'w-' + id, pid };
     },
     async screenshot(root, app, windowId, path, signal) {
       const { pid } = await target(root, app, signal);
@@ -91,6 +106,10 @@ export function cuaDesktop(executable: string): ComputerDriver {
         throw new Error('The CUA screenshot did not belong to the selected window.');
       }
     },
-    async click() { throw new Error('Clicks are unavailable for the CUA observation driver.'); },
+    async click(root, reference, signal, session) {
+      if (!session) throw new Error('The CUA click requires a fresh action session.');
+      await call(root, 'click', { element_token: reference, action: 'press', delivery_mode: 'background', session }, signal);
+    },
+    releaseActionSession,
   };
 }
