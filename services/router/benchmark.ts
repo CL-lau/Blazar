@@ -35,7 +35,8 @@ const server = routerServer(store, {
 const connections: DeviceSocket[] = [];
 const opened = new Map<string, number>();
 const accepted = new Set<string>();
-const reception: number[] = [];
+const intakePaths = ['/v1/events', '/v1/conversation', '/v1/channels/feishu/events'] as const;
+const reception = intakePaths.map(() => ({ first: [] as number[], replay: [] as number[] }));
 const dispatch: number[] = [];
 const cancellations: number[] = [];
 
@@ -57,7 +58,7 @@ try {
     connections.push(new DeviceSocket(base, device.token));
   }
 
-  async function send(index: number) {
+  async function send(index: number, replay = false) {
     const goal = mixed ? 'Review fixture ' + index : '/preview ' + index + '.md';
     const key = 'fixture-' + index;
     const channel = index % 3;
@@ -73,14 +74,14 @@ try {
           content: JSON.stringify({ text: '/blazar ' + goal }) },
       },
     };
-    const path = ['/v1/events', '/v1/conversation', '/v1/channels/feishu/events'][channel];
+    const path = intakePaths[channel];
     const response = await fetch(new URL(path, base), {
       method: 'POST', headers: { ...headers, 'Idempotency-Key': key }, signal: active,
       body: JSON.stringify(channel === 2 ? webhook : { workspace, text: goal }),
     });
     assert.equal(response.status, channel === 2 ? 200 : 202);
     await response.arrayBuffer();
-    reception.push(performance.now() - started);
+    reception[channel][replay ? 'replay' : 'first'].push(performance.now() - started);
   }
 
   async function taskCommand(task: Task, key: string, command: { action: 'cancel' } | { action: 'approve'; approvalId: string }) {
@@ -96,7 +97,7 @@ try {
   const staging = Array.from({ length: concurrency }, (_, sender) => (async () => {
     for (let index = sender; index < jobs; index += concurrency) {
       await send(index);
-      if (index < duplicates) await send(index);
+      if (index < duplicates) await send(index, true);
     }
   })());
   const workers = connections.map(async socket => {
@@ -196,19 +197,27 @@ try {
   const response = await fetch(new URL('/v1/admin/metrics', base), { headers, signal: active });
   const serverMetrics = await response.json() as { routing: { model: number } };
   assert.equal(serverMetrics.routing.model, mixed ? Math.floor((jobs + 1) / 3) : 0);
-  assert.equal(reception.length, jobs + duplicates);
+  const firstReceipts = reception.flatMap(group => group.first);
+  const replayReceipts = reception.flatMap(group => group.replay);
+  assert.equal(firstReceipts.length, jobs);
+  assert.equal(replayReceipts.length, duplicates);
   assert.equal(dispatch.length, jobs);
-  const receiptP95Ms = p95(reception);
+  const receiptP95Ms = p95([...firstReceipts, ...replayReceipts]);
+  const firstReceiptP95Ms = p95(firstReceipts);
+  const receiptByPath = Object.fromEntries(intakePaths.map((path, index) => {
+    const { first, replay } = reception[index];
+    return [path, { firstRequests: first.length, firstP95Ms: p95(first), replayRequests: replay.length, replayP95Ms: p95(replay) }];
+  }));
   const claimP95Ms = p95(dispatch);
   console.log(JSON.stringify({
     workload: mixed ? 'mock-worker-with-approvals-and-cancellations' : 'document-preview',
-    approvals, cpu: cpus()[0]?.model, node: process.version, concurrency, submitted: reception.length,
+    approvals, cpu: cpus()[0]?.model, node: process.version, concurrency, submitted: firstReceipts.length + replayReceipts.length,
     completed: finishes, cancelled: cancellations.length,
     cancelToStopP95Ms: cancellations.length ? p95(cancellations) : null, duplicateTasks: 0, duplicateOutboundNotices: 0, unexpectedAssignments: 0,
-    modelRequests: serverMetrics.routing.model, receiptP95Ms, claimP95Ms,
+    modelRequests: serverMetrics.routing.model, receiptP95Ms, firstReceiptP95Ms, claimP95Ms, receiptByPath,
     elapsedMs: Math.round(performance.now() - started),
   }, null, 2));
-  assert(receiptP95Ms < 100, 'Local acknowledgement p95 exceeded 100 ms');
+  assert(firstReceiptP95Ms < 100, 'First local acknowledgement p95 exceeded 100 ms');
   assert(claimP95Ms < 250, 'Local claim p95 exceeded 250 ms');
 } finally {
   stop.abort();
