@@ -4,6 +4,7 @@ import { PairingCode } from './PairingCode.jsx';
 import { Timeline } from './Timeline.jsx';
 import { Knowledge } from './Knowledge.jsx';
 import { ChannelLinks } from './ChannelLinks.jsx';
+import { DesktopControl } from './DesktopControl.jsx';
 import { Devices } from './Devices.jsx';
 import { RouterStatus } from './RouterStatus.jsx';
 import { callRouter } from './router.js';
@@ -205,6 +206,7 @@ function App() {
             <button onClick={() => setSettings('tasks')}>Tasks</button>
             <button onClick={() => { setMemoryAnswer(null); setPreview(null); setSettings('knowledge'); }}>Apps and memory</button>
             <button onClick={() => setSettings('devices')}>Execution devices</button>
+            <button onClick={() => setSettings('desktop-control')}>Desktop control</button>
             <button onClick={() => setSettings('router-status')}>Router status</button>
             <button onClick={() => submit(async () => {
               setClients((await api('/admin/mobile-clients')).clients);
@@ -236,6 +238,23 @@ function App() {
         <Knowledge token={connected} />
       ) : settings === 'devices' ? (
         <Devices token={connected} />
+      ) : settings === 'desktop-control' ? (
+        <DesktopControl targets={snapshot?.desktopTargets ?? []} tasks={snapshot?.tasks ?? []}
+          workspace={workspace} setWorkspace={setWorkspace} busy={busy}
+          createTask={async (body, key) => {
+            let task;
+            await submit(async () => {
+              task = await api('/events', { method: 'POST', key, body });
+              await reload();
+            });
+            return task;
+          }}
+          showTask={id => {
+            setSelected(id);
+            setInstruction('');
+            setPreview(null);
+            setSettings('tasks');
+          }} />
       ) : settings === 'router-status' ? (
         <RouterStatus token={connected} />
       ) : settings === 'phones' ? (
