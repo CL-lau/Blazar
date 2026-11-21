@@ -197,7 +197,7 @@ interface ComputerDriver {
 
 适配器接口为 `probe → start/resume → stream → steer/approve/cancel`，探测返回能力和账号状态。归一化事件包括 `started`、`progress`、`question`、`approval_requested`、`artifact`、`completed`、`failed`。基础能力是运行、产物、失败和取消。若工具无法原生中止，执行端按进程组收尾；若工具缺少实时追加能力，追加排入下一轮。适配器无法承载工作区所要求的权限约束时，Router 会选择符合条件的 Worker 或向用户说明需要更改配置。
 
-管理员可在桌面端按工作区限制新任务允许使用的 Worker 协议。Router 在设备可用性判断、任务领取和领取重放时核对设备声明的协议。策略变更保留运行中租约，文档预览和 Computer Use 仍按各自的设备能力派发。
+管理员可在桌面端按工作区限制新任务允许使用的 Worker 协议，并设置同时运行的 Worker 数量。等待停止确认的 Worker 仍占用名额。Router 在设备可用性判断、任务领取和领取重放时核对设备声明的协议。策略变更保留运行中租约，文档预览和 Computer Use 仍按各自的设备能力派发。
 
 用户可从 ACP Registry 添加 Agent，或注册本地命令和参数数组，选择 ACP 或版本化 JSONL。扩展 manifest 声明版本、协议、能力、工作区范围和所需环境变量名。配置页有连接测试、安装与认证状态、启停和删除。进程按 argv 启动，使用白名单环境变量，密钥从操作系统凭据存储注入。修改扩展配置只影响之后的运行；运行将适配器版本和配置快照持久化。
 

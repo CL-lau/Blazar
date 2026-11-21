@@ -463,9 +463,9 @@ test('Router authenticates, deduplicates commands and replays task changes over 
   assert.equal((await fetch(url + '/v1/admin/metrics', { headers: mobileHeaders })).status, 403);
   assert.equal((await fetch(url + '/v1/admin/workers', { headers: mobileHeaders })).status, 403);
   const policyPath = url + '/v1/admin/worker-policies';
-  const editPolicy = (protocols: unknown, auth: Record<string, string> = headers) => fetch(policyPath, {
+  const editPolicy = (protocols: unknown, auth: Record<string, string> = headers, maxConcurrent?: number) => fetch(policyPath, {
     method: 'PUT', headers: { ...auth, 'Content-Type': 'application/json' },
-    body: JSON.stringify({ workspace: 'policy-fixture', protocols }),
+    body: JSON.stringify({ workspace: 'policy-fixture', protocols, maxConcurrent }),
   });
   assert.equal((await editPolicy(['codex'], mobileHeaders)).status, 403);
   assert.equal((await editPolicy(['invalid'])).status, 400);
@@ -474,6 +474,9 @@ test('Router authenticates, deduplicates commands and replays task changes over 
   assert.deepEqual((await setPolicy.json()).policies, [{ workspace: 'policy-fixture', protocols: ['codex', 'jsonl'] }]);
   assert.deepEqual((await (await fetch(policyPath, { headers })).json()).policies,
     [{ workspace: 'policy-fixture', protocols: ['codex', 'jsonl'] }]);
+  assert.equal((await editPolicy(['codex'], headers, 0)).status, 400);
+  assert.deepEqual((await (await editPolicy(['codex'], headers, 2)).json()).policies,
+    [{ workspace: 'policy-fixture', protocols: ['codex'], maxConcurrent: 2 }]);
   assert.deepEqual((await (await editPolicy(null)).json()).policies, []);
   const catalog = await (await fetch(url + '/v1/admin/workers', { headers })).json();
   assert.deepEqual(catalog.extensionProtocols, ['acp', 'jsonl']);

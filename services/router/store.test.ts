@@ -611,3 +611,26 @@ test('workspace Worker policies filter readiness, fresh assignments, and claim r
   const other = store.create('other', 'test', 'other', 'restricted', 'Review other notes');
   assert.equal(store.claim('other', 'restricted', 'other-device', now, 45_000)?.task.id, other.id);
 });
+
+test('workspace Worker concurrency counts active leases until the device acknowledges stopping', t => {
+  const store = new TaskStore(':memory:');
+  t.after(() => store.close());
+  const now = Date.now();
+  const worker = { label: 'Approval fixture', protocol: 'acp' };
+  store.setWorkspaceWorkerPolicy('owner', 'project', ['acp'], 1);
+  const first = store.create('owner', 'fixture', 'first-slot', 'project', 'First task');
+  const second = store.create('owner', 'fixture', 'second-slot', 'project', 'Second task');
+  const get = (device: string, key: string) => store.claim('owner', 'project', device, now + 1, 45_000, '', '/preview ', key, worker);
+  const running = get('first-device', 'first')!;
+  assert.equal(running.task.id, first.id);
+  assert.equal(get('second-device', 'saturated'), undefined);
+  assert.equal(get('first-device', 'first')?.run.id, running.run.id);
+  assert.equal(store.get('owner', second.id)?.status, 'queued');
+  const preview = store.create('owner', 'fixture', 'preview-slot', 'project', '/preview notes.txt');
+  assert.equal(store.claim('owner', 'project', 'preview-device', now + 1, 45_000, '/preview ')?.task.id, preview.id);
+  assert.equal(store.command('owner', first.id, 1, { action: 'cancel' })?.status, 'cancelling');
+  assert.equal(get('second-device', 'until-ack'), undefined);
+  assert.equal(store.acknowledgeStop(running.run.id, 'first-device', now + 2), true);
+  assert.equal(get('second-device', 'after-ack')?.task.id, second.id);
+  assert.deepEqual(store.workspaceWorkerPolicies('owner'), [{ workspace: 'project', protocols: ['acp'], maxConcurrent: 1 }]);
+});

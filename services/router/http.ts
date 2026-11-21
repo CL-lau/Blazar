@@ -876,7 +876,12 @@ export function routerServer(store: TaskStore, config: { owner: string; token: s
               protocols.some(protocol => typeof protocol !== 'string' || !supported.has(protocol)))) {
             throw new RequestError(400, 'Invalid Worker protocols');
           }
-          store.setWorkspaceWorkerPolicy(owner, workspace, protocols === null ? null : [...new Set(protocols)].sort());
+          const maxConcurrent = data.maxConcurrent;
+          if (maxConcurrent !== undefined && (protocols === null || typeof maxConcurrent !== 'number' ||
+              !Number.isSafeInteger(maxConcurrent) || maxConcurrent < 1 || maxConcurrent > 100)) {
+            throw new RequestError(400, 'Invalid workspace Worker concurrency limit');
+          }
+          store.setWorkspaceWorkerPolicy(owner, workspace, protocols === null ? null : [...new Set(protocols)].sort(), maxConcurrent);
           store.updateDeviceReadiness(Date.now());
           reply(response, 200, { policies: store.workspaceWorkerPolicies(owner) });
           return;

@@ -154,7 +154,7 @@ export class TaskStore {
         device_id TEXT PRIMARY KEY REFERENCES device(id)
       );
       CREATE TABLE IF NOT EXISTS workspace_worker_policy (
-        owner TEXT NOT NULL, workspace TEXT NOT NULL, protocols TEXT NOT NULL, PRIMARY KEY(owner,workspace)
+        owner TEXT NOT NULL, workspace TEXT NOT NULL, protocols TEXT NOT NULL, max_concurrent INTEGER, PRIMARY KEY(owner,workspace)
       );
       CREATE TABLE IF NOT EXISTS device_worker (
         device_id TEXT PRIMARY KEY REFERENCES device(id), label TEXT NOT NULL, protocol TEXT NOT NULL,
@@ -300,6 +300,9 @@ export class TaskStore {
         WHERE status IN ('queued','waiting_device','waiting_dependency','waiting_review','running','waiting_user');
       CREATE INDEX IF NOT EXISTS event_task ON event(taskId,seq);
     `);
+    if (!this.db.prepare("SELECT 1 FROM pragma_table_info('workspace_worker_policy') WHERE name='max_concurrent'").get()) {
+      this.db.exec('ALTER TABLE workspace_worker_policy ADD COLUMN max_concurrent INTEGER');
+    }
     const workerColumns = new Set(this.db.prepare("SELECT name FROM pragma_table_info('device_worker')").all()
       .map(column => column.name));
     if (!workerColumns.has('revision')) this.db.exec('ALTER TABLE device_worker ADD COLUMN revision TEXT');
@@ -1329,17 +1332,20 @@ export class TaskStore {
   }
 
   workspaceWorkerPolicies(owner: string) {
-    return this.db.prepare('SELECT workspace,protocols FROM workspace_worker_policy WHERE owner=? ORDER BY workspace')
-      .all(owner).map(row => ({ workspace: String(row.workspace), protocols: JSON.parse(String(row.protocols)) as string[] }));
+    return this.db.prepare('SELECT workspace,protocols,max_concurrent FROM workspace_worker_policy WHERE owner=? ORDER BY workspace')
+      .all(owner).map(row => ({
+        workspace: String(row.workspace), protocols: JSON.parse(String(row.protocols)) as string[],
+        ...(row.max_concurrent !== null && { maxConcurrent: Number(row.max_concurrent) }),
+      }));
   }
 
-  setWorkspaceWorkerPolicy(owner: string, workspace: string, protocols: string[] | null) {
+  setWorkspaceWorkerPolicy(owner: string, workspace: string, protocols: string[] | null, maxConcurrent?: number) {
     if (protocols === null) {
       this.db.prepare('DELETE FROM workspace_worker_policy WHERE owner=? AND workspace=?').run(owner, workspace);
     } else {
-      this.db.prepare(`INSERT INTO workspace_worker_policy VALUES(?,?,?)
-        ON CONFLICT(owner,workspace) DO UPDATE SET protocols=excluded.protocols`)
-        .run(owner, workspace, JSON.stringify(protocols));
+      this.db.prepare(`INSERT INTO workspace_worker_policy(owner,workspace,protocols,max_concurrent) VALUES(?,?,?,?)
+        ON CONFLICT(owner,workspace) DO UPDATE SET protocols=excluded.protocols,max_concurrent=excluded.max_concurrent`)
+        .run(owner, workspace, JSON.stringify(protocols), maxConcurrent ?? null);
     }
   }
 
@@ -1467,7 +1473,7 @@ export class TaskStore {
     return this.transaction(() => {
       const identity = [owner, workspace, goalPrefix, excludingPrefix];
       const fingerprint = JSON.stringify(desktopApps ? [...identity, desktopApps] : worker ? [...identity, worker] : identity);
-      const policy = this.db.prepare('SELECT protocols FROM workspace_worker_policy WHERE owner=? AND workspace=?')
+      const policy = this.db.prepare('SELECT protocols,max_concurrent FROM workspace_worker_policy WHERE owner=? AND workspace=?')
         .get(owner, workspace);
       const workerPermitted = !policy || (worker && (JSON.parse(String(policy.protocols)) as string[]).includes(worker.protocol));
       if (requestId) {
@@ -1493,6 +1499,14 @@ export class TaskStore {
         }
       }
       if (this.db.prepare('SELECT 1 FROM device_pause WHERE device_id=?').get(device)) return undefined;
+      let workerHasCapacity = true;
+      if (policy?.max_concurrent != null && goalPrefix !== '/preview ' && goalPrefix !== '/observe ') {
+        const active = this.db.prepare(`SELECT COUNT(*) AS count FROM run r JOIN task t ON t.id=r.taskId
+          WHERE t.owner=? AND t.workspace=? AND r.expires>?
+          AND substr(t.goal,1,9) NOT IN ('/observe ','/preview ') AND substr(t.goal,1,7)<>'/click '`)
+          .get(owner, workspace, now);
+        workerHasCapacity = Number(active?.count) < Number(policy.max_concurrent);
+      }
       const task = this.db.prepare(`WITH eligible AS (
         SELECT task.rowid AS queue_order, task.*, COALESCE((
           SELECT json_extract(e.data,'$.channel') FROM event e
@@ -1519,7 +1533,7 @@ export class TaskStore {
         ON d.owner=eligible.owner AND d.workspace=eligible.workspace AND d.channel=eligible.origin_channel
         AND d.goal_prefix=? AND d.excluding_prefix=?
       ORDER BY COALESCE(d.last_dispatch,0), eligible.queue_order LIMIT 1`).get(
-        owner, workspace, goalPrefix, goalPrefix, goalPrefix, excludingPrefix, excludingPrefix, excludingPrefix, device, Number(Boolean(workerPermitted)), Number(allowWorkerInputs),
+        owner, workspace, goalPrefix, goalPrefix, goalPrefix, excludingPrefix, excludingPrefix, excludingPrefix, device, Number(Boolean(workerPermitted) && workerHasCapacity), Number(allowWorkerInputs),
         desktopApps ? JSON.stringify(desktopApps) : null, desktopApps ? JSON.stringify(desktopApps) : null,
         goalPrefix, excludingPrefix) as unknown as (Task & { origin_channel: string }) | undefined;
       if (!task) {

@@ -51,9 +51,9 @@ export function Devices({ token }) {
     ...(catalog?.presets.map(worker => worker.protocol) ?? []), ...(catalog?.extensionProtocols ?? []),
   ])].sort();
 
-  async function savePolicy(selected) {
+  async function savePolicy(selected, maxConcurrent) {
     const data = await callRouter(token, '/admin/worker-policies', {
-      method: 'PUT', body: { workspace: policyWorkspace.trim(), protocols: selected },
+      method: 'PUT', body: { workspace: policyWorkspace.trim(), protocols: selected, maxConcurrent },
     });
     setPolicies(data.policies);
   }
@@ -122,20 +122,24 @@ export function Devices({ token }) {
       <summary>Workspace Worker policies</summary>
       <form onSubmit={event => {
         event.preventDefault();
-        const selected = new FormData(event.currentTarget).getAll('protocol');
-        void update(() => savePolicy(selected));
+        const fields = new FormData(event.currentTarget);
+        const selected = fields.getAll('protocol');
+        const limit = fields.get('maxConcurrent');
+        void update(() => savePolicy(selected, limit ? Number(limit) : undefined));
       }}>
         <label>Workspace<input list="worker-policy-workspaces" value={policyWorkspace} maxLength={128}
           onChange={event => setPolicyWorkspace(event.target.value)} required /></label>
         <datalist id="worker-policy-workspaces">{[...new Set([
           ...devices.map(device => device.workspace), ...policies.map(item => item.workspace),
         ])].sort().map(workspace => <option value={workspace} key={workspace} />)}</datalist>
-        <fieldset key={JSON.stringify([policyWorkspace.trim(), policy?.protocols])} disabled={pending}>
+        <fieldset key={JSON.stringify([policyWorkspace.trim(), policy?.protocols, policy?.maxConcurrent])} disabled={pending}>
           <legend>Allowed protocols for new assignments</legend>
           {protocols.map(protocol => <label key={protocol} className="checkbox-label">
             <input type="checkbox" name="protocol" value={protocol}
               defaultChecked={!policy || policy.protocols.includes(protocol)} /> {protocol.toUpperCase()}
           </label>)}
+          <label>Maximum concurrent Worker runs<input type="number" name="maxConcurrent" min="1" max="100" step="1"
+            placeholder="No limit" defaultValue={policy?.maxConcurrent ?? ''} /></label>
           <button disabled={!policyWorkspace.trim()}>Save policy</button>
           {policy && <button type="button" onClick={() => void update(() => savePolicy(null))}>Clear restriction</button>}
         </fieldset>
