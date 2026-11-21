@@ -13,6 +13,7 @@ import { routerServer } from './http.ts';
 import { TaskStore } from './store.ts';
 import { feishuChannel } from '../../packages/channels/feishu.ts';
 
+const mixed = process.argv.includes('--mixed');
 const jobs = 200;
 const duplicates = 100;
 const concurrency = 10;
@@ -27,7 +28,10 @@ const feishu = {
   token: 'benchmark-verification', appId: 'benchmark-app', tenant: 'benchmark-tenant', workspace,
   senders: new Set(['benchmark-user']), chats: new Set(['benchmark-chat']),
 };
-const server = routerServer(store, { owner: 'benchmark', token, feishu });
+const server = routerServer(store, {
+  owner: 'benchmark', token, feishu,
+  ...(mixed && { harness: async () => ({ kind: 'create_task' as const }) }),
+});
 const connections: DeviceSocket[] = [];
 const opened = new Map<string, number>();
 const accepted = new Set<string>();
@@ -39,7 +43,7 @@ function p95(values: number[]) {
 }
 
 try {
-  await Promise.all(Array.from({ length: jobs }, (_, index) =>
+  if (!mixed) await Promise.all(Array.from({ length: jobs }, (_, index) =>
     writeFile(join(root, index + '.md'), 'Fixture ' + index)));
   server.listen(0, '127.0.0.1');
   await once(server, 'listening');
@@ -53,7 +57,7 @@ try {
   }
 
   async function send(index: number) {
-    const goal = '/preview ' + index + '.md';
+    const goal = mixed ? 'Review fixture ' + index : '/preview ' + index + '.md';
     const key = 'fixture-' + index;
     const channel = index % 3;
     const started = performance.now();
@@ -88,7 +92,11 @@ try {
   const workers = connections.map(async socket => {
     while (accepted.size < jobs) {
       active.throwIfAborted();
-      const claim = await socket.request('claim', { capability: 'document.preview', requestId: randomUUID() }, active);
+      const claim = await socket.request('claim', {
+        ...(mixed ? { capability: 'agent.acp', worker: { protocol: 'jsonl', label: 'Benchmark fixture' } }
+          : { capability: 'document.preview' }),
+        requestId: randomUUID(),
+      }, active);
       assert.equal(claim.status, 200);
       const { assignment } = await claim.json() as { assignment: { run: Run; task: Task } | null };
       if (!assignment) {
@@ -101,8 +109,23 @@ try {
       assert(!accepted.has(task.goal), 'Task was claimed more than once');
       dispatch.push(performance.now() - opened.get(task.goal)!);
       accepted.add(task.goal);
-      const text = await preview(root, task.goal, active);
-      assert.equal(text, 'Fixture ' + task.goal.slice(9, -3));
+      const index = Number(mixed ? task.goal.slice('Review fixture '.length) : task.goal.slice(9, -3));
+      const text = mixed ? 'Fixture ' + index : await preview(root, task.goal, active);
+      assert.equal(text, 'Fixture ' + index);
+      if (mixed && index % 10 === 0) {
+        const prefix = 'runs/' + run.id + '/';
+        const requested = await socket.request(prefix + 'request-approval', { summary: 'Review benchmark fixture' }, active);
+        assert.equal(requested.status, 200);
+        const { approval } = await requested.json() as { approval: { id: string } };
+        const command = await fetch(new URL('/v1/tasks/' + task.id + '/commands', base), {
+          method: 'POST', headers: { ...headers, 'Idempotency-Key': 'approval-' + index }, signal: active,
+          body: JSON.stringify({ expectedVersion: task.version, action: 'approve', approvalId: approval.id }),
+        });
+        assert.equal(command.status, 200);
+        await command.arrayBuffer();
+        const consumed = await socket.request(prefix + 'consume-approval', { approvalId: approval.id }, active);
+        assert.equal(consumed.status, 200);
+      }
       const outcome = { status: 'succeeded', result: text };
       const finish = () => socket.request('runs/' + run.id + '/finish', outcome, active);
       assert.equal((await finish()).status, 200);
@@ -123,13 +146,16 @@ try {
   assert(state.tasks.every(task => task.status === 'succeeded'));
   let cursor = 0;
   let finishes = 0;
+  let approvals = 0;
   for (;;) {
     const events = store.events('benchmark', cursor);
     if (!events.length) break;
     finishes += events.filter(event => event.type === 'run.finished').length;
+    approvals += events.filter(event => event.type === 'approval.decided').length;
     cursor = events.at(-1)!.seq;
   }
   assert.equal(finishes, jobs);
+  assert.equal(approvals, mixed ? jobs / 10 : 0);
   const notices = new Set<string>();
   for (;;) {
     const notice = store.leaseChannelNotice(feishuChannel(feishu), Date.now());
@@ -142,13 +168,14 @@ try {
 
   const response = await fetch(new URL('/v1/admin/metrics', base), { headers, signal: active });
   const serverMetrics = await response.json() as { routing: { model: number } };
-  assert.equal(serverMetrics.routing.model, 0);
+  assert.equal(serverMetrics.routing.model, mixed ? Math.floor((jobs + 1) / 3) : 0);
   assert.equal(reception.length, jobs + duplicates);
   assert.equal(dispatch.length, jobs);
   const receiptP95Ms = p95(reception);
   const claimP95Ms = p95(dispatch);
   console.log(JSON.stringify({
-    cpu: cpus()[0]?.model, node: process.version, concurrency, submitted: reception.length,
+    workload: mixed ? 'mock-worker-with-approvals' : 'document-preview',
+    approvals, cpu: cpus()[0]?.model, node: process.version, concurrency, submitted: reception.length,
     completed: jobs, duplicateTasks: 0, duplicateOutboundNotices: 0, unexpectedAssignments: 0,
     modelRequests: serverMetrics.routing.model, receiptP95Ms, claimP95Ms,
     elapsedMs: Math.round(performance.now() - started),
