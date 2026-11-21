@@ -51,7 +51,7 @@ export type WorkflowAction =
   | ({ kind: 'desktop.click'; alias: string; deviceId: string; button: string; expectedText?: string } &
     (DesktopWindowReference | { windowFrom: { step: string; title: string } }));
 
-export const workerCapabilities = ['steer', 'full-input-artifacts', 'git-worktree', 'read-only'] as const;
+export const workerCapabilities = ['steer', 'full-input-artifacts', 'git-worktree', 'git-patch-inputs', 'read-only'] as const;
 export type WorkerCapability = typeof workerCapabilities[number];
 
 export interface WorkflowStep {

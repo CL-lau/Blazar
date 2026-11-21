@@ -32,6 +32,9 @@ export function workflowSteps(input: unknown): WorkflowStep[] {
     if (value.workerCapability !== undefined && (!capability || action || /^\/(observe|click|preview) /.test(value.goal))) {
       throw new InvalidWorkflow('Invalid workflow Worker capability');
     }
+    if (capability === 'git-patch-inputs' && !value.needs.length) {
+      throw new InvalidWorkflow('Git patch inputs require predecessor steps');
+    }
     const runLimitSeconds = value.runLimitSeconds;
     if (runLimitSeconds !== undefined && (typeof runLimitSeconds !== 'number' ||
         !Number.isSafeInteger(runLimitSeconds) || runLimitSeconds < 30 || runLimitSeconds > 600)) {

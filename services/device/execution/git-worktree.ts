@@ -1,6 +1,8 @@
 import { execFile } from 'node:child_process';
-import { lstat, mkdir, readFile, realpath, writeFile } from 'node:fs/promises';
+import { lstat, mkdir, mkdtemp, readFile, realpath, rm, writeFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
 import { isAbsolute, join, relative, sep } from 'node:path';
+import type { PredecessorInput } from '../../../packages/protocol/task.ts';
 import { promisify } from 'node:util';
 
 const exec = promisify(execFile);
@@ -19,7 +21,7 @@ function runPath(storage: string, runId: string) {
   return join(storage, runId);
 }
 
-export async function gitRunWorktrees(workspace: string, stateDirectory: string, includePatch = false) {
+export async function gitRunWorktrees(workspace: string, stateDirectory: string, includePatch = false, applyInputs = false) {
   const git = gitAt(workspace);
   const repository = await realpath(await git('rev-parse', '--show-toplevel'));
   if (repository !== workspace) throw new Error('Git worktree execution requires the repository root as the workspace');
@@ -69,7 +71,46 @@ export async function gitRunWorktrees(workspace: string, stateDirectory: string,
     if (Buffer.byteLength(text) > 32_000) throw new Error('Run checkout evidence exceeds the artifact limit');
     return { name: 'git-changes.json', text };
   };
-  return { prepare, artifact, includePatch };
+  return { prepare, artifact, includePatch, applyInputs };
+}
+
+export async function applyGitPatchInputs(root: string, inputs: PredecessorInput[], signal: AbortSignal) {
+  if (!inputs.length) throw new Error('No Git patch inputs were assigned');
+  const git = gitAt(root, signal);
+  const base = await git('rev-parse', '--verify', 'HEAD^{commit}');
+  const patches = inputs.map(input => {
+    if (input.artifact?.name !== 'git-changes.json' || !input.artifact.text) {
+      throw new Error('A required Git patch artifact is unavailable');
+    }
+    let report: { version?: number; baseCommit?: string; patch?: unknown; changes?: unknown } | null;
+    try {
+      report = JSON.parse(input.artifact.text);
+    } catch {
+      throw new Error('A required Git patch artifact is malformed');
+    }
+    if (report?.version !== 1 || report.baseCommit !== base) {
+      throw new Error('Git patch inputs do not match the checkout base commit');
+    }
+    if (typeof report.patch !== 'string' || (report.patch && !report.patch.startsWith('diff --git ')) ||
+        /^(?:Binary files |GIT binary patch$)/m.test(report.patch) ||
+        !Array.isArray(report.changes) || report.changes.some(change => typeof change !== 'string' || change.startsWith('?? '))) {
+      throw new Error('A required Git patch is incomplete or contains unsupported file changes');
+    }
+    return report.patch;
+  }).filter(Boolean);
+  if (!patches.length) return;
+  const scratch = await mkdtemp(join(tmpdir(), 'blazar-git-patch-'));
+  try {
+    const patch = join(scratch, 'inputs.patch');
+    await writeFile(patch, patches.join('\n'), { flag: 'wx', mode: 0o600 });
+    await git('apply', '--check', '--index', '--whitespace=nowarn', '--', patch);
+    await git('apply', '--index', '--whitespace=nowarn', '--', patch);
+  } catch (cause) {
+    signal.throwIfAborted();
+    throw new Error('Git patch inputs conflict with each other or the checkout. Inspect the retained worktree.', { cause });
+  } finally {
+    await rm(scratch, { force: true, recursive: true });
+  }
 }
 
 export async function inspectRunWorktree(workspace: string, storage: string, runId: string, signal?: AbortSignal) {

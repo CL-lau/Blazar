@@ -39,7 +39,9 @@ test('isolated Worker runs keep their changes in independent retained worktrees'
     args: ['-e', String.raw`
       const fs = require('node:fs');
       const { input } = JSON.parse(fs.readFileSync(0, 'utf8'));
-      if (fs.readFileSync('notes.txt', 'utf8') !== 'Committed source') process.exit(1);
+      const original = fs.readFileSync('notes.txt', 'utf8');
+      const expected = input.goal === 'Read patched A' ? 'Parallel A' : 'Committed source';
+      if (original !== expected) process.exit(1);
       fs.writeFileSync('notes.txt', input.goal);
       function finish() {
         process.stdout.write(JSON.stringify({ version: 1, type: 'completed', result: input.goal }) + '\n');
@@ -103,7 +105,7 @@ test('isolated Worker runs keep their changes in independent retained worktrees'
   await once(server, 'listening');
   const address = server.address();
   assert(address && typeof address !== 'string');
-  const patchedWorktrees = await gitRunWorktrees(repository, state, true);
+  const patchedWorktrees = await gitRunWorktrees(repository, state, true, true);
   const base = new URL('http://127.0.0.1:' + address.port);
   const clients = devices.map(({ device, ledger, lock }) =>
     new DeviceClient(base, device.token, lock.root, ledger, worker, undefined, lock.identity, patchedWorktrees));
@@ -121,6 +123,8 @@ test('isolated Worker runs keep their changes in independent retained worktrees'
     { key: 'a', goal: 'Parallel A', needs: [], workerCapability: 'git-worktree' },
     { key: 'b', goal: 'Parallel B', needs: [], workerCapability: 'git-worktree' },
     { key: 'review', goal: 'Review changes', needs: ['a', 'b'] },
+    { key: 'apply', goal: 'Read patched A', needs: ['a'], workerCapability: 'git-patch-inputs' },
+    { key: 'conflict', goal: 'Conflicting patch inputs', needs: ['a', 'b'], workerCapability: 'git-patch-inputs' },
   ]);
   assert.deepEqual(await Promise.all(clients.map(client => client.runOnce(AbortSignal.timeout(5_000)))), [true, true]);
   const receiver = store.claim('owner', 'project', 'reviewer', Date.now(), 45_000)!;
@@ -137,6 +141,15 @@ test('isolated Worker runs keep their changes in independent retained worktrees'
     checkouts.push(checkout);
   }
   assert.equal(new Set(checkouts).size, 2);
+  assert(store.finish(receiver.run.id, receiver.run.device, Date.now(), { status: 'succeeded', result: 'Reviewed' }));
+  assert.equal(await clients[0].runOnce(AbortSignal.timeout(5_000)), true);
+  assert.equal(await clients[0].runOnce(AbortSignal.timeout(5_000)), true);
+  const afterApply = store.snapshot('owner').tasks;
+  assert.equal(afterApply.find(item => item.goal === 'Read patched A')?.result, 'Read patched A');
+  const conflict = afterApply.find(item => item.goal === 'Conflicting patch inputs');
+  assert.equal(conflict?.status, 'failed');
+  assert.match(conflict?.result ?? '', /Git patch inputs conflict/);
+
   assert.equal(await readFile(notes, 'utf8'), 'Uncommitted user edit');
   await writeFile(join(first, 'notes.txt'), 'x'.repeat(70_000));
   const oversized = JSON.parse((await patchedWorktrees.artifact(firstId, AbortSignal.timeout(5_000))).text);

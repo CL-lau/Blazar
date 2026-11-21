@@ -8,7 +8,7 @@ import { runCustomJsonl } from '../../../packages/workers/custom-jsonl.ts';
 import { runPi } from '../../../packages/workers/pi.ts';
 import type { JobContext, WorkerSteer } from '../../../packages/workers/prompt.ts';
 import type { Worker } from '../../../packages/workers/registry.ts';
-import type { PredecessorInput } from '../../../packages/protocol/task.ts';
+import { completeInputArtifacts, type ArtifactPost } from './input-artifacts.ts';
 import type { DeviceLedger, SessionCheckpoint } from '../ledger.ts';
 
 interface WorkerExecution {
@@ -17,7 +17,7 @@ interface WorkerExecution {
   workspaceIdentity: string;
   revision?: string;
   ledger: Pick<DeviceLedger, 'takeSession'>;
-  post: (path: string, data: object, signal: AbortSignal) => Promise<Response>;
+  post: ArtifactPost;
   approve: (prefix: string, summary: string, signal: AbortSignal) =>
     Promise<{ id: string; decision: 'approved' | 'denied' } | undefined>;
   consumeApproval: (prefix: string, id: string, signal: AbortSignal) => Promise<boolean>;
@@ -35,7 +35,7 @@ export async function executeWorker(
   };
   switch (worker.protocol) {
     case 'jsonl':
-      if (worker.includeFullInputArtifacts) await completeInputArtifacts(context, job.predecessors, prefix, active, fullInputRequired);
+      if (worker.includeFullInputArtifacts) await completeInputArtifacts(context.post, job.predecessors, prefix, active, fullInputRequired);
       return { result: await runCustomJsonl(worker, context.root, job, active, report) };
     case 'pi':
     case 'codex':
@@ -125,32 +125,4 @@ async function runAcpWorker(execution: WorkerExecution, worker: Worker, prefix: 
     result = await run(job);
   }
   return { result, checkpoint };
-}
-
-async function completeInputArtifacts(context: WorkerExecution, inputs: PredecessorInput[], prefix: string, signal: AbortSignal, required: boolean) {
-  let budget = 64_000;
-  if (required && inputs.reduce((total, input) => total + (input.artifact?.size ?? 0), 0) > budget) {
-    throw new Error('Required workflow input artifacts exceed the device input budget');
-  }
-  for (const input of inputs) {
-    const artifact = input.artifact;
-    if (!artifact || artifact.size <= 0) continue;
-    if (!artifact.truncated) {
-      if (required) artifact.text = artifact.excerpt;
-      continue;
-    }
-    if (artifact.size > budget) continue;
-    const response = await context.post(prefix + 'input-artifact', { artifactId: artifact.id }, signal);
-    if (!response.ok) {
-      await response.body?.cancel();
-      throw new Error('Unable to read a required workflow input');
-    }
-    const { text } = await response.json() as { text?: unknown };
-    if (typeof text !== 'string' || Buffer.byteLength(text) !== artifact.size ||
-        createHash('sha256').update(text).digest('hex') !== artifact.sha256) {
-      throw new Error('Workflow input artifact failed integrity verification');
-    }
-    artifact.text = text;
-    budget -= artifact.size;
-  }
 }

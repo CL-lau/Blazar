@@ -11,10 +11,11 @@ import { maintainLease } from './lease.ts';
 import { platform } from 'node:os';
 import { preview } from './preview.ts';
 import { executeDesktopAction } from './execution/desktop.ts';
-import type { gitRunWorktrees } from './execution/git-worktree.ts';
+import { applyGitPatchInputs, type gitRunWorktrees } from './execution/git-worktree.ts';
+import { completeInputArtifacts } from './execution/input-artifacts.ts';
 import { executeWorker } from './execution/worker.ts';
 
-type Assignment = { clickExpectedText?: string; observationExpectedText?: string; observationWaitSeconds?: number; fullInputRequired?: boolean; readOnlyRequired?: boolean; run: Run; task: Task; instructions: string[]; predecessors: PredecessorInput[]; acceptanceCriteria?: string[]; memoryInputs?: TaskMemoryInput[]; attachments?: TaskAttachment[] };
+type Assignment = { clickExpectedText?: string; observationExpectedText?: string; observationWaitSeconds?: number; fullInputRequired?: boolean; readOnlyRequired?: boolean; gitPatchInputsRequired?: boolean; run: Run; task: Task; instructions: string[]; predecessors: PredecessorInput[]; acceptanceCriteria?: string[]; memoryInputs?: TaskMemoryInput[]; attachments?: TaskAttachment[] };
 
 export class DeviceClient {
   private socket: DeviceSocket;
@@ -48,10 +49,11 @@ export class DeviceClient {
       const revision = createHmac('sha256', token).update(JSON.stringify([
         adapterVersion, worker.label, protocol, worker.executable, worker.args, worker.env ?? [],
         worker.protocol === 'jsonl' && worker.includeFullInputArtifacts === true,
-        ...(worktrees ? ['git-worktree', worktrees.includePatch] : []),
+        ...(worktrees ? ['git-worktree', worktrees.includePatch, worktrees.applyInputs] : []),
       ])).digest('hex');
       const capabilities: WorkerCapability[] = [];
       if (worktrees) capabilities.push('git-worktree');
+      if (worktrees?.applyInputs) capabilities.push('git-patch-inputs');
       if (protocol === 'codex') capabilities.push('read-only');
       if (protocol === 'codex' || protocol === 'pi') capabilities.push('steer');
       if (worker.protocol === 'jsonl' && worker.includeFullInputArtifacts) capabilities.push('full-input-artifacts');
@@ -180,6 +182,9 @@ export class DeviceClient {
         if (assignment.readOnlyRequired && this.worker?.protocol !== 'codex') {
           throw new Error('This device cannot enforce the read-only Worker requirement');
         }
+        if (assignment.gitPatchInputsRequired && (!this.worker || !this.worktrees?.applyInputs)) {
+          throw new Error('This device cannot apply Git patch inputs');
+        }
         if (this.observation) {
           outcome = await executeDesktopAction(this.observation, this.root, assignment.task.goal, active,
             async (summary, signal) => {
@@ -190,6 +195,11 @@ export class DeviceClient {
         } else if (this.worker) {
           const root = this.worktrees ? await this.worktrees.prepare(assignment.run.id) : this.root;
           active.throwIfAborted();
+          if (assignment.gitPatchInputsRequired) {
+            await completeInputArtifacts((path, body, signal) => this.post(path, body, signal),
+              assignment.predecessors, prefix, active, true);
+            await applyGitPatchInputs(root, assignment.predecessors, active);
+          }
           const { result, checkpoint: session } = await executeWorker({
             root, scope: this.scope, workspaceIdentity: this.worktrees ? root : this.workspaceIdentity,
             revision: this.workerConfiguration?.revision, ledger: this.ledger,
