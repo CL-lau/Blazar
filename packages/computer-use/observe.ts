@@ -6,10 +6,12 @@ import { createHash } from 'node:crypto';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { lockDatabaseFile } from '../storage/exclusive.ts';
-import { spawnWorker } from '../workers/process.ts';
+import { agentDesktop } from './agent-desktop.ts';
+import type { ComputerDriver } from './driver.ts';
 
 export type ObservationConfig = {
   executable: string;
+  driver: ComputerDriver;
   apps: ReadonlyMap<string, string>;
   visualApps?: ReadonlySet<string>;
   buttons?: ReadonlyMap<string, ReadonlySet<string>>;
@@ -61,7 +63,7 @@ export function observationConfig(env: NodeJS.ProcessEnv, desktopLockPath?: stri
   if (!Array.isArray(visual) || visual.length > apps.size || visual.some(alias => !apps.has(alias))) {
     throw new Error('Configure visual capture with approved application aliases.');
   }
-  return { executable, apps, buttons, visualApps: new Set(visual), desktopLockPath,
+  return { executable, driver: agentDesktop(executable), apps, buttons, visualApps: new Set(visual), desktopLockPath,
     sessionLocked: process.platform === 'darwin' ? macSessionLocked : undefined };
 }
 
@@ -84,28 +86,8 @@ function describeTree(input: unknown) {
   return rows.join('\n').slice(0, 4_000).toWellFormed();
 }
 
-export async function probeComputer(config: ObservationConfig, root: string, signal: AbortSignal) {
-  const data = await runDriver(config, root, ['permissions'], signal);
-  const keys = ['accessibility', 'screen_recording', 'automation'] as const;
-  return Object.fromEntries(keys.map(key => {
-    const state = data?.[key]?.state;
-    return [key, typeof state === 'string' && /^[a-z_]{1,32}$/.test(state) ? state : 'unknown'];
-  }));
-}
-
-async function windowsFor(config: ObservationConfig, root: string, app: string, signal: AbortSignal) {
-  const data: unknown = await runDriver(config, root, ['list-windows', '--app', app], signal);
-  if (!Array.isArray(data)) throw new Error('Invalid application window inventory.');
-  return data.filter(window => window && typeof window.id === 'string' &&
-    /^w-[0-9]{1,20}$/.test(window.id) && typeof window.app_name === 'string' &&
-    window.app_name.toLowerCase() === app.toLowerCase() && window.visible === true)
-    .map(window => ({
-      id: String(window.id),
-      title: typeof window.title === 'string' ? window.title.replace(/[\x00-\x1f\x7f]/g, ' ').slice(0, 120).toWellFormed() : '',
-      accessible: window.accessible === true,
-      instance: typeof window.process_instance === 'string' && window.process_instance.length <= 256
-        ? window.process_instance : undefined,
-    }));
+export function probeComputer(config: ObservationConfig, root: string, signal: AbortSignal) {
+  return config.driver.permissions(root, signal);
 }
 
 function windowIdentity(app: string, window: { id: string; instance?: string; title: string }) {
@@ -115,7 +97,7 @@ function windowIdentity(app: string, window: { id: string; instance?: string; ti
 
 async function accessibleWindow(config: ObservationConfig, root: string, app: string, id: string, signal: AbortSignal,
                                 identity?: string) {
-  const windows = await windowsFor(config, root, app, signal);
+  const windows = await config.driver.windows(root, app, signal);
   const found = windows.filter(window => window.id === id && window.accessible);
   if (found.length !== 1) throw new Error('The selected window is unavailable or inaccessible.');
   if (identity && windowIdentity(app, found[0]) !== identity) {
@@ -165,7 +147,7 @@ async function captureWindowImage(config: ObservationConfig, root: string, alias
     throw new Error('Screen Recording permission is required for window screenshots.');
   }
   const assertPresent = async () => {
-    const matches = (await windowsFor(config, root, app, signal)).filter(window => window.id === id);
+    const matches = (await config.driver.windows(root, app, signal)).filter(window => window.id === id);
     if (matches.length !== 1 || windowIdentity(app, matches[0]) !== identity) {
       throw new Error('The selected window changed. Refresh the window list.');
     }
@@ -174,7 +156,7 @@ async function captureWindowImage(config: ObservationConfig, root: string, alias
   const scratch = await mkdtemp(join(tmpdir(), 'blazar-window-image-'));
   try {
     const path = join(scratch, 'window.png');
-    await runDriver(config, root, ['screenshot', '--app', app, '--window-id', id, path], signal);
+    await config.driver.screenshot(root, app, id, path, signal);
     await assertPresent();
     const file = await open(path, constants.O_RDONLY | constants.O_NOFOLLOW);
     try {
@@ -203,7 +185,7 @@ async function observeWindow(config: ObservationConfig, root: string, goal: stri
   const app = match && config.apps.get(match[1]);
   if (!app || !match) throw new Error('Choose a configured application alias for /observe.');
   if (match[2]) {
-    const windows = await windowsFor(config, root, app, signal);
+    const windows = await config.driver.windows(root, app, signal);
     if (match[2] === '--windows-json') {
       return JSON.stringify(windows.slice(0, 25).map(window => ({
         id: window.id, title: window.title, accessible: window.accessible, identity: windowIdentity(app, window),
@@ -216,51 +198,11 @@ async function observeWindow(config: ObservationConfig, root: string, goal: stri
   const windowId = match[3];
   const identity = match[4];
   if (windowId) await accessibleWindow(config, root, app, windowId, signal, identity);
-  const snapshot = await readSnapshot(config, root, app, signal, windowId);
+  const snapshot = await config.driver.snapshot(root, app, signal, windowId);
   if (windowId && identity) await accessibleWindow(config, root, app, windowId, signal, identity);
   const description = describeTree(snapshot.tree);
   if (!description) throw new Error('No accessible elements were found.');
   return description;
-}
-
-async function readSnapshot(config: ObservationConfig, root: string, app: string, signal: AbortSignal, windowId?: string) {
-  const options = windowId ? ['--window-id', windowId] : [];
-  const data = await runDriver(config, root, ['snapshot', '--app', app, '-i', ...options], signal);
-  if (!data?.tree) throw new Error('No application snapshot was available.');
-  return data;
-}
-
-async function runDriver(config: ObservationConfig, root: string, argv: string[], signal: AbortSignal) {
-  const active = AbortSignal.any([signal, AbortSignal.timeout(12_000)]);
-  active.throwIfAborted();
-  const { child, closed, stop } = spawnWorker({
-    executable: config.executable, args: argv, label: 'Computer observation',
-  }, root);
-  const interrupted = Promise.withResolvers<void>();
-  const abort = () => interrupted.resolve();
-  active.addEventListener('abort', abort, { once: true });
-  const buffers: Buffer[] = [];
-  let size = 0;
-  child.stdout.on('data', (buffer: Buffer) => {
-    size += buffer.length;
-    if (size > 512_000) interrupted.resolve();
-    else buffers.push(buffer);
-  });
-  child.stdin.on('error', () => {});
-  child.stdin.end();
-  try {
-    active.throwIfAborted();
-    await Promise.race([closed, interrupted.promise]);
-    active.throwIfAborted();
-    if (size > 512_000) throw new Error('Application snapshot is too large.');
-    if (child.exitCode !== 0) throw new Error('Application snapshot failed. Check the app and device permissions.');
-    const envelope = JSON.parse(Buffer.concat(buffers).toString('utf8'));
-    if (envelope?.ok !== true || envelope.command !== argv[0]) throw new Error('Desktop operation was rejected by the driver.');
-    return envelope.data;
-  } finally {
-    active.removeEventListener('abort', abort);
-    await stop();
-  }
 }
 
 function buttonIn(tree: unknown, label: string) {
@@ -301,7 +243,7 @@ export async function clickApp(config: ObservationConfig, root: string, goal: st
   const { initialWindow, initial, button, summary, fingerprint } = await withDesktopLock(config, signal, async () => {
     const initialWindow = windowId ? await accessibleWindow(config, root, app, windowId, signal, identity) : undefined;
     if (initialWindow && !initialWindow.instance) throw new Error('The driver cannot identify the selected window process.');
-    const initial = await readSnapshot(config, root, app, signal, windowId);
+    const initial = await config.driver.snapshot(root, app, signal, windowId);
     return { initialWindow, initial, button: buttonIn(initial.tree, label), summary: describeTree(initial.tree),
       fingerprint: reviewFingerprint(initial.tree) };
   });
@@ -318,10 +260,10 @@ export async function clickApp(config: ObservationConfig, root: string, goal: st
         throw new Error('The application changed after review. Request a new action.');
       }
     }
-    const current = await readSnapshot(config, root, app, signal, windowId);
+    const current = await config.driver.snapshot(root, app, signal, windowId);
     const latest = buttonIn(current.tree, label);
     if (reviewFingerprint(current.tree) !== fingerprint || latest.path !== button.path ||
-        initial.window_id !== current.window_id || initial.pid !== current.pid) {
+        initial.windowId !== current.windowId || initial.pid !== current.pid) {
       throw new Error('The application changed after review. Request a new action.');
     }
     await assertDesktopUnlocked(config, signal);
@@ -329,9 +271,9 @@ export async function clickApp(config: ObservationConfig, root: string, goal: st
     signal.throwIfAborted();
     try {
       await assertDesktopUnlocked(config, signal);
-      await runDriver(config, root, ['click', latest.ref], signal);
-      const refreshed = await readSnapshot(config, root, app, signal, windowId);
-      if (initial.window_id !== refreshed.window_id || initial.pid !== refreshed.pid) throw new DesktopResultUnverified();
+      await config.driver.click(root, latest.ref, signal);
+      const refreshed = await config.driver.snapshot(root, app, signal, windowId);
+      if (initial.windowId !== refreshed.windowId || initial.pid !== refreshed.pid) throw new DesktopResultUnverified();
       if (windowId) {
         const verifiedWindow = await accessibleWindow(config, root, app, windowId, signal);
         if (verifiedWindow.instance !== initialWindow?.instance) throw new DesktopResultUnverified();
