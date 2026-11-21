@@ -50,6 +50,10 @@ export class MemoryStore {
       CREATE TABLE IF NOT EXISTS document_import (
         id TEXT PRIMARY KEY REFERENCES memory(id) ON DELETE CASCADE
       );
+      CREATE TABLE IF NOT EXISTS memory_task_origin (
+        id TEXT PRIMARY KEY REFERENCES memory(id) ON DELETE CASCADE,
+        task_id TEXT NOT NULL, task_version INTEGER NOT NULL, UNIQUE(task_id,task_version)
+      );
       CREATE TABLE IF NOT EXISTS document_head (
         owner TEXT NOT NULL, workspace TEXT NOT NULL, connection TEXT NOT NULL REFERENCES app_connection(id),
         resource TEXT NOT NULL, memory_id TEXT NOT NULL, request_id INTEGER,
@@ -216,6 +220,21 @@ export class MemoryStore {
     return inserted.changes === 1 ? id : undefined;
   }
 
+  rememberTaskResult(owner: string, workspace: string, taskId: string, version: number, body: string) {
+    this.db.exec('BEGIN IMMEDIATE');
+    try {
+      const existing = this.db.prepare(`SELECT m.id FROM memory_task_origin o JOIN memory m ON m.id=o.id
+        WHERE m.owner=? AND o.task_id=? AND o.task_version=?`).get(owner, taskId, version);
+      const id = existing ? String(existing.id) : this.remember(owner, workspace, body)!;
+      if (!existing) this.db.prepare('INSERT INTO memory_task_origin VALUES(?,?,?)').run(id, taskId, version);
+      this.db.exec('COMMIT');
+      return id;
+    } catch (error) {
+      this.db.exec('ROLLBACK');
+      throw error;
+    }
+  }
+
   recall(owner: string, workspace: string, query: string, allowedSources: readonly string[],
          disabled = false, includePersonal = true) {
     const term = query.trim();
@@ -230,9 +249,9 @@ export class MemoryStore {
         SELECT 1 FROM app_connection a WHERE a.id=m.connection AND a.owner=m.owner AND a.active=1 AND (a.workspace IS NULL OR a.workspace=m.workspace)
         AND a.id IN (SELECT value FROM json_each(?))
       ))`;
-    const fields = `m.id,m.body,m.connection,m.resource,m.revision,m.created,
+    const fields = `m.id,m.body,m.connection,m.resource,m.revision,m.created,o.task_id AS taskId,o.task_version AS taskVersion,
       COALESCE(s.version,1) AS version,COALESCE(s.pinned,0) AS pinned,COALESCE(s.disabled,0) AS disabled`;
-    const state = 'LEFT JOIN memory_state s ON s.id=m.id';
+    const state = 'LEFT JOIN memory_state s ON s.id=m.id LEFT JOIN memory_task_origin o ON o.id=m.id';
     const values = [owner, workspace, Number(disabled), Date.now(), Number(includePersonal), allowed] as const;
     if (!this.fullText || Array.from(term).length < 3) {
       return this.db.prepare(`SELECT ${fields} FROM memory m ${state} WHERE ${filter}

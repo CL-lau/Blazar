@@ -283,6 +283,17 @@ test('Router authenticates, deduplicates commands and replays task changes over 
   assert.equal(await localRunner.runOnce(new AbortController().signal), false);
   assert.equal(store.get('test', previewTask.id)?.result, '# Project notes');
   assert.equal(store.get('test', previewTask.id)?.status, 'succeeded');
+  const rememberResult = '/v1/tasks/' + previewTask.id + '/remember-result';
+  assert.equal((await post(rememberResult, 'stale-result', { expectedVersion: 99 })).status, 409);
+  const savedResult = await post(rememberResult, 'save-result', { expectedVersion: 1 });
+  assert.equal(savedResult.status, 200);
+  const { id: savedMemory } = await savedResult.json();
+  const repeatedSave = await post(rememberResult, 'save-again', { expectedVersion: 1 });
+  assert.equal((await repeatedSave.json()).id, savedMemory);
+  const notes = memory.recall('test', 'preview', 'Project notes', []);
+  assert.equal(notes.length, 1);
+  assert.equal(notes[0].taskId, previewTask.id);
+  assert.equal(notes[0].taskVersion, 1);
 
   const previewSnapshot = await (await fetch(url + '/v1/state', { headers })).json();
   const artifact = previewSnapshot.artifacts.find(file => file.taskId === previewTask.id);

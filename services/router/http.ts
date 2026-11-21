@@ -577,6 +577,20 @@ export function routerServer(store: TaskStore, config: { owner: string; token: s
         reply(response, 200, { revoked: true });
         return;
       }
+      const saveTaskMemory = /^\/v1\/tasks\/([a-f0-9-]{36})\/remember-result$/.exec(url.pathname);
+      if (saveTaskMemory && request.method === 'POST') {
+        if (!admin) throw new RequestError(403, 'Administrator required');
+        if (!config.memory) throw new RequestError(503, 'Memory is unavailable');
+        const data = await jsonObject(request);
+        const task = store.get(owner, saveTaskMemory[1]);
+        if (!task) throw new RequestError(404, 'Task not found');
+        if (data.expectedVersion !== task.version || task.status !== 'succeeded' ||
+            !task.result?.trim() || task.result.length > 16_000 || /^\/(observe|click) /.test(task.goal)) {
+          throw new RequestError(409, 'This task version does not have a result eligible for memory');
+        }
+        reply(response, 200, { id: config.memory.rememberTaskResult(owner, task.workspace, task.id, task.version, task.result) });
+        return;
+      }
       const timeline = /^\/v1\/tasks\/([a-f0-9-]{36})\/timeline$/.exec(url.pathname);
       if (request.method === 'GET' && timeline) {
         const raw = url.searchParams.get('before');

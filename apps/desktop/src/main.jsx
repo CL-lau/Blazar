@@ -19,6 +19,7 @@ function App() {
   const [goal, setGoal] = useState('');
   const [usePersonalMemory, setUsePersonalMemory] = useState(false);
   const [answer, setAnswer] = useState('');
+  const [savedResult, setSavedResult] = useState(null);
   const [memoryAnswer, setMemoryAnswer] = useState(null);
   const [memoryQuery, setMemoryQuery] = useState('');
   const [memoryAccounts, setMemoryAccounts] = useState([]);
@@ -183,6 +184,15 @@ function App() {
                 </section>}
                 {progress && <p role="status">{progress.message}</p>}
                 {task.result && <pre>{task.result}</pre>}
+                {task.status === 'succeeded' && task.result && !/^\/(observe|click) /.test(task.goal) && (
+                  <button disabled={busy || (savedResult?.id === task.id && savedResult?.version === task.version)}
+                    onClick={() => submit(async () => {
+                      await api('/tasks/' + task.id + '/remember-result', { method: 'POST', body: { expectedVersion: task.version } });
+                      setSavedResult({ id: task.id, version: task.version });
+                    })}>
+                    {savedResult?.id === task.id && savedResult?.version === task.version ? 'Saved to memory' : 'Save result to memory'}
+                  </button>
+                )}
                 {snapshot.approvals.filter(item => item.taskId === task.id).map(item => (
                   <section className="approval" key={item.id}>
                     <h3>Approval required</h3>

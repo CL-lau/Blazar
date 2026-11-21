@@ -235,7 +235,8 @@ export function Knowledge({ token }) {
           const source = connections.find(connection => connection.id === item.connection);
           return <li key={item.id}>
             <p>{item.body}</p>
-            <small>{source ? `${accountName(source)} · ${item.resource} · ${item.revision}` : 'Personal note'}</small>
+            <small>{source ? `${accountName(source)} · ${item.resource} · ${item.revision}` :
+              item.taskId ? `Task ${item.taskId} · version ${item.taskVersion}` : 'Personal note'}</small>
             {editing === item.id ? <form onSubmit={event => {
               event.preventDefault();
               const body = new FormData(event.currentTarget).get('body');
