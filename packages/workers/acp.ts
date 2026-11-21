@@ -162,6 +162,9 @@ export async function runAcp(worker: AcpWorker, root: string, job: JobContext, s
         }
       }
     });
+  } catch (error) {
+    active.throwIfAborted();
+    throw error;
   } finally {
     await stop();
   }

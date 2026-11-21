@@ -3,7 +3,7 @@ import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'no
 import { setTimeout as delay } from 'node:timers/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { resolveWorker } from '../../packages/workers/registry.ts';
+import { resolveWorker, workerCatalog } from '../../packages/workers/registry.ts';
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { probeAcp, runAcp } from '../../packages/workers/acp.ts';
@@ -94,6 +94,8 @@ test('a local ACP manifest launches through the same adapter and cannot opt into
 test('built-in ACP presets retain their protocol arguments with an explicit executable path', async () => {
   const expected = {
     deepseek: ['--profile', 'acp'],
+    opencode: ['acp'],
+    copilot: ['--acp', '--stdio'],
     droid: ['exec', '--output-format', 'acp-daemon'],
     qwen: ['--acp'],
     kimi: ['acp'],
@@ -112,6 +114,55 @@ test('built-in ACP presets retain their protocol arguments with an explicit exec
     assert.deepEqual(configured.args, args);
   }
   await assert.rejects(resolveWorker('droid', undefined, './agent'), /must be absolute/);
+});
+
+test('every built-in ACP worker runs the same local subprocess contract', {
+  skip: process.platform === 'win32' ? 'The mock executable uses a Unix shebang' : false,
+}, async t => {
+  const root = mkdtempSync(join(tmpdir(), 'blazar-built-in-acp-'));
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  const executable = join(root, 'mock-acp.cjs');
+  writeFileSync(executable, '#!/usr/bin/env node\n' + fixture
+    .replace("if (input.goal === 'wait') return;", `
+      if (input.goal === 'wait') {
+        require('node:fs').writeFileSync('ready', '');
+        return;
+      }
+      if (input.goal === 'fail') {
+        send({ id, result: { stopReason: 'refusal' } });
+        return;
+      }`)
+    .replace("if (method === 'session/prompt')", `
+      if (method === 'session/cancel') {
+        require('node:fs').writeFileSync('cancelled', params.sessionId);
+        process.exit(0);
+      }
+      if (method === 'session/prompt')`), { mode: 0o700 });
+
+  for (const entry of workerCatalog().filter(entry => entry.protocol === 'acp')) {
+    await t.test(entry.label, async () => {
+      const cwd = mkdtempSync(join(root, entry.id + '-'));
+      const configured = await resolveWorker(entry.id, undefined, executable);
+      assert.ok(configured && configured.label === entry.label);
+      const signal = AbortSignal.timeout(5_000);
+      assert.deepEqual(await probeAcp(configured, cwd, signal),
+        { version: 1, loadSession: false, resumeSession: false });
+      const progress: string[] = [];
+      const input = { goal: 'Review notes', instructions: ['Three bullets'], predecessors: [] };
+      assert.equal(await runAcp(configured, cwd, input, signal, undefined, async message => { progress.push(message); }),
+        'Review notes: Three bullets');
+      assert.deepEqual(progress, ['Worker is using a tool', 'Worker completed a tool call']);
+      await assert.rejects(runAcp(configured, cwd, { ...input, goal: 'fail' }, signal), /completed response/);
+
+      const stop = new AbortController();
+      const cancelled = assert.rejects(runAcp(configured, cwd, { ...input, goal: 'wait' },
+        AbortSignal.any([signal, stop.signal])), /aborted/i);
+      while (!existsSync(join(cwd, 'ready'))) await delay(10, undefined, { signal });
+      stop.abort();
+      await cancelled;
+      assert.equal(readFileSync(join(cwd, 'cancelled'), 'utf8'), 'session');
+    });
+  }
 });
 
 test('ACP forwards only one-time approval for files inside the workspace', async t => {
