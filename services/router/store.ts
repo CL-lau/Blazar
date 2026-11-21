@@ -329,6 +329,7 @@ export class TaskStore {
         );
       `));
     }
+    this.db.exec('CREATE INDEX IF NOT EXISTS expired_approval_stop_task ON expired_approval_stop(task_id,expires)');
     const workerColumns = new Set(this.db.prepare("SELECT name FROM pragma_table_info('device_worker')").all()
       .map(column => column.name));
     if (!workerColumns.has('revision')) this.db.exec('ALTER TABLE device_worker ADD COLUMN revision TEXT');
@@ -1569,6 +1570,7 @@ export class TaskStore {
         FROM task WHERE owner=? AND workspace=?
         AND status IN ('queued','waiting_device') AND (substr(goal,1,length(?))=? OR (?='/observe ' AND substr(goal,1,7)='/click '))
         AND (?='' OR (substr(goal,1,length(?))!=? AND substr(goal,1,9)!='/observe ' AND substr(goal,1,7)!='/click '))
+        AND NOT EXISTS(SELECT 1 FROM expired_approval_stop s WHERE s.task_id=task.id AND s.expires>?)
         AND NOT EXISTS(SELECT 1 FROM task_desktop_device target WHERE target.task_id=task.id AND target.device_id<>?)
         AND (? OR substr(task.goal,1,9) IN ('/observe ','/preview ') OR substr(task.goal,1,7)='/click ')
         AND (? OR (
@@ -1587,7 +1589,7 @@ export class TaskStore {
         ON d.owner=eligible.owner AND d.workspace=eligible.workspace AND d.channel=eligible.origin_channel
         AND d.goal_prefix=? AND d.excluding_prefix=?
       ORDER BY COALESCE(d.last_dispatch,0), eligible.queue_order LIMIT 1`).get(
-        owner, workspace, goalPrefix, goalPrefix, goalPrefix, excludingPrefix, excludingPrefix, excludingPrefix, device, Number(Boolean(workerPermitted) && workerHasCapacity), Number(allowWorkerInputs),
+        owner, workspace, goalPrefix, goalPrefix, goalPrefix, excludingPrefix, excludingPrefix, excludingPrefix, now, device, Number(Boolean(workerPermitted) && workerHasCapacity), Number(allowWorkerInputs),
         desktopApps ? JSON.stringify(desktopApps) : null, desktopApps ? JSON.stringify(desktopApps) : null,
         goalPrefix, excludingPrefix) as unknown as (Task & { origin_channel: string }) | undefined;
       if (!task) {

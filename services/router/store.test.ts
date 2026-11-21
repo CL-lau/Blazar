@@ -728,3 +728,23 @@ test('an approval timeout occupies a workspace Worker slot until the original de
   assert.equal(db.acknowledgeStop(run.id, run.device, expiry), true);
   assert.equal(claim()?.task.id, queued.id);
 });
+
+test('retry waits for an approval-timed-out run to stop even without a workspace concurrency cap', t => {
+  const db = new TaskStore(':memory:');
+  t.after(() => db.close());
+  const now = Date.now();
+  const task = db.create('owner', 'fixture', 'approval-retry', 'project', 'Prepare notes');
+  const run = db.claim('owner', 'project', 'first', now, 400_000)!.run;
+  const expiry = Number(db.requestApproval(run.id, run.device, 'Review notes', now)?.expires);
+  assert.equal(db.expire(expiry), 1);
+  assert.equal(db.command('owner', task.id, task.version, { action: 'retry' })?.version, task.version + 1);
+
+  const unrelated = db.create('owner', 'fixture', 'unrelated', 'project', 'Read another file');
+  const claim = (device: string) => db.claim('owner', 'project', device, expiry, 45_000);
+  assert.equal(claim('other-device')?.task.id, unrelated.id);
+  assert.equal(claim('replacement-device'), undefined);
+  assert.ok(db.acknowledgeStop(run.id, run.device, expiry));
+  const retry = claim('replacement-device');
+  assert.equal(retry?.task.id, task.id);
+  assert.equal(retry?.run.version, task.version + 1);
+});
