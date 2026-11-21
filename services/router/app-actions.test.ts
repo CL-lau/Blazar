@@ -265,7 +265,8 @@ test('local browser fallback and a browser device submit only authorized form da
       let body = '';
       for await (const chunk of request) body += chunk;
       received.push(body);
-      response.end('Saved');
+      if (body === 'title=Unconfirmed') response.writeHead(503).end();
+      else response.end('Saved');
     } else response.writeHead(404).end();
   });
   app.listen(0, '127.0.0.1');
@@ -293,23 +294,58 @@ test('local browser fallback and a browser device submit only authorized form da
 
   const { browserDeviceServer } = await import('../device/browser-service.ts');
   const { mcpActionBackend } = await import('../../packages/apps/mcp-actions.ts');
+  const { mkdtemp, rm } = await import('node:fs/promises');
+  const { tmpdir } = await import('node:os');
+  const { join } = await import('node:path');
+  const { randomUUID } = await import('node:crypto');
+  const directory = await mkdtemp(join(tmpdir(), 'blazar-browser-receipts-'));
   const token = 'fixture-device-token-with-more-than-32-characters';
-  const device = browserDeviceServer({ token, tool: 'update', form: {
-    id: 'device-browser', capability: definition.capability, url: base + '/edit', submitUrl: base + '/save',
-    button: 'Save', inputLabel: 'Title', inputKey: 'title',
-  } });
-  device.listen(0, '127.0.0.1');
-  await once(device, 'listening');
-  t.after(() => new Promise<void>(resolve => device.close(() => resolve())));
-  const deviceAddress = device.address();
-  assert(deviceAddress && typeof deviceAddress !== 'string');
-  const endpoint = 'http://127.0.0.1:' + deviceAddress.port + '/mcp';
-  const deviceAction = { ...action, capability: definition.capability, input: { title: 'Approved on device' } };
-  const invokeDevice = (credential: string) => invokeApplicationAction(deviceAction, [mcpActionBackend({
-    id: 'device', connectionId: action.connectionId, capability: definition.capability,
-    effect: 'write', endpoint, tool: 'update', token: credential,
+  const startDevice = async () => {
+    const server = browserDeviceServer({ token, tool: 'update', receiptPath: join(directory, 'receipts.sqlite'), form: {
+      id: 'device-browser', capability: definition.capability, url: base + '/edit', submitUrl: base + '/save',
+      button: 'Save', inputLabel: 'Title', inputKey: 'title',
+    } });
+    server.listen(0, '127.0.0.1');
+    await once(server, 'listening');
+    return server;
+  };
+  let device = await startDevice();
+  const closeDevice = () => new Promise<void>(resolve => device.close(() => resolve()));
+  t.after(async () => {
+    await closeDevice();
+    await rm(directory, { recursive: true, force: true });
+  });
+  const binding = () => {
+    const address = device.address();
+    assert(address && typeof address !== 'string');
+    return { id: 'device', connectionId: action.connectionId, capability: definition.capability,
+      endpoint: 'http://127.0.0.1:' + address.port + '/mcp' };
+  };
+  const invocationId = randomUUID();
+  const deviceAction = { ...action, invocationId, capability: definition.capability, input: { title: 'Approved on device' } };
+  const invokeDevice = (credential: string, request = deviceAction) => invokeApplicationAction(request, [mcpActionBackend({
+    ...binding(), effect: 'write', tool: 'update', token: credential, includeInvocationId: true,
   })], async () => true, AbortSignal.timeout(10_000));
   assert.deepEqual(await invokeDevice('wrong'), { status: 'denied' });
   assert.equal((await invokeDevice(token)).status, 'succeeded');
-  assert.deepEqual(received, ['title=Approved+title', 'title=Approved+on+device']);
+  await closeDevice();
+  device = await startDevice();
+  const lookup = mcpActionBackend({ ...binding(), effect: 'read', tool: 'update.status', token });
+  const result = await lookup.invoke({ ...deviceAction, effect: 'read', input: { blazarInvocationId: invocationId } },
+    AbortSignal.timeout(5_000), async () => true);
+  assert.deepEqual(result, { status: 'succeeded', output: { content: [], structuredContent: {
+    blazarInvocationId: invocationId, resolution: 'applied',
+    evidence: 'Browser device recorded a successful form response',
+  } } });
+  assert.equal((await invokeDevice(token)).status, 'succeeded');
+  assert.equal((await invokeDevice(token, { ...deviceAction, input: { title: 'Different data' } })).status, 'outcome-unknown');
+  const unresolved = { ...deviceAction, invocationId: randomUUID(), input: { title: 'Unconfirmed' } };
+  assert.equal((await invokeDevice(token, unresolved)).status, 'outcome-unknown');
+  assert.equal((await invokeDevice(token, unresolved)).status, 'outcome-unknown');
+  const inconclusive = await lookup.invoke({ ...unresolved, effect: 'read', input: { blazarInvocationId: unresolved.invocationId } },
+    AbortSignal.timeout(5_000), async () => true);
+  assert.deepEqual(inconclusive, { status: 'succeeded', output: { content: [], structuredContent: {
+    blazarInvocationId: unresolved.invocationId, resolution: 'unknown',
+  } } });
+  assert.deepEqual(received, ['title=Approved+title', 'title=Approved+on+device', 'title=Unconfirmed']);
 });

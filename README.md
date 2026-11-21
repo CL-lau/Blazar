@@ -196,12 +196,17 @@ completes the write. A lost response or redirect after submission leaves the res
 
 To run the form on a separate computer, start `npm run device:browser` there. Set
 `BLAZAR_BROWSER_TOKEN`, `BLAZAR_BROWSER_TOOL`, `BLAZAR_BROWSER_URL`, `BLAZAR_BROWSER_SUBMIT_URL`,
-`BLAZAR_BROWSER_INPUT_LABEL`, `BLAZAR_BROWSER_INPUT_KEY` and `BLAZAR_BROWSER_BUTTON`. Optional
+`BLAZAR_BROWSER_INPUT_LABEL`, `BLAZAR_BROWSER_INPUT_KEY`, `BLAZAR_BROWSER_BUTTON` and
+`BLAZAR_BROWSER_RECEIPTS`. Use a durable SQLite receipt path in a directory writable only by
+the device service account. Optional
 `BLAZAR_BROWSER_STORAGE_STATE` points to the account state file on that computer.
 The service binds to loopback on port 4201 by default. For a separate Router host, expose only
 `/mcp` through an authenticated private network and an HTTPS reverse proxy. Configure that endpoint
 as an MCP backend or fallback in Router, with a `BLAZAR_MCP_TOKEN_*` credential variable containing
-the device service token. Keep this credential exclusive to the Router because it authorizes form submission.
+the device service token. Set Router's `statusTool` to the configured device tool name followed by
+`.status` so it sends the invocation ID required by the device. Keep the credential exclusive to the
+Router because it authorizes form submission. The device records successful responses by invocation
+ID and retains interrupted claims for reconciliation without replaying their submissions.
 
 
 

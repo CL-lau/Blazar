@@ -10,7 +10,7 @@ const port = Number(process.env.BLAZAR_BROWSER_PORT ?? 4201);
 if (!Number.isInteger(port) || port < 1 || port > 65_535) throw new Error('Invalid BLAZAR_BROWSER_PORT');
 const tool = setting('TOOL');
 const server = browserDeviceServer({
-  token: setting('TOKEN'), tool,
+  token: setting('TOKEN'), tool, receiptPath: setting('RECEIPTS'),
   form: {
     id: 'device-browser', capability: tool, url: setting('URL'), submitUrl: setting('SUBMIT_URL'),
     button: setting('BUTTON'), inputLabel: setting('INPUT_LABEL'), inputKey: setting('INPUT_KEY'),
