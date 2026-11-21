@@ -7,6 +7,9 @@ export interface ResourceRef {
   revision: string;
 }
 
+const memoryWords = new Intl.Segmenter(undefined, { granularity: 'word' });
+const eastAsianWord = /[\p{Script=Han}\p{Script=Hiragana}\p{Script=Katakana}\p{Script=Hangul}]/u;
+
 export class MemoryStore {
   private db: DatabaseSync;
   private fullText: boolean;
@@ -199,14 +202,20 @@ export class MemoryStore {
   }
 
   personalContext(owner: string, workspace: string, text: string) {
-    const terms = [...new Set(text.toLowerCase().match(/[\p{L}\p{N}]{3,32}/gu) ?? [])].slice(0, 8);
+    const terms = new Set<string>();
+    for (const token of memoryWords.segment(text.toLowerCase())) {
+      if (!token.isWordLike) continue;
+      const length = Array.from(token.segment).length;
+      if (length >= (eastAsianWord.test(token.segment) ? 2 : 3) && length <= 32) terms.add(token.segment);
+      if (terms.size >= 12) break;
+    }
     return this.db.prepare(`SELECT m.id,substr(m.body,1,1200) AS body,COALESCE(s.version,1) AS version
       FROM memory m LEFT JOIN memory_state s ON s.id=m.id
       WHERE m.owner=? AND m.workspace=? AND m.connection IS NULL AND COALESCE(s.disabled,0)=0
       AND (m.expires IS NULL OR m.expires>?) AND (s.pinned=1 OR EXISTS (
         SELECT 1 FROM json_each(?) term WHERE instr(lower(m.body),term.value)>0
       )) ORDER BY COALESCE(s.pinned,0) DESC,m.created DESC,m.rowid DESC LIMIT 4`)
-      .all(owner, workspace, Date.now(), JSON.stringify(terms))
+      .all(owner, workspace, Date.now(), JSON.stringify([...terms]))
       .map(row => ({ id: String(row.id), body: String(row.body).toWellFormed(), version: Number(row.version) }));
   }
 

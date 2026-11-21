@@ -6,6 +6,18 @@ import { DatabaseSync } from 'node:sqlite';
 import test from 'node:test';
 import { MemoryStore } from './memory.ts';
 
+test('personal context finds unpinned Chinese preferences in a longer sentence', t => {
+  const store = new MemoryStore(':memory:');
+  t.after(() => store.close());
+  const match = store.remember('owner', 'project', '评审使用表格展示风险。');
+  store.remember('owner', 'private', '评审报告留在私人项目。');
+  const imported = store.connect('owner', 'feishu', 'review');
+  store.remember('owner', 'project', '团队评审使用文档。', { connection: imported, resource: 'guide', revision: '1' });
+  const hidden = store.remember('owner', 'project', '评审请用幻灯片。')!;
+  store.revise('owner', hidden, 1, { disabled: true });
+  assert.deepEqual(store.personalContext('owner', 'project', '下次评审报告请用表格汇总').map(note => note.id), [match]);
+});
+
 test('workspace scope changes update the derived full-text index', t => {
   const directory = mkdtempSync(join(tmpdir(), 'blazar-memory-index-'));
   const path = join(directory, 'memory.sqlite');
