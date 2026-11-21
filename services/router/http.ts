@@ -914,19 +914,22 @@ export function routerServer(store: TaskStore, config: { owner: string; token: s
           text: requiredText(data.text, 'text', 32_000),
           ...(data.usePersonalMemory === true ? { usePersonalMemory: true } : {}),
         };
+        const status = /^\/(status|状态)(?: (.*))?$/.exec(input.text);
+        if (status) {
+          const query = status[2]?.trim() ?? '';
+          if (query.length > 128) throw new RequestError(400, 'Invalid task query');
+          const tasks = store.findRouterTasks(owner, input.workspace, query, admin)
+            .filter(task => canReadTask(task.id));
+          reply(response, 200, { kind: 'reply', text: tasks.length ? tasks.map(task =>
+            `${displayTaskStatus(task.status, status[1] === '状态')} · ${task.goal.replace(/\s+/g, ' ')}`
+          ).join('\n') : status[1] === '状态' ? '没有找到匹配的任务。' : 'No matching tasks.' });
+          metrics.route('deterministic');
+          return;
+        }
         let decision = store.routingDecision(owner, key, input);
         if (decision) metrics.route('replayed');
         else {
-          const status = /^\/(status|状态)(?: (.*))?$/.exec(input.text);
-          if (status) {
-            const query = status[2]?.trim() ?? '';
-            if (query.length > 128) throw new RequestError(400, 'Invalid task query');
-            const tasks = store.findRouterTasks(owner, input.workspace, query);
-            decision = { kind: 'reply', text: tasks.length ? tasks.map(task =>
-              `${displayTaskStatus(task.status, status[1] === '状态')} · ${task.goal.replace(/\s+/g, ' ')}`
-            ).join('\n') : status[1] === '状态' ? '没有找到匹配的任务。' : 'No matching tasks.' };
-            metrics.route('deterministic');
-          } else if (input.text.startsWith('/preview ') || input.text.startsWith('/observe ') || input.text.startsWith('/click ')) {
+          if (input.text.startsWith('/preview ') || input.text.startsWith('/observe ') || input.text.startsWith('/click ')) {
             decision = { kind: 'create_task' };
             metrics.route('deterministic');
           }

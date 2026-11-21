@@ -419,16 +419,21 @@ export class TaskStore {
       WHERE t.owner=? AND e.seq>? AND e.seq<=? ORDER BY e.seq LIMIT 100`).all(owner, after, through) as unknown as TaskEvent[];
   }
 
-  findRouterTasks(owner: string, workspace: string, query: string) {
+  findRouterTasks(owner: string, workspace: string, query: string, includeAppEvidence = false) {
     return this.db.prepare(`SELECT id,substr(goal,1,320) AS goal,status,version FROM task WHERE owner=? AND workspace=?
       AND (?='' OR id=? OR instr(lower(goal),lower(?))>0)
-      ORDER BY rowid DESC LIMIT 8`).all(owner, workspace, query, query, query)
+      AND (? OR NOT EXISTS(SELECT 1 FROM task_app_evidence e WHERE e.task_id=task.id))
+      ORDER BY rowid DESC LIMIT 8`).all(owner, workspace, query, query, query, Number(includeAppEvidence))
       .map(row => ({ id: String(row.id), goal: String(row.goal).toWellFormed(), status: String(row.status), version: Number(row.version) }));
   }
 
   recentConversation(owner: string, workspace: string): ConversationTurn[] {
     return this.db.prepare(`SELECT json_extract(request,'$[1]') AS text,decision FROM routing_decision
-      WHERE owner=? AND json_extract(request,'$[0]')=? AND json_array_length(request)=2 ORDER BY rowid DESC LIMIT 6`)
+      WHERE owner=? AND json_extract(request,'$[0]')=? AND json_array_length(request)=2
+      AND NOT (
+        json_extract(request,'$[1]') IN ('/status','/状态')
+        OR json_extract(request,'$[1]') GLOB '/status *' OR json_extract(request,'$[1]') GLOB '/状态 *'
+      ) ORDER BY rowid DESC LIMIT 6`)
       .all(owner, workspace).reverse().map(row => {
         const decision = JSON.parse(String(row.decision)) as Decision;
         if (decision.kind === 'propose_workflow') {

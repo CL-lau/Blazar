@@ -62,7 +62,13 @@ test('a registered JSONL extension executes a real subprocess through Router and
   const store = new TaskStore(':memory:');
   const memory = new MemoryStore(':memory:');
   const ledger = new DeviceLedger(':memory:');
-  const server = routerServer(store, { owner: 'owner', token: 'local', memory });
+  let routedTaskCount: number | undefined;
+  const server = routerServer(store, { owner: 'owner', token: 'local', memory,
+    async harness(input) {
+      routedTaskCount = input.findTasks?.('Use the review template').length;
+      return { kind: 'reply', text: 'No model-visible task matched.' };
+    },
+  });
   const device = store.registerDevice('owner', 'Extension fixture', 'project');
   server.listen(0, '127.0.0.1');
   await once(server, 'listening');
@@ -204,6 +210,17 @@ test('a registered JSONL extension executes a real subprocess through Router and
   const pairing = store.createPairing('owner', Date.now());
   const phone = store.redeemPairing(pairing.code, 'Phone', Date.now())!;
   assert.equal((await download(phone.token)).status, 404);
+  const converse = (token: string, key: string, text: string) => fetch(base + '/v1/conversation', {
+    method: 'POST',
+    headers: { Authorization: 'Bearer ' + token, 'Content-Type': 'application/json', 'Idempotency-Key': key },
+    body: JSON.stringify({ workspace: 'project', text }),
+  });
+  assert.equal((await converse('local', 'protected-model-lookup', 'Find the review task')).status, 200);
+  assert.equal(routedTaskCount, 0);
+  const statusText = '/status Use the review template';
+  assert.match((await (await converse('local', 'protected-admin-status', statusText)).json()).text, /Use the review template/);
+  assert.equal((await (await converse(phone.token, 'protected-admin-status', statusText)).json()).text, 'No matching tasks.');
+
   const sharePath = base + '/v1/tasks/' + protectedTask.id + '/share-result';
   const setShare = (enabled: boolean, version = 1, token = 'local') => fetch(sharePath, {
     method: 'POST', headers: { Authorization: 'Bearer ' + token, 'Content-Type': 'application/json' },
@@ -248,6 +265,7 @@ test('a registered JSONL extension executes a real subprocess through Router and
   const hidden = await (await fetch(base + '/v1/state', { headers: { Authorization: 'Bearer local' } })).json();
   assert.equal(hidden.tasks.find((item: { id: string }) => item.id === protectedTask.id)?.result, null);
 
+  assert.equal((await (await converse('local', 'protected-admin-status', statusText)).json()).text, 'No matching tasks.');
   const protectedEvents = (await audit()).events.filter((event: { taskId: string }) => event.taskId === protectedTask.id);
   assert.ok(protectedEvents.length > 0);
   assert.ok(protectedEvents.every((event: { data: object }) => Object.keys(event.data).length === 0));
