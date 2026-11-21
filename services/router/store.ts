@@ -1418,10 +1418,13 @@ export class TaskStore {
           AND json_extract(data,'$.runId')=? AND json_extract(data,'$.worker.protocol')='jsonl'`).get(taskId, runId)
         : undefined;
       const workerQuestion = typeof questionWorker?.revision === 'string';
-      if (outcome.waitingReason && !patchInputWait && !workerQuestion) return false;
-      if ((outcome.status === 'waiting_user' && !click && !patchInputWait && !workerQuestion) ||
-          (click && outcome.status !== 'failed' && !this.db.prepare(`SELECT 1 FROM approval_use u
-            JOIN approval a ON a.id=u.id WHERE a.runId=? AND a.version=?`).get(runId, row.runVersion!))) return false;
+      const clickApproved = click && outcome.status !== 'failed' && Boolean(this.db.prepare(`SELECT 1 FROM approval_use u
+        JOIN approval a ON a.id=u.id WHERE a.runId=? AND a.version=?`).get(runId, row.runVersion!));
+      const desktopLocked = outcome.status === 'waiting_user' && outcome.waitingReason === 'desktop_locked' &&
+        (observing || (click && !clickApproved));
+      if (outcome.waitingReason && !patchInputWait && !workerQuestion && !desktopLocked) return false;
+      if ((outcome.status === 'waiting_user' && !click && !patchInputWait && !workerQuestion && !desktopLocked) ||
+          (click && !desktopLocked && outcome.status !== 'failed' && !clickApproved)) return false;
       if (outcome.status === 'succeeded' && visual && outcome.artifact?.mime !== 'image/png') {
         outcome = { status: 'failed', result: 'The window screenshot was unavailable.' };
       }
@@ -1458,7 +1461,7 @@ export class TaskStore {
         this.finishInvalidInputs(runId, taskId);
         return false;
       }
-      if (outcome.status === 'waiting_user' && click) this.requireDesktopReconciliation(taskId, runId);
+      if (outcome.status === 'waiting_user' && click && !desktopLocked) this.requireDesktopReconciliation(taskId, runId);
       if (workerQuestion) {
         this.db.prepare(`INSERT INTO task_question_worker VALUES(?,?,?) ON CONFLICT(task_id)
           DO UPDATE SET device_id=excluded.device_id,revision=excluded.revision`).run(taskId, device, questionWorker!.revision!);

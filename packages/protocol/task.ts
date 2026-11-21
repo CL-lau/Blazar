@@ -40,7 +40,7 @@ export const windowImageLifetimeMs = 5 * 60_000;
 
 export interface RunOutcome {
   status: 'succeeded' | 'failed' | 'waiting_user';
-  waitingReason?: 'git_patch_inputs' | 'worker_question';
+  waitingReason?: 'git_patch_inputs' | 'worker_question' | 'desktop_locked';
   result: string;
   artifact?: TextArtifact & { mime?: 'image/png' };
   additionalArtifacts?: TextArtifact[];

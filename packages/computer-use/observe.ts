@@ -3,6 +3,8 @@ import { mkdtemp, open, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { isAbsolute, join } from 'node:path';
 import { createHash } from 'node:crypto';
+import { execFile } from 'node:child_process';
+import { promisify } from 'node:util';
 import { lockDatabaseFile } from '../storage/exclusive.ts';
 import { spawnWorker } from '../workers/process.ts';
 
@@ -12,7 +14,21 @@ export type ObservationConfig = {
   visualApps?: ReadonlySet<string>;
   buttons?: ReadonlyMap<string, ReadonlySet<string>>;
   desktopLockPath?: string;
+  sessionLocked?: (signal: AbortSignal) => Promise<boolean>;
 };
+
+const runCommand = promisify(execFile);
+
+async function macSessionLocked(signal: AbortSignal) {
+  const { stdout } = await runCommand('/usr/sbin/ioreg', ['-n', 'Root', '-d1'], {
+    signal, timeout: 2_000, maxBuffer: 256_000,
+  });
+  return /"CGSSessionScreenIsLocked"\s*=\s*Yes\b/.test(stdout);
+}
+
+export class DesktopSessionLocked extends Error {
+  constructor() { super('The desktop session is locked. Unlock the computer before retrying.'); }
+}
 
 export function observationConfig(env: NodeJS.ProcessEnv, desktopLockPath?: string): ObservationConfig {
   const executable = env.BLAZAR_COMPUTER_DRIVER;
@@ -40,7 +56,8 @@ export function observationConfig(env: NodeJS.ProcessEnv, desktopLockPath?: stri
   if (!Array.isArray(visual) || visual.length > apps.size || visual.some(alias => !apps.has(alias))) {
     throw new Error('Configure visual capture with approved application aliases.');
   }
-  return { executable, apps, buttons, visualApps: new Set(visual), desktopLockPath };
+  return { executable, apps, buttons, visualApps: new Set(visual), desktopLockPath,
+    sessionLocked: process.platform === 'darwin' ? macSessionLocked : undefined };
 }
 
 function describeTree(input: unknown) {
@@ -107,7 +124,10 @@ async function withDesktopLock<T>(config: ObservationConfig, signal: AbortSignal
   const unlock = config.desktopLockPath
     ? lockDatabaseFile(config.desktopLockPath, 'Another Blazar run is using the desktop. Retry this action.')
     : undefined;
-  try { return await operation(); }
+  try {
+    if (await config.sessionLocked?.(signal)) throw new DesktopSessionLocked();
+    return await operation();
+  }
   finally { unlock?.(); }
 }
 

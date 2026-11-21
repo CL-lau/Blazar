@@ -59,7 +59,9 @@ console.log(JSON.stringify({ok:true,command:'snapshot',data:{tree:{role:'window'
   const address = server.address();
   assert(address && typeof address !== 'string');
   const { id: computer, token } = store.registerDevice('owner', 'Computer', 'work');
-  const client = new DeviceClient(new URL('http://127.0.0.1:' + address.port), token, directory, ledger, undefined, observation);
+  let locked = false;
+  const client = new DeviceClient(new URL('http://127.0.0.1:' + address.port), token, directory, ledger, undefined,
+    { ...observation, sessionLocked: async () => locked });
   t.after(async () => {
     client.close();
     server.closeDeviceSockets();
@@ -190,6 +192,16 @@ console.log(JSON.stringify({ok:true,command:'snapshot',data:{tree:{role:'window'
   assert.equal(downstream.predecessors[0].artifact?.name, 'application-observation.txt');
   assert.match(downstream.predecessors[0].artifact?.excerpt ?? '', /button: Add/);
   assert.equal(store.runInputArtifact(downstream.run.id, 'reviewer', String(captured.id), Date.now()), undefined);
+  locked = true;
+  for (const [key, goal] of [['locked-inspect', '/observe calculator'], ['locked-click', '/click calculator Add']]) {
+    const pending = store.create('owner', 'desktop', key, 'work', goal, computer);
+    assert.equal(await client.runOnce(AbortSignal.timeout(8_000)), true);
+    const result = store.get('owner', pending.id);
+    assert.equal(result?.status, 'waiting_user');
+    assert.match(result?.result ?? '', /Unlock the computer/);
+    assert.equal(store.snapshot('owner').approvals.some(item => item.taskId === pending.id), false);
+    assert.equal(store.snapshot('owner').artifacts.some(item => item.taskId === pending.id), false);
+  }
   store.updateDeviceReadiness(Date.now());
   assert.equal(store.get('owner', denied.id)?.status, 'waiting_device');
   assert.equal(store.get('owner', preview.id)?.status, 'waiting_device');

@@ -1,5 +1,5 @@
 import { WorkerCleanupError } from '../../packages/workers/process.ts';
-import { DesktopResultUnverified, probeComputer, type ObservationConfig } from '../../packages/computer-use/observe.ts';
+import { DesktopResultUnverified, DesktopSessionLocked, probeComputer, type ObservationConfig } from '../../packages/computer-use/observe.ts';
 import { DeviceSocket } from './socket.ts';
 import type { Worker } from '../../packages/workers/registry.ts';
 import { createHash, createHmac, randomUUID } from 'node:crypto';
@@ -249,8 +249,9 @@ export class DeviceClient {
           active.throwIfAborted();
         }
         outcome = {
-          status: error instanceof DesktopResultUnverified || error instanceof GitPatchInputError || error instanceof WorkerQuestion
+          status: error instanceof DesktopResultUnverified || error instanceof DesktopSessionLocked || error instanceof GitPatchInputError || error instanceof WorkerQuestion
             ? 'waiting_user' : 'failed',
+          ...(error instanceof DesktopSessionLocked && { waitingReason: 'desktop_locked' }),
           ...(error instanceof GitPatchInputError && { waitingReason: 'git_patch_inputs' }),
           ...(error instanceof WorkerQuestion && { waitingReason: 'worker_question' }),
           result: error instanceof Error ? error.message : 'Preview failed',
