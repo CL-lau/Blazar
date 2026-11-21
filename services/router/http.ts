@@ -111,7 +111,7 @@ async function handleMemory(
     }
   }
 
-  const importPath = /^\/v1\/app-connections\/([a-f0-9-]{36})\/import-document$/.exec(pathname);
+  const importPath = /^\/v1\/app-connections\/([a-f0-9-]{36})\/(import-document|test-document)$/.exec(pathname);
   if (importPath && method === 'POST') {
     const data = await jsonObject(request);
     const workspace = requiredText(data.workspace, 'workspace', 128);
@@ -128,7 +128,14 @@ async function handleMemory(
     try {
       content = await reader.read(document, AbortSignal.timeout(10_000));
     } catch (error) {
-      throw new RequestError(502, error instanceof DocumentUnavailable ? error.message : 'Document import failed');
+      throw new RequestError(502, error instanceof DocumentUnavailable ? error.message : 'Document read failed');
+    }
+    if (importPath[2] === 'test-document') {
+      if (!store.connection(owner, importPath[1], workspace) || store.resourceRevoked(importPath[1], document)) {
+        throw new RequestError(409, 'Source access changed during the test');
+      }
+      reply(response, 200, { readable: true });
+      return true;
     }
     const id = store.importDocument(owner, workspace, content.text, {
       connection: importPath[1], resource: document, revision: content.revision,

@@ -117,6 +117,12 @@ test('Router authenticates, deduplicates commands and replays task changes over 
   assert.equal(scoped.status, 201);
   const { id: scopedConnection } = await scoped.json();
   const scopedImport = '/v1/app-connections/' + scopedConnection + '/import-document';
+  const scopedTest = '/v1/app-connections/' + scopedConnection + '/test-document';
+  assert.equal((await post(scopedTest, 'test-wrong-scope', { workspace: 'demo', document: 'doc123' })).status, 404);
+  const access = await post(scopedTest, 'test-right-scope', { workspace: 'private', document: 'doc123' });
+  assert.equal(access.status, 200);
+  assert.deepEqual(await access.json(), { readable: true });
+  assert.deepEqual(memory.recall('test', 'private', 'findings', [scopedConnection]), []);
   assert.equal((await post(scopedImport, 'wrong-scope', { workspace: 'demo', document: 'doc123' })).status, 404);
   assert.equal((await post(scopedImport, 'right-scope', { workspace: 'private', document: 'doc123' })).status, 200);
   const { id: connection } = await registered.json();

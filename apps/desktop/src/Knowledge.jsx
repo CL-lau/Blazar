@@ -150,10 +150,15 @@ export function Knowledge({ token }) {
             event.preventDefault();
             const form = event.currentTarget;
             const { connection, workspace, document } = Object.fromEntries(new FormData(form));
+            const testAccess = event.nativeEvent.submitter?.value === 'test';
             void perform(async () => {
-              await request('/app-connections/' + connection + '/import-document', {
+              await request('/app-connections/' + connection + (testAccess ? '/test-document' : '/import-document'), {
                 method: 'POST', body: { workspace, document },
               });
+              if (testAccess) {
+                setNotice('Document access verified.');
+                return;
+              }
               form.reset();
               setResults(null);
               setNotice('Document imported into memory.');
@@ -167,6 +172,7 @@ export function Knowledge({ token }) {
             <label>Workspace<input name="workspace" required maxLength={128} /></label>
             <label>Document ID or repository path<input name="document" required maxLength={128} /></label>
             <button>Import into memory</button>
+            <button type="submit" value="test">Test document access</button>
           </form>
         </fieldset>
       )}
