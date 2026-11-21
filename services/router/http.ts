@@ -2,7 +2,9 @@ import { jsonBody, jsonObject, reply } from './transport/json.ts';
 import { handleMemory } from './transport/memory-routes.ts';
 import { StaleRoutingEvidence } from './domain/idempotency.ts';
 import { deviceOperation } from './application/device-operation.ts';
-import { workerMemoryAvailable } from './application/task-memory.ts';
+import { submitWorkflow } from './application/submit-workflow.ts';
+import { streamTaskEvents } from './transport/task-stream.ts';
+import { selectAppEvidence, workerMemoryAvailable } from './application/task-memory.ts';
 import { RequestError, requiredText } from './protocol/request.ts';
 import type { Task, TaskAttachment } from '../../packages/protocol/task.ts';
 import { ConversationError, createConversationRouter } from './application/conversation.ts';
@@ -15,44 +17,12 @@ import type { DocumentConnector } from '../../packages/apps/documents.ts';
 import { createDeviceSocketTransport, maxDeviceClaimBytes, maxDeviceFinishBytes } from './transport/device-sockets.ts';
 import { createQQHandler, qqChannel, type QQConfig } from '../../packages/channels/qq.ts';
 import { feishuChannel, parseFeishu, type FeishuConfig } from '../../packages/channels/feishu.ts';
-import { InvalidWorkflow, workflowSteps } from './domain/workflow.ts';
+import { InvalidWorkflow } from './domain/workflow.ts';
 import type { MemoryAnswer, MemoryDraft, RouteRequest, RouterHarness } from './harness.ts';
 import { timingSafeEqual } from 'node:crypto';
-import { createServer, type IncomingMessage, type ServerResponse } from 'node:http';
-import { setTimeout as delay } from 'node:timers/promises';
+import { createServer } from 'node:http';
 import type { MemoryStore } from './memory.ts';
-import { IdempotencyConflict, TaskStore, type AppEvidence } from './store.ts';
-
-async function stream(store: TaskStore, owner: string, cursor: number, response: ServerResponse, authorized: () => boolean,
-                      once: boolean, canReadTask: (taskId: string) => boolean, replayThrough: number, metrics: RouterMetrics) {
-  response.writeHead(200, { 'Content-Type': 'text/event-stream', 'Cache-Control': 'no-store' });
-  response.flushHeaders();
-  metrics.recordStream('opened');
-  const controller = new AbortController();
-  response.once('close', () => controller.abort());
-  const deadline = Date.now() + 25_000;
-  try {
-    while (!controller.signal.aborted && Date.now() < deadline && authorized()) {
-      if (cursor < store.eventReplayFloor()) {
-        metrics.recordStream('resnapshotRequired');
-        return;
-      }
-      const events = store.events(owner, cursor);
-      for (const event of events) {
-        const frame = JSON.stringify({ ...event, data: canReadTask(event.taskId) ? JSON.parse(event.data) : {} });
-        const writable = response.write(`id: ${event.seq}\nevent: task\ndata: ${frame}\n\n`);
-        if (event.seq <= replayThrough) metrics.recordStream('replayedEvents');
-        if (!writable || once) return;
-        cursor = event.seq;
-      }
-      if (!events.length) await delay(250, undefined, { signal: controller.signal });
-    }
-  } catch (error) {
-    if (!controller.signal.aborted) throw error;
-  } finally {
-    response.end();
-  }
-}
+import { IdempotencyConflict, TaskStore } from './store.ts';
 
 function textAttachments(value: unknown): TaskAttachment[] {
   if (!Array.isArray(value) || value.length < 1 || value.length > 4) throw new RequestError(400, 'Invalid task attachments');
@@ -67,24 +37,6 @@ function textAttachments(value: unknown): TaskAttachment[] {
     }
     return { name: name.toWellFormed(), text };
   });
-}
-
-function selectAppEvidence(memory: MemoryStore | undefined, owner: string, workspace: string, value: unknown): AppEvidence {
-  if (!memory) throw new RequestError(503, 'Memory is unavailable');
-  if (!value || typeof value !== 'object' || Array.isArray(value)) {
-    throw new RequestError(400, 'Invalid application memory option');
-  }
-  const { query: rawQuery, sources: rawSources } = value as Record<string, unknown>;
-  const query = requiredText(rawQuery, 'search terms', 256);
-  if (!Array.isArray(rawSources) || !rawSources.length || rawSources.length > 25 ||
-      rawSources.some(item => typeof item !== 'string' || !/^[a-f0-9-]{36}$/.test(item))) {
-    throw new RequestError(400, 'Invalid source filter');
-  }
-  const sources = [...new Set(rawSources as string[])].sort();
-  const refs = memory.recall(owner, workspace, query, sources, false, false).slice(0, 4)
-    .map(item => ({ id: String(item.id), version: Number(item.version) }));
-  if (!refs.length) throw new RequestError(409, 'No authorized application evidence was found');
-  return { query, sources, refs };
 }
 
 type StreamChannelSettings = Partial<Record<'weixin' | 'wecom' | 'dingtalk', { workspace: string; health?: () => StreamHealth | undefined }>>;
@@ -471,7 +423,7 @@ export function routerServer(store: TaskStore, config: { owner: string; token: s
           metrics.recordStream('resnapshotRequired');
           throw new RequestError(409, 'Event cursor requires a new snapshot');
         }
-        await stream(store, owner, cursor, response, () => admin || store.mobileOwner(mobileToken) === owner,
+        await streamTaskEvents(store, owner, cursor, response, () => admin || store.mobileOwner(mobileToken) === owner,
           url.searchParams.get('once') === '1', canReadTask, replayThrough, metrics);
         return;
       }
@@ -479,30 +431,7 @@ export function routerServer(store: TaskStore, config: { owner: string; token: s
         const key = requiredText(request.headers['idempotency-key'], 'Idempotency-Key', 128);
         const data = await jsonObject(request);
         if (!admin && store.mobileOwner(mobileToken) !== owner) throw new RequestError(401, 'Authentication required');
-        const workspace = requiredText(data.workspace, 'workspace', 128);
-        const steps = workflowSteps(data.steps);
-        if (steps.some(step => step.goal.startsWith('/observe ') || step.goal.startsWith('/click '))) {
-          throw new RequestError(400, 'Desktop operations require a direct task request');
-        }
-        const desktopSteps = steps.flatMap(step => step.action ? [step.action] : []);
-        if (desktopSteps.length) {
-          const targets = store.desktopTargets(owner);
-          if (desktopSteps.some(action => !targets.some(target => target.workspace === workspace &&
-              target.deviceId === action.deviceId && target.alias === action.alias &&
-              (action.kind === 'desktop.observe'
-                ? (action.mode !== 'visual' && action.mode !== 'hybrid') || (target.controls?.visual === true && target.screenRecording !== 'denied')
-                : target.controls?.buttons.includes(action.button))))) {
-            throw new RequestError(404, 'Workflow desktop target unavailable');
-          }
-          if (data.appMemory !== undefined) throw new RequestError(400, 'Desktop workflow steps cannot use application memory');
-        }
-        if (data.appMemory !== undefined && (!admin || steps.some(step => step.goal.startsWith('/preview ')))) {
-          throw new RequestError(403, 'Application memory requires an administrator Worker workflow');
-        }
-        const appEvidence = data.appMemory === undefined ? undefined :
-          selectAppEvidence(config.memory, owner, workspace, data.appMemory);
-        const proposalKey = data.proposalKey === undefined ? undefined : requiredText(data.proposalKey, 'proposal key', 128);
-        reply(response, 202, store.createWorkflow(owner, key, workspace, steps, appEvidence, mobile?.id, proposalKey));
+        reply(response, 202, submitWorkflow(store, config.memory, owner, key, data, admin, mobile?.id));
         return;
       }
       if (request.method === 'POST' && url.pathname === '/v1/conversation') {
