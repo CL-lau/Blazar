@@ -10,7 +10,7 @@ import { resolveWorker } from '../../packages/workers/registry.ts';
 
 const executable = process.env.BLAZAR_TEST_GEMINI_EXECUTABLE;
 
-test('Gemini CLI completes, restores, and cancels ACP tasks with a local Gemini API', {
+test('Gemini CLI completes, restores, authorizes reads, and cancels ACP tasks', {
   skip: !executable && 'Set BLAZAR_TEST_GEMINI_EXECUTABLE to an installed gemini executable',
 }, async t => {
   const root = await realpath(await mkdtemp(join(tmpdir(), 'blazar-gemini-runtime-')));
@@ -18,7 +18,15 @@ test('Gemini CLI completes, restores, and cancels ACP tasks with a local Gemini 
   const config = join(root, 'config', '.gemini');
   const workspace = join(root, 'workspace');
   await Promise.all([mkdir(config, { recursive: true }), mkdir(workspace)]);
+  const fixtureFile = join(workspace, 'review.txt');
+  await writeFile(fixtureFile, 'GEMINI_APPROVED_READ_CONTENT');
+  const policyDir = join(config, 'policies');
+  await mkdir(policyDir);
+  await writeFile(join(policyDir, 'fixture.toml'), [
+    '[[rule]]', 'toolName = "read_file"', 'decision = "ask_user"', 'priority = 100',
+  ].join('\n'));
   const prompts: string[] = [];
+  let toolRequested = false;
   const streaming = Promise.withResolvers<void>();
   const streamClosed = Promise.withResolvers<void>();
   const server = createServer(async (request, response) => {
@@ -45,8 +53,11 @@ test('Gemini CLI completes, restores, and cancels ACP tasks with a local Gemini 
       streaming.resolve();
       return;
     }
+    const useTool = body.includes('Read the Gemini approval fixture') && !toolRequested;
+    if (useTool) toolRequested = true;
+    const parts = useTool ? [{ functionCall: { name: 'read_file', args: { file_path: fixtureFile } } }] : [{ text: 'GEMINI_ACP_OK' }];
     response.end('data: ' + JSON.stringify({
-      candidates: [{ content: { role: 'model', parts: [{ text: 'GEMINI_ACP_OK' }] }, finishReason: 'STOP', index: 0 }],
+      candidates: [{ content: { role: 'model', parts }, finishReason: 'STOP', index: 0 }],
       usageMetadata: { promptTokenCount: 12, candidatesTokenCount: 4, totalTokenCount: 16 },
     }) + '\n\n');
   });
@@ -92,6 +103,26 @@ test('Gemini CLI completes, restores, and cancels ACP tasks with a local Gemini 
     goal: 'Continue the Gemini fixture', instructions: [], predecessors: [],
   }, signal, undefined, undefined, { resumeId: session }), 'GEMINI_ACP_OK');
   assert.ok(prompts.find(body => body.includes('Continue the Gemini fixture'))?.includes('Return the fixture response'));
+  const approvals: string[] = [];
+  assert.equal(await runAcp(worker, workspace, {
+    goal: 'Read the Gemini approval fixture', instructions: [], predecessors: [],
+  }, signal, async summary => {
+    approvals.push(summary);
+    return 'approved';
+  }), 'GEMINI_ACP_OK');
+  assert.equal(approvals.length, 1);
+  assert.match(approvals[0], /"review\.txt"/);
+  assert.ok(prompts.some(body => body.includes('GEMINI_APPROVED_READ_CONTENT')));
+  const firstDeniedPrompt = prompts.length;
+  toolRequested = false;
+  assert.equal(await runAcp(worker, workspace, {
+    goal: 'Read the Gemini approval fixture without approval', instructions: [], predecessors: [],
+  }, signal, async summary => {
+    approvals.push(summary);
+    return 'denied';
+  }), 'GEMINI_ACP_OK');
+  assert.equal(approvals.length, 2);
+  assert.ok(!prompts.slice(firstDeniedPrompt).some(body => body.includes('GEMINI_APPROVED_READ_CONTENT')));
   const stop = new AbortController();
   const interrupted = assert.rejects(runAcp(worker, workspace, {
     goal: 'Cancel this Gemini fixture run', instructions: [], predecessors: [],
