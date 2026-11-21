@@ -80,6 +80,7 @@ export class DispatchRepository {
       FROM task WHERE owner=? AND workspace=?
       AND status IN ('queued','waiting_device') AND (substr(goal,1,length(?))=? OR (?='/observe ' AND substr(goal,1,7)='/click '))
       AND (?='' OR (substr(goal,1,length(?))!=? AND substr(goal,1,9)!='/observe ' AND substr(goal,1,7)!='/click '))
+      AND NOT EXISTS(SELECT 1 FROM stale_workflow_step stale WHERE stale.task_id=task.id)
       AND NOT EXISTS(SELECT 1 FROM expired_approval_stop s WHERE s.task_id=task.id AND s.expires>?)
       AND NOT EXISTS(SELECT 1 FROM task_worker_capability wc WHERE wc.task_id=task.id
         AND NOT EXISTS(SELECT 1 FROM json_each(?) WHERE value=wc.capability))

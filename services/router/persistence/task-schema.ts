@@ -76,6 +76,17 @@ export function initializeTaskSchema(db: DatabaseSync, runLimitMs: number) {
       id TEXT PRIMARY KEY, owner TEXT NOT NULL, request_key TEXT NOT NULL,
       fingerprint TEXT NOT NULL, UNIQUE(owner,request_key)
     );
+    CREATE TABLE IF NOT EXISTS workflow_source (
+      workflow_id TEXT NOT NULL REFERENCES workflow(id) ON DELETE CASCADE,
+      task_id TEXT NOT NULL, version INTEGER NOT NULL, PRIMARY KEY(workflow_id,task_id)
+    );
+    CREATE INDEX IF NOT EXISTS workflow_source_task ON workflow_source(task_id,workflow_id);
+    CREATE VIEW IF NOT EXISTS stale_workflow_step AS
+      SELECT step.task_id FROM workflow_step step WHERE EXISTS (
+        SELECT 1 FROM workflow_source src LEFT JOIN task source ON source.id=src.task_id
+        WHERE src.workflow_id=step.workflow_id AND
+          (source.status IS NOT 'succeeded' OR source.version IS NOT src.version)
+      );
     CREATE TABLE IF NOT EXISTS workflow_step (
       workflow_id TEXT NOT NULL REFERENCES workflow(id), step_key TEXT NOT NULL,
       task_id TEXT NOT NULL UNIQUE REFERENCES task(id), PRIMARY KEY(workflow_id,step_key)
@@ -228,8 +239,9 @@ export function initializeTaskSchema(db: DatabaseSync, runLimitMs: number) {
       predecessor TEXT NOT NULL REFERENCES task(id), version INTEGER NOT NULL,
       PRIMARY KEY(run_id,predecessor)
     );
-    CREATE VIEW IF NOT EXISTS invalid_workflow_run AS
-      SELECT r.id FROM run r WHERE EXISTS (
+    DROP VIEW IF EXISTS invalid_workflow_run;
+    CREATE VIEW invalid_workflow_run AS
+      SELECT r.id FROM run r WHERE r.taskId IN (SELECT task_id FROM stale_workflow_step) OR EXISTS (
         SELECT 1 FROM workflow_dependency d JOIN task p ON p.id=d.predecessor
         LEFT JOIN run_dependency v ON v.run_id=r.id AND v.predecessor=p.id
         WHERE d.task_id=r.taskId AND (p.status!='succeeded' OR v.version IS NOT p.version)

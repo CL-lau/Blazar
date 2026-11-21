@@ -55,6 +55,15 @@ export class TaskStore {
   }
 
   private updateWorkflowReadiness(changedTask?: string) {
+    const stale = this.db.prepare(`UPDATE task SET status='waiting_user',
+      result='A result used to plan this workflow changed. Ask Blazar for a new plan.'
+      WHERE status IN ('queued','waiting_device','waiting_dependency','waiting_review') AND id IN (
+        SELECT task_id FROM stale_workflow_step
+      ) AND (? IS NULL OR id IN (
+        SELECT w.task_id FROM workflow_step w JOIN workflow_source src ON src.workflow_id=w.workflow_id
+        WHERE src.task_id=?
+      )) RETURNING id`).all(changedTask ?? null, changedTask ?? null);
+    for (const task of stale) this.event(String(task.id), 'workflow.result_outdated', { status: 'waiting_user' });
     const updates = this.db.prepare(`WITH readiness AS MATERIALIZED (
       SELECT t.id,CASE WHEN EXISTS (
         SELECT 1 FROM workflow_dependency d JOIN task p ON p.id=d.predecessor
@@ -530,13 +539,15 @@ export class TaskStore {
         this.queueChannelNotice(owner, channel, message.chat, thread, replyId, text, now);
         return;
       }
-      if (['cancelled', 'cancelling', 'paused', 'pausing'].includes(String(link.status)) || !canContinue()) return;
+      if (['cancelled', 'cancelling', 'paused', 'pausing'].includes(String(link.status)) || !canContinue() ||
+          this.db.prepare('SELECT 1 FROM stale_workflow_step WHERE task_id=?').get(taskId)) return;
       this.appendInstruction(taskId, message.text, String(link.status), { channel });
     });
   }
 
   private reviewResult(task: Task, accepted: boolean, metadata: Record<string, string> = {}, reply?: ChannelReply) {
     const { id: taskId, version } = task;
+    if (accepted && this.db.prepare('SELECT 1 FROM stale_workflow_step WHERE task_id=?').get(taskId)) return false;
     const reconciliation = task.status === 'waiting_user' && this.db.prepare(
       'SELECT inputs FROM desktop_reconciliation WHERE task_id=?').get(taskId);
     if ((!reconciliation && task.status !== 'waiting_review') || (reconciliation && metadata.channel) ||
@@ -572,6 +583,7 @@ export class TaskStore {
   }
 
   private requeueTask(taskId: string, previousStatus: string, action: 'resume' | 'retry', metadata: Record<string, string> = {}) {
+    if (this.db.prepare('SELECT 1 FROM stale_workflow_step WHERE task_id=?').get(taskId)) return false;
     if (this.db.prepare('SELECT 1 FROM desktop_reconciliation WHERE task_id=?').get(taskId)) return false;
     const allowed = action === 'resume' ? previousStatus === 'paused'
       : previousStatus === 'failed' || previousStatus === 'waiting_user';
@@ -773,6 +785,9 @@ export class TaskStore {
       }
       const id = randomUUID();
       this.db.prepare('INSERT INTO workflow VALUES(?,?,?,?)').run(id, owner, requestKey, fingerprint);
+      if (proposalKey) this.db.prepare(`INSERT INTO workflow_source
+        SELECT ?,task_id,version FROM routing_task_evidence WHERE owner=? AND caller=? AND request_key=?`)
+        .run(id, owner, caller ?? 'admin', proposalKey);
       const tasks = new Map<string, string>();
       for (const step of ordered) {
         const name = step.key;
@@ -859,6 +874,7 @@ export class TaskStore {
       } else if (command.action === 'cancel') {
         if (!this.cancelTask(taskId, task.status)) return undefined;
       } else if (command.action === 'append') {
+        if (this.db.prepare('SELECT 1 FROM stale_workflow_step WHERE task_id=?').get(taskId)) return undefined;
         if (task.goal.startsWith('/click ')) return undefined;
         if (['cancelling', 'cancelled', 'pausing', 'paused'].includes(task.status)) return undefined;
         this.appendInstruction(taskId, command.text, task.status);
