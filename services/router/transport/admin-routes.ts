@@ -58,8 +58,12 @@ export async function handleAdmin(request: IncomingMessage, response: ServerResp
           !Number.isSafeInteger(runLimitSeconds) || runLimitSeconds < 30 || runLimitSeconds > 600)) {
         throw new RequestError(400, 'Invalid workspace Worker run time limit');
       }
+      const requireReadOnly = data.requireReadOnly;
+      if (requireReadOnly !== undefined && (typeof requireReadOnly !== 'boolean' || protocols === null)) {
+        throw new RequestError(400, 'Invalid read-only Worker policy');
+      }
       store.setWorkspaceWorkerPolicy(owner, workspace, protocols === null ? null : [...new Set(protocols)].sort(),
-        maxConcurrent, runLimitSeconds);
+        maxConcurrent, runLimitSeconds, requireReadOnly);
       store.updateDeviceReadiness(Date.now());
       reply(response, 200, { policies: store.workspaceWorkerPolicies(owner) });
       return true;

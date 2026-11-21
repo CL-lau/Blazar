@@ -25,6 +25,7 @@ export class DeviceRepository {
       w.revision AS workerRevision,w.adapter_version AS workerAdapterVersion,
       CASE WHEN p.capability='agent.acp' AND policy.protocols IS NOT NULL
         THEN NOT EXISTS(SELECT 1 FROM json_each(policy.protocols) WHERE value=w.protocol)
+          OR (policy.require_read_only=1 AND NOT EXISTS(SELECT 1 FROM json_each(w.capabilities) WHERE value='read-only'))
         ELSE 0 END AS workerPolicyBlocked,
       i.run_id AS interruptedRunId,(pause.device_id IS NOT NULL) AS paused,CASE WHEN d.revoked=0 AND p.last_seen>=? THEN 1 ELSE 0 END AS online
       FROM device d LEFT JOIN device_presence p ON p.device_id=d.id
@@ -36,22 +37,23 @@ export class DeviceRepository {
   }
 
   workspaceWorkerPolicies(owner: string) {
-    return this.db.prepare('SELECT workspace,protocols,max_concurrent,run_limit_seconds FROM workspace_worker_policy WHERE owner=? ORDER BY workspace')
+    return this.db.prepare('SELECT workspace,protocols,max_concurrent,run_limit_seconds,require_read_only FROM workspace_worker_policy WHERE owner=? ORDER BY workspace')
       .all(owner).map(row => ({
         workspace: String(row.workspace), protocols: JSON.parse(String(row.protocols)) as string[],
         ...(row.run_limit_seconds !== null && { runLimitSeconds: Number(row.run_limit_seconds) }),
+        ...(row.require_read_only === 1 && { requireReadOnly: true }),
         ...(row.max_concurrent !== null && { maxConcurrent: Number(row.max_concurrent) }),
       }));
   }
 
-  setWorkspaceWorkerPolicy(owner: string, workspace: string, protocols: string[] | null, maxConcurrent?: number, runLimitSeconds?: number) {
+  setWorkspaceWorkerPolicy(owner: string, workspace: string, protocols: string[] | null, maxConcurrent?: number, runLimitSeconds?: number, requireReadOnly = false) {
     if (protocols === null) {
       this.db.prepare('DELETE FROM workspace_worker_policy WHERE owner=? AND workspace=?').run(owner, workspace);
     } else {
-      this.db.prepare(`INSERT INTO workspace_worker_policy(owner,workspace,protocols,max_concurrent,run_limit_seconds) VALUES(?,?,?,?,?)
+      this.db.prepare(`INSERT INTO workspace_worker_policy(owner,workspace,protocols,max_concurrent,run_limit_seconds,require_read_only) VALUES(?,?,?,?,?,?)
         ON CONFLICT(owner,workspace) DO UPDATE SET protocols=excluded.protocols,max_concurrent=excluded.max_concurrent,
-          run_limit_seconds=excluded.run_limit_seconds`)
-        .run(owner, workspace, JSON.stringify(protocols), maxConcurrent ?? null, runLimitSeconds ?? null);
+          run_limit_seconds=excluded.run_limit_seconds,require_read_only=excluded.require_read_only`)
+        .run(owner, workspace, JSON.stringify(protocols), maxConcurrent ?? null, runLimitSeconds ?? null, Number(requireReadOnly));
     }
   }
 

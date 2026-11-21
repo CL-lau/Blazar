@@ -170,7 +170,8 @@ export function initializeTaskSchema(db: DatabaseSync, runLimitMs: number) {
       device_id TEXT PRIMARY KEY REFERENCES device(id)
     );
     CREATE TABLE IF NOT EXISTS workspace_worker_policy (
-      owner TEXT NOT NULL, workspace TEXT NOT NULL, protocols TEXT NOT NULL, max_concurrent INTEGER, run_limit_seconds INTEGER, PRIMARY KEY(owner,workspace)
+      owner TEXT NOT NULL, workspace TEXT NOT NULL, protocols TEXT NOT NULL, max_concurrent INTEGER,
+      run_limit_seconds INTEGER, require_read_only INTEGER NOT NULL DEFAULT 0, PRIMARY KEY(owner,workspace)
     );
     CREATE TABLE IF NOT EXISTS device_worker (
       device_id TEXT PRIMARY KEY REFERENCES device(id), label TEXT NOT NULL, protocol TEXT NOT NULL,
@@ -331,6 +332,9 @@ export function initializeTaskSchema(db: DatabaseSync, runLimitMs: number) {
   }
   if (!db.prepare("SELECT 1 FROM pragma_table_info('workspace_worker_policy') WHERE name='run_limit_seconds'").get()) {
     db.exec('ALTER TABLE workspace_worker_policy ADD COLUMN run_limit_seconds INTEGER');
+  }
+  if (!db.prepare("SELECT 1 FROM pragma_table_info('workspace_worker_policy') WHERE name='require_read_only'").get()) {
+    db.exec('ALTER TABLE workspace_worker_policy ADD COLUMN require_read_only INTEGER NOT NULL DEFAULT 0');
   }
   if (!db.prepare("SELECT 1 FROM pragma_table_info('routing_decision') WHERE name='caller'").get()) {
     sqliteTransaction(db, () => db.exec(`

@@ -51,9 +51,9 @@ export function Devices({ token }) {
     ...(catalog?.presets.map(worker => worker.protocol) ?? []), ...(catalog?.extensionProtocols ?? []),
   ])].sort();
 
-  async function savePolicy(selected, maxConcurrent, runLimitSeconds) {
+  async function savePolicy(selected, maxConcurrent, runLimitSeconds, requireReadOnly) {
     const data = await callRouter(token, '/admin/worker-policies', {
-      method: 'PUT', body: { workspace: policyWorkspace.trim(), protocols: selected, maxConcurrent, runLimitSeconds },
+      method: 'PUT', body: { workspace: policyWorkspace.trim(), protocols: selected, maxConcurrent, runLimitSeconds, requireReadOnly },
     });
     setPolicies(data.policies);
   }
@@ -126,14 +126,14 @@ export function Devices({ token }) {
         const selected = fields.getAll('protocol');
         const limit = fields.get('maxConcurrent');
         const seconds = fields.get('runLimitSeconds');
-        void update(() => savePolicy(selected, limit ? Number(limit) : undefined, seconds ? Number(seconds) : undefined));
+        void update(() => savePolicy(selected, limit ? Number(limit) : undefined, seconds ? Number(seconds) : undefined, fields.has('requireReadOnly')));
       }}>
         <label>Workspace<input list="worker-policy-workspaces" value={policyWorkspace} maxLength={128}
           onChange={event => setPolicyWorkspace(event.target.value)} required /></label>
         <datalist id="worker-policy-workspaces">{[...new Set([
           ...devices.map(device => device.workspace), ...policies.map(item => item.workspace),
         ])].sort().map(workspace => <option value={workspace} key={workspace} />)}</datalist>
-        <fieldset key={JSON.stringify([policyWorkspace.trim(), policy?.protocols, policy?.maxConcurrent, policy?.runLimitSeconds])} disabled={pending}>
+        <fieldset key={JSON.stringify([policyWorkspace.trim(), policy?.protocols, policy?.maxConcurrent, policy?.runLimitSeconds, policy?.requireReadOnly])} disabled={pending}>
           <legend>Allowed protocols for new assignments</legend>
           {protocols.map(protocol => <label key={protocol} className="checkbox-label">
             <input type="checkbox" name="protocol" value={protocol}
@@ -143,6 +143,8 @@ export function Devices({ token }) {
             placeholder="No limit" defaultValue={policy?.maxConcurrent ?? ''} /></label>
           <label>Maximum Worker run time in seconds<input type="number" name="runLimitSeconds" min="30" max="600" step="1"
             placeholder="600" defaultValue={policy?.runLimitSeconds ?? ''} /></label>
+          <label className="checkbox-label"><input type="checkbox" name="requireReadOnly"
+            defaultChecked={policy?.requireReadOnly === true} /> Require read-only Worker execution</label>
           <button disabled={!policyWorkspace.trim()}>Save policy</button>
           {policy && <button type="button" onClick={() => void update(() => savePolicy(null))}>Clear restriction</button>}
         </fieldset>

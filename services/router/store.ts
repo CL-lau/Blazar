@@ -1085,7 +1085,7 @@ export class TaskStore {
       if (selection.kind === 'replay') {
         return { ...(selection.assignment as ReturnType<TaskStore['assignment']>), replayed: true };
       }
-      const { task, fingerprint, workerLimitSeconds } = selection;
+      const { task, fingerprint, workerLimitSeconds, requireReadOnly } = selection;
       const action = /^\/(observe|click) /.test(task.goal) ? this.workflowDesktopAction(task.id) : undefined;
       let resolvedGoal: string | undefined;
       if (action && 'windowFrom' in action) {
@@ -1131,7 +1131,7 @@ export class TaskStore {
         })),
       });
       this.dispatch.markDispatched(owner, workspace, goalPrefix, excludingPrefix, task.origin_channel, this.eventCursor());
-      const assignment = this.assignment(owner, run, predecessors);
+      const assignment = this.assignment(owner, run, predecessors, workerTask && requireReadOnly);
       if (resolvedGoal) assignment.task = { ...assignment.task, goal: resolvedGoal };
       if (requestId) this.dispatch.saveReceipt(device, requestId, fingerprint, JSON.stringify(assignment), now);
       return { ...assignment, replayed: false };
@@ -1171,7 +1171,7 @@ export class TaskStore {
     });
   }
 
-  private assignment(owner: string, run: Run, predecessors: PredecessorInput[]) {
+  private assignment(owner: string, run: Run, predecessors: PredecessorInput[], requireReadOnly: boolean) {
     const instructions = this.db.prepare(`SELECT data FROM event WHERE taskId=?
       AND type='task.instruction_added' ORDER BY seq`).all(run.taskId)
       .map(row => JSON.parse(String(row.data)).text as string);
@@ -1188,7 +1188,7 @@ export class TaskStore {
     const required = this.db.prepare('SELECT capability FROM task_worker_capability WHERE task_id=?').get(run.taskId)?.capability;
     return { run, task, instructions, predecessors, acceptanceCriteria,
       ...(required === 'full-input-artifacts' && { fullInputRequired: true }),
-      ...(required === 'read-only' && { readOnlyRequired: true }),
+      ...((required === 'read-only' || requireReadOnly) && { readOnlyRequired: true }),
       ...(typeof expected === 'string' && (task.goal.startsWith('/click ')
         ? { clickExpectedText: expected } : { observationExpectedText: expected })),
       ...(observationWaitSeconds !== undefined && { observationWaitSeconds }),
@@ -1493,6 +1493,8 @@ export class TaskStore {
             ELSE 'agent.acp' END)
           AND (policy.protocols IS NULL OR substr(t.goal,1,9) IN ('/observe ','/preview ') OR substr(t.goal,1,7)='/click '
             OR (p.capability='agent.acp' AND EXISTS(SELECT 1 FROM json_each(policy.protocols) WHERE value=worker.protocol)))
+          AND (COALESCE(policy.require_read_only,0)=0 OR substr(t.goal,1,9) IN ('/observe ','/preview ')
+            OR substr(t.goal,1,7)='/click ' OR EXISTS(SELECT 1 FROM json_each(worker.capabilities) WHERE value='read-only'))
           AND (NOT EXISTS(SELECT 1 FROM task_worker_protocol wp WHERE wp.task_id=t.id) OR
             EXISTS(SELECT 1 FROM task_worker_protocol wp WHERE wp.task_id=t.id AND wp.protocol=worker.protocol))
           AND NOT EXISTS(SELECT 1 FROM task_worker_capability wc WHERE wc.task_id=t.id

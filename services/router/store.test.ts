@@ -1084,3 +1084,34 @@ test('parallel Worker claims require isolated checkouts for every active run', t
   assert.equal(claim('shared-device'), undefined);
   assert(claim('isolated-c', isolated));
 });
+
+test('a read-only workspace requires the advertised sandbox capability for Worker assignments', t => {
+  const store = new TaskStore(':memory:');
+  t.after(() => store.close());
+  const workspace = 'project';
+  const owner = 'owner';
+  const writable = store.registerDevice(owner, 'Generic worker', workspace);
+  const sandboxed = store.registerDevice(owner, 'Codex worker', workspace);
+  const genericWorker = { label: 'Generic worker', protocol: 'jsonl' };
+  const codex = { label: 'Codex', protocol: 'codex', capabilities: ['read-only' as const] };
+  const now = Date.now();
+  store.setWorkspaceWorkerPolicy(owner, workspace, ['codex', 'jsonl'], undefined, undefined, true);
+  assert.deepEqual(store.workspaceWorkerPolicies(owner), [{ workspace, protocols: ['codex', 'jsonl'], requireReadOnly: true }]);
+  const task = store.create(owner, 'fixture', 'isolated', workspace, 'Inspect the repository');
+  store.recordDeviceActivity(writable.id, now, 'agent.acp');
+  store.recordDeviceWorker(writable.id, genericWorker);
+  assert.equal(store.devices(owner).find(device => device.id === writable.id)?.workerPolicyBlocked, 1);
+  store.updateDeviceReadiness(now);
+  assert.equal(store.get(owner, task.id)?.status, 'waiting_device');
+  assert.equal(store.claim(owner, workspace, writable.id, now, 45_000, '', '/preview ', undefined, genericWorker), undefined);
+  store.recordDeviceActivity(sandboxed.id, now, 'agent.acp');
+  store.recordDeviceWorker(sandboxed.id, codex);
+  store.updateDeviceReadiness(now);
+  assert.equal(store.get(owner, task.id)?.status, 'queued');
+  const run = store.claim(owner, workspace, sandboxed.id, now, 45_000, '', '/preview ', 'readonly', codex);
+  assert.equal(run?.task.id, task.id);
+  assert.equal(run?.readOnlyRequired, true);
+  assert.equal(store.claim(owner, workspace, sandboxed.id, now, 45_000, '', '/preview ', 'readonly', codex)?.readOnlyRequired, true);
+  const preview = store.create(owner, 'fixture', 'preview', workspace, '/preview notes.md');
+  assert.equal(store.claim(owner, workspace, 'preview-device', now, 45_000, '/preview ')?.task.id, preview.id);
+});

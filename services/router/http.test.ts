@@ -506,9 +506,9 @@ test('Router authenticates, deduplicates commands and replays task changes over 
   assert.equal((await fetch(url + '/v1/admin/metrics', { headers: mobileHeaders })).status, 403);
   assert.equal((await fetch(url + '/v1/admin/workers', { headers: mobileHeaders })).status, 403);
   const policyPath = url + '/v1/admin/worker-policies';
-  const editPolicy = (protocols: unknown, auth: Record<string, string> = headers, maxConcurrent?: number, runLimitSeconds?: number) => fetch(policyPath, {
+  const editPolicy = (protocols: unknown, auth: Record<string, string> = headers, maxConcurrent?: number, runLimitSeconds?: number, requireReadOnly?: unknown) => fetch(policyPath, {
     method: 'PUT', headers: { ...auth, 'Content-Type': 'application/json' },
-    body: JSON.stringify({ workspace: 'policy-fixture', protocols, maxConcurrent, runLimitSeconds }),
+    body: JSON.stringify({ workspace: 'policy-fixture', protocols, maxConcurrent, runLimitSeconds, requireReadOnly }),
   });
   assert.equal((await editPolicy(['codex'], mobileHeaders)).status, 403);
   assert.equal((await editPolicy(['invalid'])).status, 400);
@@ -520,8 +520,9 @@ test('Router authenticates, deduplicates commands and replays task changes over 
   assert.equal((await editPolicy(['codex'], headers, 0)).status, 400);
   assert.equal((await editPolicy(['codex'], headers, 2, 29)).status, 400);
   assert.equal((await editPolicy(null, headers, undefined, 120)).status, 400);
-  assert.deepEqual((await (await editPolicy(['codex'], headers, 2, 120)).json()).policies,
-    [{ workspace: 'policy-fixture', protocols: ['codex'], maxConcurrent: 2, runLimitSeconds: 120 }]);
+  assert.equal((await editPolicy(['codex'], headers, 2, 120, 'yes')).status, 400);
+  assert.deepEqual((await (await editPolicy(['codex'], headers, 2, 120, true)).json()).policies,
+    [{ workspace: 'policy-fixture', protocols: ['codex'], maxConcurrent: 2, runLimitSeconds: 120, requireReadOnly: true }]);
   assert.deepEqual((await (await editPolicy(null)).json()).policies, []);
   const catalog = await (await fetch(url + '/v1/admin/workers', { headers })).json();
   assert.deepEqual(catalog.extensionProtocols, ['acp', 'jsonl']);

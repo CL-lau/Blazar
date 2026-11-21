@@ -26,10 +26,11 @@ export class DispatchRepository {
            worker, desktopApps, allowWorkerInputs }: ClaimSelection) {
     const identity = [owner, workspace, goalPrefix, excludingPrefix];
     const fingerprint = JSON.stringify(desktopApps ? [...identity, desktopApps] : worker ? [...identity, worker] : identity);
-    const policy = this.db.prepare('SELECT protocols,max_concurrent,run_limit_seconds FROM workspace_worker_policy WHERE owner=? AND workspace=?')
+    const policy = this.db.prepare('SELECT protocols,max_concurrent,run_limit_seconds,require_read_only FROM workspace_worker_policy WHERE owner=? AND workspace=?')
       .get(owner, workspace);
     const capabilities = JSON.stringify(worker?.capabilities ?? []);
-    const workerPermitted = !policy || (worker && (JSON.parse(String(policy.protocols)) as string[]).includes(worker.protocol));
+    const workerPermitted = !policy || (worker && (JSON.parse(String(policy.protocols)) as string[]).includes(worker.protocol) &&
+      (policy.require_read_only !== 1 || worker.capabilities?.includes('read-only')));
     if (requestId) {
       const receipt = this.db.prepare('SELECT fingerprint,response,expires FROM device_claim WHERE device=? AND key=?')
         .get(device, requestId);
@@ -117,7 +118,7 @@ export class DispatchRepository {
       if (requestId) this.saveReceipt(device, requestId, fingerprint, null, now);
       return undefined;
     }
-    return { kind: 'selected' as const, task, fingerprint,
+    return { kind: 'selected' as const, task, fingerprint, requireReadOnly: policy?.require_read_only === 1,
       workerLimitSeconds: policy?.run_limit_seconds == null ? undefined : Number(policy.run_limit_seconds) };
   }
 
