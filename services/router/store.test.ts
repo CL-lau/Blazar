@@ -577,3 +577,35 @@ test('claims rotate incoming channels within each owner and workspace while pres
   assert.equal(take('device-c', 'other', 'other-project').task.goal, 'feishu-other-project');
   assert.equal(take('device-d', 'other', 'project', 'other-owner').task.goal, 'feishu-other-owner');
 });
+
+test('workspace Worker policies filter readiness, fresh assignments, and claim replay', t => {
+  const store = new TaskStore(':memory:');
+  t.after(() => store.close());
+  const now = Date.now();
+  const agent = store.registerDevice('owner', 'Agent', 'restricted');
+  const acp = { label: 'ACP agent', protocol: 'acp' };
+  const codex = { label: 'Codex', protocol: 'codex' };
+  store.recordDeviceWorker(agent.id, acp);
+  store.recordDeviceActivity(agent.id, now, 'agent.acp');
+  store.setWorkspaceWorkerPolicy('owner', 'restricted', ['codex']);
+  const task = store.create('owner', 'test', 'restricted', 'restricted', 'Review notes');
+  store.updateDeviceReadiness(now);
+  assert.equal(store.get('owner', task.id)?.status, 'waiting_device');
+  const claim = (worker: typeof acp | undefined, key?: string) =>
+    store.claim('owner', 'restricted', agent.id, now, 45_000, '', '/preview ', key, worker);
+  assert.equal(claim(acp), undefined);
+  assert.equal(claim(undefined), undefined);
+  store.recordDeviceWorker(agent.id, codex);
+  store.updateDeviceReadiness(now);
+  assert.equal(store.get('owner', task.id)?.status, 'queued');
+  const assignment = claim(codex, 'claim')!;
+  assert.equal(assignment.task.id, task.id);
+  assert.equal(claim(codex, 'claim')?.run.id, assignment.run.id);
+  store.setWorkspaceWorkerPolicy('owner', 'restricted', []);
+  assert.equal(claim(codex, 'claim'), undefined);
+  assert.equal(store.get('owner', task.id)?.status, 'running');
+  const preview = store.create('owner', 'test', 'preview', 'restricted', '/preview notes.txt');
+  assert.equal(store.claim('owner', 'restricted', 'viewer', now, 45_000, '/preview ')?.task.id, preview.id);
+  const other = store.create('other', 'test', 'other', 'restricted', 'Review other notes');
+  assert.equal(store.claim('other', 'restricted', 'other-device', now, 45_000)?.task.id, other.id);
+});

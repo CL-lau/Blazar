@@ -841,6 +841,26 @@ export function routerServer(store: TaskStore, config: { owner: string; token: s
         reply(response, 200, { revoked: true });
         return;
       }
+      if (url.pathname === '/v1/admin/worker-policies') {
+        if (request.method === 'GET') {
+          reply(response, 200, { policies: store.workspaceWorkerPolicies(owner) });
+          return;
+        }
+        if (request.method === 'PUT') {
+          const data = await jsonObject(request);
+          const workspace = requiredText(data.workspace, 'workspace', 128);
+          const protocols = data.protocols;
+          const supported = new Set([...workerCatalog().map(worker => worker.protocol), 'jsonl']);
+          if (protocols !== null && (!Array.isArray(protocols) || protocols.length > supported.size ||
+              protocols.some(protocol => typeof protocol !== 'string' || !supported.has(protocol)))) {
+            throw new RequestError(400, 'Invalid Worker protocols');
+          }
+          store.setWorkspaceWorkerPolicy(owner, workspace, protocols === null ? null : [...new Set(protocols)].sort());
+          store.updateDeviceReadiness(Date.now());
+          reply(response, 200, { policies: store.workspaceWorkerPolicies(owner) });
+          return;
+        }
+      }
       if (url.pathname === '/v1/admin/workers' && request.method === 'GET') {
         reply(response, 200, { presets: workerCatalog(), extensionProtocols: ['acp', 'jsonl'] });
         return;

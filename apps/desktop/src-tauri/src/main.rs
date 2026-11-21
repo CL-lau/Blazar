@@ -65,6 +65,7 @@ fn allowed(method: &Method, path: &str) -> bool {
             identifier(id)
         }
         ("GET", ["", "admin", "mobile-clients" | "mobile-pairings" | "devices" | "workers" | "metrics"]) => true,
+        ("GET" | "PUT", ["", "admin", "worker-policies"]) => true,
         ("POST", ["", "admin", "devices" | "task-links"]) => true,
         ("POST", ["", "admin", "mobile-pairings", id]) => identifier(id),
         ("GET", ["", "admin", "tasks", id, "links"]) => identifier(id),
@@ -179,6 +180,7 @@ mod tests {
         ));
         for (method, path) in [
             (Method::GET, "/admin/metrics"),
+            (Method::PUT, "/admin/worker-policies"),
             (Method::GET, "/admin/mobile-pairings"),
             (Method::POST, "/admin/mobile-pairings/00000000-0000-0000-0000-000000000000"),
             (Method::GET, "/memory/00000000-0000-0000-0000-000000000000/history"),

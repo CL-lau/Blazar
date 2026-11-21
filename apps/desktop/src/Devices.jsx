@@ -4,6 +4,8 @@ import { callRouter } from './router.js';
 export function Devices({ token }) {
   const [devices, setDevices] = useState([]);
   const [catalog, setCatalog] = useState(null);
+  const [policies, setPolicies] = useState([]);
+  const [policyWorkspace, setPolicyWorkspace] = useState('');
   const [preset, setPreset] = useState('');
   const [catalogError, setCatalogError] = useState('');
   const [registration, setRegistration] = useState(null);
@@ -35,6 +37,26 @@ export function Devices({ token }) {
       .catch(failure => { if (!stop.signal.aborted) setCatalogError(failure.message); });
     return () => stop.abort();
   }, [token]);
+
+  useEffect(() => {
+    const abort = new AbortController();
+    callRouter(token, '/admin/worker-policies', { signal: abort.signal })
+      .then(data => { if (!abort.signal.aborted) setPolicies(data.policies); })
+      .catch(failure => { if (!abort.signal.aborted) setError(failure.message); });
+    return () => abort.abort();
+  }, [token]);
+
+  const policy = policies.find(item => item.workspace === policyWorkspace.trim());
+  const protocols = [...new Set([
+    ...(catalog?.presets.map(worker => worker.protocol) ?? []), ...(catalog?.extensionProtocols ?? []),
+  ])].sort();
+
+  async function savePolicy(selected) {
+    const data = await callRouter(token, '/admin/worker-policies', {
+      method: 'PUT', body: { workspace: policyWorkspace.trim(), protocols: selected },
+    });
+    setPolicies(data.policies);
+  }
 
   async function update(action) {
     setError('');
@@ -93,6 +115,29 @@ export function Devices({ token }) {
         });
       }}>Revoke</button>}
     </li>)}</ul>
+    {protocols.length > 0 && <details>
+      <summary>Workspace Worker policies</summary>
+      <form onSubmit={event => {
+        event.preventDefault();
+        const selected = new FormData(event.currentTarget).getAll('protocol');
+        void update(() => savePolicy(selected));
+      }}>
+        <label>Workspace<input list="worker-policy-workspaces" value={policyWorkspace} maxLength={128}
+          onChange={event => setPolicyWorkspace(event.target.value)} required /></label>
+        <datalist id="worker-policy-workspaces">{[...new Set([
+          ...devices.map(device => device.workspace), ...policies.map(item => item.workspace),
+        ])].sort().map(workspace => <option value={workspace} key={workspace} />)}</datalist>
+        <fieldset key={JSON.stringify([policyWorkspace.trim(), policy?.protocols])} disabled={pending}>
+          <legend>Allowed protocols for new assignments</legend>
+          {protocols.map(protocol => <label key={protocol} className="checkbox-label">
+            <input type="checkbox" name="protocol" value={protocol}
+              defaultChecked={!policy || policy.protocols.includes(protocol)} /> {protocol.toUpperCase()}
+          </label>)}
+          <button disabled={!policyWorkspace.trim()}>Save policy</button>
+          {policy && <button type="button" onClick={() => void update(() => savePolicy(null))}>Clear restriction</button>}
+        </fieldset>
+      </form>
+    </details>}
     <details>
       <summary>Worker presets</summary>
       {catalogError && <p role="alert">{catalogError}</p>}
