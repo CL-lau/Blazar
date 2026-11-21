@@ -34,12 +34,20 @@ test('workspace scope changes update the derived full-text index', t => {
   const indexed = (term: string) =>
     db.prepare('SELECT rowid FROM memory_search WHERE memory_search MATCH ?').all(term).length;
   assert.equal(indexed('handbook'), 2);
+  store.recordDocumentAccess(connection, source.resource, 1, false);
+  assert.equal(indexed('handbook'), 0);
   assert.equal(store.setConnectionWorkspace('owner', connection, 'two'), true);
+  assert.equal(indexed('alpha'), 0);
+  assert.equal(indexed('bravo'), 0);
+  store.recordDocumentAccess(connection, source.resource, 2, true);
   assert.equal(indexed('alpha'), 0);
   assert.equal(indexed('bravo'), 1);
   assert.equal(store.setConnectionWorkspace('owner', connection, null), true);
   assert.equal(indexed('handbook'), 2);
+  store.recordDocumentAccess(connection, source.resource, 3, false);
+  assert.equal(indexed('handbook'), 0);
   assert.equal(store.disconnect('owner', connection), true);
+  store.recordDocumentAccess(connection, source.resource, 4, true);
   assert.equal(indexed('handbook'), 0);
   assert.equal(store.remove('owner', older), true);
   assert.equal(indexed('alpha'), 0);

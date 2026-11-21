@@ -79,6 +79,8 @@ export class MemoryStore {
       DROP TRIGGER IF EXISTS memory_delete;
       DROP TRIGGER IF EXISTS memory_update;
       DROP TRIGGER IF EXISTS memory_connection_scope;
+      DROP TRIGGER IF EXISTS memory_document_access_insert;
+      DROP TRIGGER IF EXISTS memory_document_access_update;
     `;
     if (!this.fullText) {
       this.db.exec(dropTriggers);
@@ -86,17 +88,21 @@ export class MemoryStore {
     }
     this.db.exec('BEGIN IMMEDIATE');
     try {
-      const initialized = this.db.prepare("SELECT 1 FROM sqlite_schema WHERE name='memory_connection_scope'").get();
+      const initialized = this.db.prepare("SELECT 1 FROM sqlite_schema WHERE name='memory_document_access_update'").get();
       if (!initialized) {
         this.db.exec(dropTriggers);
         this.db.exec('DROP TABLE IF EXISTS memory_search');
+        this.db.exec('DROP VIEW IF EXISTS memory_indexable');
       }
       this.db.exec(`
-        CREATE VIEW IF NOT EXISTS memory_indexable AS
-          SELECT m.rowid,m.body FROM memory m LEFT JOIN app_connection a ON a.id=m.connection
+        CREATE VIEW IF NOT EXISTS memory_connection_visible AS
+          SELECT m.rowid,m.body,m.connection,m.resource FROM memory m LEFT JOIN app_connection a ON a.id=m.connection
           WHERE m.connection IS NULL OR (
             a.owner=m.owner AND a.active=1 AND (a.workspace IS NULL OR a.workspace=m.workspace)
           );
+        CREATE VIEW IF NOT EXISTS memory_indexable AS
+          SELECT m.rowid,m.body FROM memory_connection_visible m
+          WHERE NOT EXISTS(SELECT 1 FROM document_access x WHERE x.connection=m.connection AND x.resource=m.resource AND x.allowed=0);
         CREATE VIRTUAL TABLE IF NOT EXISTS memory_search USING fts5(
           body, content='memory_indexable', content_rowid='rowid', tokenize='trigram'
         );
@@ -117,11 +123,28 @@ export class MemoryStore {
           INSERT INTO memory_search(memory_search,rowid,body)
             SELECT 'delete',m.rowid,m.body FROM memory m WHERE m.connection=old.id AND m.owner=old.owner
               AND old.active=1 AND (old.workspace IS NULL OR old.workspace=m.workspace)
+              AND NOT EXISTS(SELECT 1 FROM document_access x WHERE x.connection=m.connection AND x.resource=m.resource AND x.allowed=0)
               AND (new.active=0 OR (new.workspace IS NOT NULL AND new.workspace<>m.workspace));
           INSERT INTO memory_search(rowid,body)
             SELECT m.rowid,m.body FROM memory m WHERE m.connection=new.id AND m.owner=new.owner
               AND new.active=1 AND (new.workspace IS NULL OR new.workspace=m.workspace)
+              AND NOT EXISTS(SELECT 1 FROM document_access x WHERE x.connection=m.connection AND x.resource=m.resource AND x.allowed=0)
               AND (old.active=0 OR (old.workspace IS NOT NULL AND old.workspace<>m.workspace));
+        END;
+        CREATE TRIGGER IF NOT EXISTS memory_document_access_insert AFTER INSERT ON document_access
+        WHEN new.allowed=0 BEGIN
+          INSERT INTO memory_search(memory_search,rowid,body)
+            SELECT 'delete',m.rowid,m.body FROM memory_connection_visible m
+              WHERE m.connection=new.connection AND m.resource=new.resource;
+        END;
+        CREATE TRIGGER IF NOT EXISTS memory_document_access_update AFTER UPDATE OF allowed ON document_access
+        WHEN old.allowed<>new.allowed BEGIN
+          INSERT INTO memory_search(memory_search,rowid,body)
+            SELECT 'delete',m.rowid,m.body FROM memory_connection_visible m
+              WHERE new.allowed=0 AND m.connection=new.connection AND m.resource=new.resource;
+          INSERT INTO memory_search(rowid,body)
+            SELECT m.rowid,m.body FROM memory_connection_visible m
+              WHERE new.allowed=1 AND m.connection=new.connection AND m.resource=new.resource;
         END;
       `);
       if (!initialized) this.db.exec("INSERT INTO memory_search(memory_search) VALUES('rebuild')");
