@@ -657,6 +657,21 @@ export class TaskStore {
     });
   }
 
+  leaseDingTalkNotice(channel: string, now: number, available: readonly { chat: string; messageId: string }[]) {
+    return this.transaction(() => {
+      const notice = this.db.prepare(`SELECT o.id,o.chat,o.message_id AS messageId,o.text
+        FROM channel_outbox o JOIN channel_reply_window w ON w.channel=o.channel
+          AND w.chat=o.chat AND w.message_id=o.message_id
+        WHERE o.channel=? AND o.delivered=0 AND o.retry<=? AND w.expires>?
+        AND EXISTS (SELECT 1 FROM json_each(?) j WHERE json_extract(j.value,'$[0]')=o.chat
+          AND json_extract(j.value,'$[1]')=o.message_id) ORDER BY o.created,o.rowid LIMIT 1`)
+        .get(channel, now, now, JSON.stringify(available.map(({ chat, messageId }) => [chat, messageId]))) as
+        { id: string; chat: string; messageId: string; text: string } | undefined;
+      if (notice) this.db.prepare('UPDATE channel_outbox SET delivered=-2 WHERE id=?').run(notice.id);
+      return notice;
+    });
+  }
+
   leasePassiveNotice(channel: string, now: number, chats: readonly string[]) {
     return this.transaction(() => {
       const candidate = this.db.prepare(`SELECT o.id,o.chat,o.message_id AS messageId,o.text,w.expires,

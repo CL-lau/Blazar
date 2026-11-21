@@ -10,14 +10,16 @@ export async function receiveDingTalkEvent(store: TaskStore, owner: string, chan
                                           signal?: AbortSignal) {
   const event = parseDingTalk(raw, config);
   if (event) {
+    const now = Date.now();
+    const window = dingTalkReplyWindow(raw, now);
     if ('taskId' in event && event.text === '/attach') {
       if (download && event.privateChat) {
         store.expectChannelAttachment(owner, channel, config.workspace, { ...event, taskId: event.taskId }, Date.now());
       }
     } else {
-      store.receiveChannelMessage(owner, channel, config.workspace, event);
+      store.receiveChannelMessage(owner, channel, config.workspace, { ...event, replyExpires: window?.expires ?? now });
     }
-    return event.chat;
+    return { chat: event.chat, messageId: event.id, window };
   }
   if (!download) return undefined;
   const file = parseDingTalkAttachment(raw, config);
@@ -30,7 +32,7 @@ export async function receiveDingTalkEvent(store: TaskStore, owner: string, chan
     store.addChannelAttachment(owner, channel, config.workspace, intent.taskId, message, { name: file.name, text },
       { sender: file.sender, commandId: intent.commandId });
   }
-  return file.chat;
+  return { chat: file.chat, messageId: file.id, window: undefined };
 }
 
 export function startDingTalk(store: TaskStore, owner: string, config: ConnectionConfig, onMessage?: () => void) {
@@ -42,19 +44,20 @@ export function startDingTalk(store: TaskStore, owner: string, config: Connectio
   let active = true;
   let sending = false;
   let attempted = false;
-  const windows = new Map<string, ReplyWindow>();
+  const windows = new Map<string, { chat: string; messageId: string; window: ReplyWindow }>();
+  const windowKey = (chat: string, messageId: string) => JSON.stringify([chat, messageId]);
   const dispatcher = setInterval(() => {
     if (!active || sending) return;
     const now = Date.now();
-    for (const [chat, window] of windows) {
-      if (window.expires <= now) windows.delete(chat);
+    for (const [id, { window }] of windows) {
+      if (window.expires <= now) windows.delete(id);
     }
     if (!windows.size) return;
     // DingTalk's session reply has no idempotency key. Record the attempt before sending.
-    const notice = store.leaseChannelNotice(channel, now, [...windows.keys()], true);
+    const notice = store.leaseDingTalkNotice(channel, now, [...windows.values()]);
     if (!notice) return;
     sending = true;
-    void sendDingTalkNotice(windows.get(notice.chat)!, notice.text)
+    void sendDingTalkNotice(windows.get(windowKey(notice.chat, notice.messageId))!.window, notice.text)
       .then(() => { if (active) store.finishChannelNotice(notice.id, true); })
       .catch(() => { if (active) console.error('DingTalk notification outcome is unknown'); })
       .finally(() => { sending = false; });
@@ -62,12 +65,12 @@ export function startDingTalk(store: TaskStore, owner: string, config: Connectio
   dispatcher.unref();
   client.registerCallbackListener(TOPIC_ROBOT, frame => {
     if (!active) return;
-    void receiveDingTalkEvent(store, owner, channel, config, frame.data, download, stop.signal).then(chat => {
+    void receiveDingTalkEvent(store, owner, channel, config, frame.data, download, stop.signal).then(receipt => {
       if (!active) return;
-      if (chat) {
+      if (receipt) {
+        const { chat, messageId, window } = receipt;
+        if (window) windows.set(windowKey(chat, messageId), { chat, messageId, window });
         onMessage?.();
-        const window = dingTalkReplyWindow(frame.data, Date.now());
-        if (window) windows.set(chat, window);
       }
       if (frame.headers.messageId) client.socketCallBackResponse(frame.headers.messageId, { success: true });
     }).catch(() => { if (active) console.error('DingTalk callback was not committed'); });
