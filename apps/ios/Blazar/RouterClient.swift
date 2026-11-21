@@ -21,6 +21,7 @@ struct RouterSnapshot: Decodable {
         let status: String
         let version: Int
         let result: String?
+        let usesAppMemory: Bool?
     }
     struct Approval: Decodable, Identifiable {
         let id: String
@@ -245,12 +246,19 @@ struct RouterClient: Equatable {
             request.setValue(key?.uuidString, forHTTPHeaderField: "Idempotency-Key")
         }
         let (data, response) = try await URLSession.shared.data(for: request, delegate: RejectRedirects())
+        if path == "v1/state", let status = (response as? HTTPURLResponse)?.statusCode, status == 401 || status == 403 {
+            throw RouterAccessDenied()
+        }
         guard let status = (response as? HTTPURLResponse)?.statusCode, (200..<300).contains(status) else {
             let error = try? JSONDecoder().decode(RouterError.self, from: data)
             throw error ?? RouterError(error: "The Router request failed.")
         }
         return data
     }
+}
+
+struct RouterAccessDenied: LocalizedError {
+    var errorDescription: String? { "The Router no longer authorizes this phone. Pair it again from the desktop." }
 }
 
 private struct RouterError: Decodable, LocalizedError {

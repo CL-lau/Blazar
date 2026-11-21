@@ -40,6 +40,7 @@ private struct TaskScreen: View {
     @State private var endpoint = ""
     @State private var token = Credentials.read()
     @State private var snapshot: RouterSnapshot?
+    @State private var offlineSummary: OfflineTaskSummary?
     @State private var snapshotRequest = UUID()
     @State private var error: String?
     @State private var workspace = ""
@@ -249,6 +250,17 @@ private struct TaskScreen: View {
                         }
                     }
                 }
+                if snapshot == nil, client != nil, let offlineSummary {
+                    Section("Last synced tasks") {
+                        Text(offlineSummary.synchronizedAt.formatted()).font(.caption)
+                        ForEach(offlineSummary.tasks) { task in
+                            VStack(alignment: .leading) {
+                                Text(task.goal).lineLimit(2)
+                                Text(task.status.replacingOccurrences(of: "_", with: " ")).font(.caption)
+                            }
+                        }
+                    }
+                }
                 if let error {
                     Text(error).foregroundStyle(.red)
                 }
@@ -283,12 +295,15 @@ private struct TaskScreen: View {
             }
             .task(id: scenePhase == .active ? client : nil) {
                 guard scenePhase == .active, let client else { return }
+                offlineSummary = OfflineTaskSummary.read(for: client)
                 await synchronize(using: client)
             }
             .onChange(of: endpoint) { previous, updated in
                 if previous.isEmpty && updated == savedEndpoint { return }
                 token = ""
                 snapshot = nil
+                offlineSummary = nil
+                OfflineTaskSummary.clear()
                 answer = nil
                 plan = nil
             }
@@ -321,9 +336,17 @@ private struct TaskScreen: View {
             let state = try await client.snapshot()
             guard !Task.isCancelled, self.client == client, snapshotRequest == request else { return }
             snapshot = state
+            let summary = OfflineTaskSummary(snapshot: state, client: client)
+            summary.save()
+            offlineSummary = summary
             error = nil
         } catch {
             guard !Task.isCancelled, self.client == client, snapshotRequest == request else { return }
+            snapshot = nil
+            if error is RouterAccessDenied {
+                OfflineTaskSummary.clear()
+                offlineSummary = nil
+            }
             self.error = error.localizedDescription
         }
     }
