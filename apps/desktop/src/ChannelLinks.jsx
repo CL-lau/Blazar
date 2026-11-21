@@ -4,7 +4,7 @@ import { callRouter } from './router.js';
 function channelName(channel) {
   try {
     const [provider] = JSON.parse(channel);
-    return { feishu: 'Feishu / Lark', weixin: 'WeChat', wecom: 'WeCom', dingtalk: 'DingTalk', qq: 'QQ' }[provider] ?? channel;
+    return { feishu: 'Feishu', lark: 'Lark', weixin: 'WeChat', wecom: 'WeCom', dingtalk: 'DingTalk', qq: 'QQ' }[provider] ?? channel;
   } catch {
     return channel;
   }

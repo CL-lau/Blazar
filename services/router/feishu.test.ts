@@ -204,9 +204,28 @@ test('Feishu and Lark isolate callback identity and outbound notices in one Rout
     const { run } = store.claim('owner', config.workspace, region, now, 45_000)!;
     assert.equal(store.finish(run.id, region, now, { status: 'succeeded', result: 'Private fixture' }), true);
     const notice = store.leaseChannelNotice(feishuChannel(config, region), now + 10);
-    assert.equal(notice?.messageId, 'shared-id');
-    assert.doesNotMatch(notice?.text ?? '', /Private fixture/);
-    store.finishChannelNotice(notice!.id, true);
+    assert.ok(notice);
+    assert.equal(notice.messageId, 'shared-id');
+    assert.doesNotMatch(notice.text, /Private fixture/);
+    const host = region === 'lark' ? 'open.larksuite.com' : 'open.feishu.cn';
+    const requests: string[] = [];
+    const sender = createFeishuSender(config.appId, region + '-secret', region, async (input, options) => {
+      const url = new URL(String(input));
+      assert.equal(url.hostname, host);
+      requests.push(url.pathname);
+      const payload = JSON.parse(String(options?.body));
+      if (url.pathname.endsWith('/internal')) {
+        assert.equal(payload.app_secret, region + '-secret');
+        return Response.json({ code: 0, tenant_access_token: region + '-access', expire: 7200 });
+      }
+      assert.equal(new Headers(options?.headers).get('authorization'), 'Bearer ' + region + '-access');
+      assert.equal(payload.uuid, notice.id);
+      assert.equal(JSON.parse(payload.content).text, notice.text);
+      return Response.json({ code: 0 });
+    });
+    await sender(notice.messageId, notice.text, notice.id);
+    assert.deepEqual(requests, ['/open-apis/auth/v3/tenant_access_token/internal', '/open-apis/im/v1/messages/shared-id/reply']);
+    store.finishChannelNotice(notice.id, true);
   }
   assert.equal(store.snapshot('owner').tasks.length, 2);
   assert.deepEqual(store.metrics('owner', Date.now()).channelDelivery.map(row => [row.channel, row.sent]),
