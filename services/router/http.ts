@@ -754,17 +754,20 @@ export function routerServer(store: TaskStore, config: { owner: string; token: s
       const owner = admin ? config.owner : mobile?.owner;
       if (!owner) throw new RequestError(401, 'Authentication required');
       const canReadTask = (taskId: string, resultVersion?: number) => {
-        const refs = store.appEvidence(taskId);
-        if (!refs) return true;
+        const app = store.appEvidence(taskId);
+        const personal = store.personalEvidence(taskId);
+        if (!app && !personal.length) return true;
         const task = store.get(owner, taskId);
-        if (!admin && (!mobile || !task || task.status !== 'succeeded' ||
+        if (!task) return false;
+        if (app && !admin && (!mobile || task.status !== 'succeeded' ||
             resultVersion === undefined || resultVersion !== task.version ||
             !store.canReadSharedResult(mobile.id, taskId, resultVersion))) return false;
-        return Boolean(task && config.memory?.resolveAppEvidence(owner, task.workspace, refs));
+        return (!app || Boolean(config.memory?.resolveAppEvidence(owner, task.workspace, app))) &&
+          (!personal.length || Boolean(config.memory?.resolvePersonalEvidence(owner, task.workspace, personal)));
       };
       const protectedTaskLabel = 'Application-backed task';
       const taskResponse = (task: Task) => canReadTask(task.id) ? task : {
-        ...task, ...(admin ? {} : { goal: protectedTaskLabel }), result: null,
+        ...task, ...(!admin && store.appEvidence(task.id) && { goal: protectedTaskLabel }), result: null,
       };
       if (!admin && (url.pathname.startsWith('/v1/admin/') || url.pathname === '/v1/pairings' ||
           url.pathname.startsWith('/v1/app-connections') || url.pathname.startsWith('/v1/memory'))) {
@@ -936,7 +939,7 @@ export function routerServer(store: TaskStore, config: { owner: string; token: s
         const data = await jsonObject(request);
         const task = store.get(owner, saveTaskMemory[1]);
         if (!task) throw new RequestError(404, 'Task not found');
-        if (data.expectedVersion !== task.version || task.status !== 'succeeded' || store.appEvidence(task.id) ||
+        if (data.expectedVersion !== task.version || task.status !== 'succeeded' || store.appEvidence(task.id) || store.personalEvidence(task.id).length ||
             !task.result?.trim() || task.result.length > 16_000 || /^\/(observe|click) /.test(task.goal)) {
           throw new RequestError(409, 'This task version does not have a result eligible for memory');
         }
@@ -1002,14 +1005,18 @@ export function routerServer(store: TaskStore, config: { owner: string; token: s
       if (request.method === 'GET' && url.pathname === '/v1/state') {
         const snapshot = store.snapshot(owner);
         const protectedTasks = new Set(store.appEvidenceTasks(owner));
-        const restricted = new Set([...protectedTasks].filter(taskId => !canReadTask(taskId)));
+        const personalTasks = new Set(store.personalEvidenceTasks(owner));
+        const restricted = new Set([...new Set([...protectedTasks, ...personalTasks])].filter(taskId => !canReadTask(taskId)));
         reply(response, 200, { ...snapshot,
-          tasks: snapshot.tasks.map(task => protectedTasks.has(task.id)
-            ? { ...task, usesAppMemory: true,
-                ...(!admin && { goal: protectedTaskLabel }),
-                ...(admin && restricted.has(task.id) && { appMemoryUnavailable: true }),
-                ...(restricted.has(task.id) && !canReadTask(task.id, task.version) && { result: null }),
-              } : task),
+          tasks: snapshot.tasks.map(task => ({
+            ...task,
+            ...(protectedTasks.has(task.id) && { usesAppMemory: true,
+              ...(!admin && { goal: protectedTaskLabel }),
+              ...(admin && restricted.has(task.id) && { appMemoryUnavailable: true }),
+            }),
+            ...(personalTasks.has(task.id) && { usesPersonalMemory: true }),
+            ...(restricted.has(task.id) && !canReadTask(task.id, task.version) && { result: null }),
+          })),
           artifacts: snapshot.artifacts.filter(item => !restricted.has(String(item.taskId)) ||
             canReadTask(String(item.taskId), typeof item.version === 'number' ? item.version : undefined)),
           criteria: snapshot.criteria.filter(item => admin || !protectedTasks.has(String(item.taskId))),

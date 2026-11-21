@@ -518,6 +518,22 @@ test('a registered JSONL extension executes a real subprocess through Router and
   assert.equal(store.get('owner', recoveryTask.id)?.status, 'waiting_user');
   assert.equal(store.get('owner', recoveryTask.id)?.version, priorVersion);
   assert.equal(await client.runOnce(AbortSignal.timeout(5_000)), false);
+
+  const personalArtifact = store.snapshot('owner').artifacts.find(item => item.taskId === task.id)!;
+  const personalArtifactPath = '/v1/artifacts/' + personalArtifact.id;
+  assert.equal((await readAttachment(personalArtifactPath, phone.token)).status, 200);
+  const rememberDerived = await fetch(base + '/v1/tasks/' + task.id + '/remember-result', {
+    method: 'POST', headers: { Authorization: 'Bearer local', 'Content-Type': 'application/json' },
+    body: JSON.stringify({ expectedVersion: 1 }),
+  });
+  assert.equal(rememberDerived.status, 409);
+  assert.equal(memory.remove('owner', note), true);
+  assert.equal((await readAttachment(personalArtifactPath, 'local')).status, 404);
+  assert.equal((await readAttachment(personalArtifactPath, phone.token)).status, 404);
+  assert.equal((await readAttachment('/v1/tasks/' + task.id + '/timeline', 'local')).status, 404);
+  const stateAfterMemoryRemoval = await readState(phone.token);
+  assert.equal(stateAfterMemoryRemoval.tasks.find((item: { id: string }) => item.id === task.id)?.result, null);
+  assert.ok(!stateAfterMemoryRemoval.artifacts.some((item: { id: string }) => item.id === personalArtifact.id));
 });
 
 test('JSONL rejects duplicate terminal events and stops a cancelled subprocess', async () => {

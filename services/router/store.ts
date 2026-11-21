@@ -908,6 +908,11 @@ export class TaskStore {
       .all(taskId) as { id: string; version: number }[];
   }
 
+  personalEvidenceTasks(owner: string) {
+    return this.db.prepare(`SELECT t.id FROM task t WHERE t.owner=?
+      AND EXISTS(SELECT 1 FROM task_memory_input m WHERE m.task_id=t.id)`).all(owner).map(row => String(row.id));
+  }
+
   appEvidenceTasks(owner: string) {
     return this.db.prepare(`SELECT e.task_id FROM task_app_evidence e JOIN task t ON t.id=e.task_id
       WHERE t.owner=?`).all(owner).map(row => String(row.task_id));

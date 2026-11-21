@@ -279,7 +279,7 @@ function App() {
                     </div>
                   ))}
                 </section>}
-                {task.status === 'succeeded' && task.result && !task.usesAppMemory && !/^\/(observe|click) /.test(task.goal) && (
+                {task.status === 'succeeded' && task.result && !task.usesAppMemory && !task.usesPersonalMemory && !/^\/(observe|click) /.test(task.goal) && (
                   <button disabled={busy || (savedResult?.id === task.id && savedResult?.version === task.version)}
                     onClick={() => submit(async () => {
                       await api('/tasks/' + task.id + '/remember-result', { method: 'POST', body: { expectedVersion: task.version } });
