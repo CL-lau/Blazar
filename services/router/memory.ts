@@ -12,6 +12,22 @@ export interface ResourceRef {
 const memoryWords = new Intl.Segmenter(undefined, { granularity: 'word' });
 const eastAsianWord = /[\p{Script=Han}\p{Script=Hiragana}\p{Script=Katakana}\p{Script=Hangul}]/u;
 
+// A derived fact is current only while its entire evidence chain still matches.
+const currentDerivation = `NOT EXISTS (
+  WITH RECURSIVE evidence(id,version) AS (
+    SELECT evidence_id,evidence_version FROM memory_derivation WHERE id=m.id
+    UNION ALL
+    SELECT d.evidence_id,d.evidence_version FROM evidence e JOIN memory_derivation d ON d.id=e.id
+  )
+  SELECT 1 FROM evidence e LEFT JOIN memory p ON p.id=e.id
+  LEFT JOIN memory_state ps ON ps.id=p.id
+  WHERE p.id IS NULL OR p.owner<>m.owner OR p.workspace<>m.workspace
+    OR COALESCE(ps.version,1)<>e.version OR COALESCE(ps.disabled,0)<>0
+    OR (p.expires IS NOT NULL AND p.expires<=unixepoch()*1000)
+    OR (EXISTS(SELECT 1 FROM document_import i WHERE i.id=p.id)
+      AND NOT EXISTS(SELECT 1 FROM document_head h WHERE h.memory_id=p.id))
+)`;
+
 type DocumentSyncLease = {
   owner: string; connection: string; workspace: string; cursor: string; token: string;
 };
@@ -227,6 +243,7 @@ export class MemoryStore {
     if (!term || term.length > 256) return [];
     const allowed = JSON.stringify(allowedSources);
     const filter = `m.owner=? AND m.workspace=? AND COALESCE(s.disabled,0)=? AND (m.expires IS NULL OR m.expires>?)
+      AND ${currentDerivation}
       AND NOT EXISTS(SELECT 1 FROM document_access x WHERE x.connection=m.connection AND x.resource=m.resource AND x.allowed=0)
       AND (NOT EXISTS(SELECT 1 FROM document_import i WHERE i.id=m.id) OR EXISTS (
         SELECT 1 FROM document_head h WHERE h.owner=m.owner AND h.workspace=m.workspace
@@ -300,6 +317,7 @@ export class MemoryStore {
       JOIN json_each(?) ref ON json_extract(ref.value,'$.id')=m.id
         AND json_extract(ref.value,'$.version')=COALESCE(s.version,1)
       WHERE m.owner=? AND m.workspace=? AND a.active=1 AND (a.workspace IS NULL OR a.workspace=m.workspace)
+        AND ${currentDerivation}
         AND COALESCE(s.disabled,0)=0 AND (m.expires IS NULL OR m.expires>?)
         AND NOT EXISTS(SELECT 1 FROM revoked_resource r WHERE r.connection=m.connection AND r.resource=m.resource)
         AND NOT EXISTS(SELECT 1 FROM document_access x WHERE x.connection=m.connection AND x.resource=m.resource AND x.allowed=0)

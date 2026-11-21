@@ -225,6 +225,12 @@ test('confirming a derived memory rechecks the evidence version and inherits sou
   assert.equal(recalled[0].resource, source.resource);
   assert.equal(recalled[0].revision, source.revision);
   assert.deepEqual({ ...store.history('owner', id)?.derivedFrom }, { id: original, version: 2 });
+  const descendant = store.rememberFromEvidence('owner', 'project', id, 1, 'Latest review procedure')!;
+  assert.ok(descendant);
+  assert.equal(store.revise('owner', original, 2, { body: 'The review procedure has changed.' })?.version, 3);
+  assert.deepEqual(store.recall('owner', 'project', 'three review bullets', [connection]), []);
+  assert.deepEqual(store.recall('owner', 'project', 'Latest review procedure', [connection]), []);
+  assert.equal(store.resolveAppEvidence('owner', 'project', [{ id: descendant, version: 1 }]), undefined);
   assert.ok(store.revokeResource('owner', connection, source.resource));
   assert.deepEqual(store.recall('owner', 'project', 'three review bullets', [connection]), []);
   assert.equal(store.rememberFromEvidence('owner', 'project', original, 2, body), undefined);
