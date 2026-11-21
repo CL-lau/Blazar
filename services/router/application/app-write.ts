@@ -9,9 +9,10 @@ export async function confirmApplicationWrite(
   definitionRevision: string,
   backends: readonly ActionBackend[],
   signal: AbortSignal,
+  authorized = () => true,
 ) {
   const proposal = writes.get(owner, id);
-  if (!proposal) throw new RequestError(404, 'Application write proposal not found');
+  if (!proposal || !authorized()) throw new RequestError(404, 'Application write proposal not found');
   if (proposal.status !== 'pending') return { status: proposal.status };
   signal.throwIfAborted();
   if (!writes.claim(owner, id, definitionRevision)) {
@@ -23,7 +24,7 @@ export async function confirmApplicationWrite(
     const result = await invokeApplicationAction({
       connectionId: proposal.connection, capability: proposal.capability,
       effect: 'write', invocationId: id, input: proposal.input,
-    }, backends, async backend => writes.selectBackend(owner, id, backend.id), signal);
+    }, backends, async backend => authorized() && writes.selectBackend(owner, id, backend.id), signal);
     const status = result.status === 'outcome-unknown' ? 'outcome_unknown'
       : result.status === 'unavailable-before-dispatch' ? 'unavailable' : result.status;
     writes.finish(owner, id, status);

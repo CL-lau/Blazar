@@ -9,14 +9,21 @@ import { jsonObject, reply } from './json.ts';
 export async function handleApplicationWrites(
   request: IncomingMessage, response: ServerResponse, url: URL, owner: string, memory: MemoryStore,
   definitions: readonly ConfiguredApplicationWrite[],
+  access: { kind: 'admin'; hasClient: (id: string) => boolean } |
+    { kind: 'mobile'; id: string; authorized: () => boolean },
 ) {
   const writes = memory.appWrites;
+  if (url.pathname === '/v1/app-write-proposals' && request.method === 'GET' && access.kind === 'mobile') {
+    if (!access.authorized()) throw new RequestError(401, 'Authentication required');
+    reply(response, 200, { proposals: writes.shared(owner, access.id) });
+    return true;
+  }
   const definitionFor = (connection: string, workspace: string, capability: string) => {
     const active = memory.connection(owner, connection, workspace);
     return definitions.find(item => item.app === active?.app && item.account === active.account && item.capability === capability);
   };
   const create = /^\/v1\/app-connections\/([a-f0-9-]{36})\/write-proposals$/.exec(url.pathname);
-  if (create && request.method === 'POST') {
+  if (create && request.method === 'POST' && access.kind === 'admin') {
     const { workspace: rawWorkspace, capability: rawCapability, input } = await jsonObject(request, 16_384);
     const workspace = requiredText(rawWorkspace, 'workspace', 128);
     const capability = requiredText(rawCapability, 'capability', 128);
@@ -31,15 +38,30 @@ export async function handleApplicationWrites(
     reply(response, 201, { id, expires, status: 'pending' });
     return true;
   }
-  const proposalPath = /^\/v1\/app-write-proposals\/([a-f0-9-]{36})(?:\/(confirm|reconcile))?$/.exec(url.pathname);
+  const proposalPath = /^\/v1\/app-write-proposals\/([a-f0-9-]{36})(?:\/(confirm|reconcile|share))?$/.exec(url.pathname);
   if (!proposalPath) return false;
   const [, id, operation] = proposalPath;
   if (request.method !== (operation ? 'POST' : 'GET')) return false;
+  const authorized = () => access.kind === 'admin' ||
+    (access.authorized() && writes.shared(owner, access.id, id).length === 1);
   const proposal = writes.get(owner, id);
-  if (!proposal) throw new RequestError(404, 'Application write proposal not found');
+  if (!proposal || !authorized() || (access.kind === 'mobile' && operation && operation !== 'confirm')) throw new RequestError(404, 'Application write proposal not found');
   if (!operation) {
     const { definitionRevision, ...view } = proposal;
+    if (access.kind === 'mobile') {
+      const { connection, backend, ...sharedView } = view;
+      reply(response, 200, sharedView);
+      return true;
+    }
     reply(response, 200, { ...view, reconciliation: writes.reconciliation(owner, id) });
+    return true;
+  }
+  if (operation === 'share' && access.kind === 'admin') {
+    const { client: rawClient } = await jsonObject(request, 2_048);
+    const client = rawClient === null ? null : requiredText(rawClient, 'mobile client ID', 36);
+    if (client !== null && !access.hasClient(client)) throw new RequestError(404, 'Paired mobile client not found');
+    if (!writes.share(owner, id, client) && client !== null) throw new RequestError(409, 'Proposal cannot be shared');
+    reply(response, 200, { client });
     return true;
   }
   if (operation === 'reconcile') {
@@ -58,7 +80,7 @@ export async function handleApplicationWrites(
   }
   const definition = definitionFor(proposal.connection, proposal.workspace, proposal.capability);
   const backends = definition ? [{ ...definition.backend, connectionId: proposal.connection }] : [];
-  const result = await confirmApplicationWrite(writes, owner, id, definition?.revision ?? '', backends, AbortSignal.timeout(applicationWriteTimeoutMs));
+  const result = await confirmApplicationWrite(writes, owner, id, definition?.revision ?? '', backends, AbortSignal.timeout(applicationWriteTimeoutMs), authorized);
   reply(response, 200, result);
   return true;
 }

@@ -4,6 +4,8 @@ export function ApplicationWrite({ connection, request }) {
   const [proposal, setProposal] = useState(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
+  const [clients, setClients] = useState(null);
+  const [shareNotice, setShareNotice] = useState('');
   const path = proposal && '/app-write-proposals/' + proposal.id;
 
   async function run(operation) {
@@ -56,6 +58,27 @@ export function ApplicationWrite({ connection, request }) {
       <button type="button" disabled={busy} onClick={() => run(async () => {
         setProposal(await request(path));
       })}>Refresh status</button>
+      {proposal.status === 'pending' && <div>
+        <button type="button" disabled={busy} onClick={() => run(async () => {
+          const data = await request('/admin/mobile-clients');
+          setClients(data.clients);
+        })}>Share with paired iPhone</button>
+        {clients && <form onSubmit={event => {
+          event.preventDefault();
+          const client = new FormData(event.currentTarget).get('client') || null;
+          void run(async () => {
+            await request(path + '/share', { method: 'POST', body: { client } });
+            setShareNotice(client ? 'Proposal shared.' : 'Mobile access revoked.');
+          });
+        }}>
+          <label>Paired device<select name="client">
+            <option value="">Remove mobile access</option>
+            {clients.map(client => <option key={client.id} value={client.id}>{client.name}</option>)}
+          </select></label>
+          <button disabled={busy}>Save access</button>
+        </form>}
+        {shareNotice && <p role="status">{shareNotice}</p>}
+      </div>}
       {proposal.reconciliation ? <p>
         {proposal.reconciliation.resolution.replaceAll('_', ' ')} · {proposal.reconciliation.evidence}
       </p> : ['dispatching', 'outcome_unknown'].includes(proposal.status) && <form onSubmit={reconcile}>
@@ -67,7 +90,7 @@ export function ApplicationWrite({ connection, request }) {
         <label>External evidence<input name="evidence" maxLength={1024} required /></label>
         <button disabled={busy}>Record result</button>
       </form>}
-      <button type="button" disabled={busy} onClick={() => { setProposal(null); setError(''); }}>Close proposal</button>
+      <button type="button" disabled={busy} onClick={() => { setProposal(null); setError(''); setClients(null); setShareNotice(''); }}>Close proposal</button>
     </div> : <div><form onSubmit={prepare}>
       {!connection.workspace && <label>Workspace<input name="workspace" maxLength={128} required /></label>}
       <label>Capability<select name="capability">

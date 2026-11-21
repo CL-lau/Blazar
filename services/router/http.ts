@@ -280,8 +280,10 @@ export function routerServer(store: TaskStore, config: { owner: string; token: s
         });
         return;
       }
-      if (admin && config.memory && await handleApplicationWrites(request, response, url, owner, config.memory,
-        config.applicationWrites ?? [])) return;
+      if (config.memory && await handleApplicationWrites(request, response, url, owner, config.memory,
+        config.applicationWrites ?? [], mobile ? {
+          kind: 'mobile', id: mobile.id, authorized: () => store.mobileIdentity(mobileToken)?.id === mobile.id,
+        } : { kind: 'admin', hasClient: id => store.mobileClients(owner).some(client => client.id === id) })) return;
       if (admin && await handleAdmin(request, response, url, owner, store, workerRegistry)) return;
       const shareResult = /^\/v1\/tasks\/([a-f0-9-]{36})\/share-result$/.exec(url.pathname);
       if (shareResult && (request.method === 'GET' || request.method === 'POST')) {

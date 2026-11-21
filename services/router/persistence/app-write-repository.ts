@@ -63,6 +63,24 @@ export class AppWriteRepository {
     return this.db.prepare("UPDATE app_write SET status=? WHERE owner=? AND id=? AND status='dispatching'")
       .run(status, owner, id).changes === 1;
   }
+  share(owner: string, id: string, client: string | null, now = Date.now()) {
+    if (client === null) {
+      return this.db.prepare(`DELETE FROM app_write_mobile_grant WHERE proposal=?
+        AND EXISTS(SELECT 1 FROM app_write w WHERE w.id=proposal AND w.owner=?)`).run(id, owner).changes === 1;
+    }
+    return this.db.prepare(`INSERT INTO app_write_mobile_grant(proposal,client)
+      SELECT id,? FROM app_write WHERE owner=? AND id=? AND status='pending' AND expires>?
+      ON CONFLICT(proposal) DO UPDATE SET client=excluded.client`).run(client, owner, id, now).changes === 1;
+  }
+
+  shared(owner: string, client: string, id?: string) {
+    return this.db.prepare(`SELECT w.id,w.capability,w.workspace,w.status,w.expires
+      FROM app_write_mobile_grant g JOIN app_write w ON w.id=g.proposal
+      JOIN app_connection a ON a.id=w.connection AND a.owner=w.owner AND a.active=1 AND a.scope_version=w.scope_version
+      WHERE w.owner=? AND g.client=? AND (? IS NULL OR w.id=?)
+      ORDER BY w.rowid DESC LIMIT 50`).all(owner, client, id ?? null, id ?? null);
+  }
+
   reconciliation(owner: string, id: string) {
     return this.db.prepare(`SELECT r.resolution,r.evidence,r.checked_at AS checkedAt
       FROM app_write_reconciliation r JOIN app_write w ON w.id=r.proposal
