@@ -3,6 +3,7 @@ import SwiftUI
 enum DesktopOperation: String, CaseIterable, Identifiable {
     case windows = "List windows"
     case inspect = "Inspect"
+    case visual = "View window image"
     case click = "Click button"
 
     var id: Self { self }
@@ -21,6 +22,7 @@ enum DesktopOperation: String, CaseIterable, Identifiable {
             target += " --instance \(identity)"
         }
         if self == .inspect { return "/observe \(target)" }
+        if self == .visual { return identity == nil ? nil : "/observe \(target) --visual" }
         guard (1...120).contains(button.utf16.count),
               button.rangeOfCharacter(from: .controlCharacters.union(.newlines)) == nil else { return nil }
         return "/click \(target) \(button)"
@@ -111,10 +113,10 @@ struct DesktopControl: View {
                     ForEach(aliases, id: \.self) { Text($0).tag($0) }
                 }
             }
-            if operation != .windows, let windows, windows.contains(where: \.accessible) {
+            if operation != .windows, let windows, windows.contains(where: { operation == .visual ? $0.identity != nil : $0.accessible }) {
                 Picker("Window", selection: $window) {
-                    Text("Active window").tag("")
-                    ForEach(windows.filter(\.accessible)) { item in Text(item.label).tag(item.id) }
+                    Text(operation == .visual ? "Choose a window" : "Active window").tag("")
+                    ForEach(windows.filter { operation == .visual ? $0.identity != nil : $0.accessible }) { item in Text(item.label).tag(item.id) }
                 }
             } else if operation != .windows {
                 TextField("Window ID (optional)", text: $window)
@@ -126,10 +128,10 @@ struct DesktopControl: View {
                 }
                 ForEach(windows) { item in
                     Button(item.label) {
-                        operation = .inspect
+                        operation = item.accessible ? .inspect : .visual
                         window = item.id
                     }
-                    .disabled(!item.accessible)
+                    .disabled(!item.accessible && item.identity == nil)
                 }
             } else if operation == .windows, let inventoryTask {
                 Text(inventoryTask.status == "failed" ? (inventoryTask.result ?? "Window list unavailable.") : inventoryTask.status)

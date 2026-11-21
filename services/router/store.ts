@@ -176,6 +176,9 @@ export class TaskStore {
         id TEXT PRIMARY KEY, taskId TEXT NOT NULL REFERENCES task(id), runId TEXT NOT NULL,
         name TEXT NOT NULL, sha256 TEXT NOT NULL, size INTEGER NOT NULL, content BLOB NOT NULL
       );
+      CREATE TABLE IF NOT EXISTS artifact_image (
+        artifact_id TEXT PRIMARY KEY REFERENCES artifact(id) ON DELETE CASCADE, expires INTEGER NOT NULL
+      );
       CREATE TABLE IF NOT EXISTS artifact_version (
         artifact_id TEXT PRIMARY KEY REFERENCES artifact(id) ON DELETE CASCADE, task_version INTEGER NOT NULL
       );
@@ -294,8 +297,10 @@ export class TaskStore {
     return this.transaction(() => {
       const tasks = this.db.prepare('SELECT * FROM task WHERE owner=? ORDER BY rowid DESC').all(owner) as unknown as Task[];
       const cursor = this.eventCursor();
-      const artifacts = this.db.prepare(`SELECT a.id,a.taskId,a.runId,a.name,a.sha256,a.size
-        FROM artifact a JOIN task t ON t.id=a.taskId WHERE t.owner=? ORDER BY a.rowid DESC`).all(owner);
+      const artifacts = this.db.prepare(`SELECT a.id,a.taskId,a.runId,a.name,a.sha256,a.size,
+        CASE WHEN i.artifact_id IS NOT NULL THEN 'image/png' END AS mime,i.expires
+        FROM artifact a JOIN task t ON t.id=a.taskId LEFT JOIN artifact_image i ON i.artifact_id=a.id
+        WHERE t.owner=? AND (i.expires IS NULL OR i.expires>?) ORDER BY a.rowid DESC`).all(owner, Date.now());
       const approvals = this.db.prepare(`SELECT a.id,a.taskId,a.version,a.summary,a.expires
         FROM approval a JOIN task t ON t.id=a.taskId JOIN run r ON r.id=a.runId
         WHERE NOT EXISTS(SELECT 1 FROM invalid_workflow_run i WHERE i.id=r.id)
@@ -315,10 +320,12 @@ export class TaskStore {
     });
   }
 
-  artifact(owner: string, id: string) {
-    return this.db.prepare(`SELECT a.taskId,a.name,a.sha256,a.content FROM artifact a
-      JOIN task t ON t.id=a.taskId WHERE t.owner=? AND a.id=?`).get(owner, id) as
-      { taskId: string; name: string; sha256: string; content: Uint8Array } | undefined;
+  artifact(owner: string, id: string, now = Date.now()) {
+    return this.db.prepare(`SELECT a.taskId,a.name,a.sha256,a.content,
+      CASE WHEN i.artifact_id IS NOT NULL THEN 'image/png' END AS mime FROM artifact a
+      JOIN task t ON t.id=a.taskId LEFT JOIN artifact_image i ON i.artifact_id=a.id
+      WHERE t.owner=? AND a.id=? AND (i.expires IS NULL OR i.expires>?)`).get(owner, id, now) as
+      { taskId: string; name: string; sha256: string; content: Uint8Array; mime: 'image/png' | null } | undefined;
   }
 
   timeline(owner: string, taskId: string, before?: number) {
@@ -1160,15 +1167,17 @@ export class TaskStore {
     return this.transaction(() => {
       const digest = createHash('sha256').update(JSON.stringify([
         outcome.status, outcome.result, outcome.artifact?.name, outcome.artifact?.text,
+        ...(outcome.artifact?.mime ? [outcome.artifact.mime] : []),
       ])).digest('hex');
       const receipt = this.db.prepare('SELECT outcome_hash FROM run_receipt WHERE id=? AND device=?')
         .get(runId, device);
       if (receipt) return receipt.outcome_hash === digest;
-      const row = this.db.prepare(`SELECT r.taskId, r.version AS runVersion, t.version, t.status,
+      const row = this.db.prepare(`SELECT r.taskId, r.version AS runVersion, t.version, t.status,t.goal,
         EXISTS(SELECT 1 FROM invalid_workflow_run i WHERE i.id=r.id) AS staleInputs
         FROM run r JOIN task t ON r.taskId=t.id WHERE r.id=? AND r.device=? AND r.expires>?`)
         .get(runId, device, now);
       if (!row || (row.status === 'waiting_user' && !row.staleInputs)) return false;
+      if (outcome.artifact?.mime && !/^\/observe [a-z0-9_-]{1,32} --window w-[0-9]{1,20} --instance [a-f0-9]{64} --visual$/.test(String(row.goal))) return false;
       const taskId = String(row.taskId);
       if (row.status === 'cancelling' || row.status === 'pausing') {
         this.finishStoppedRun(runId, taskId, row.status === 'pausing');
@@ -1195,13 +1204,14 @@ export class TaskStore {
       const finalStatus = pendingReview ? 'waiting_review' : outcome.status;
       this.db.prepare('UPDATE task SET status=?,result=? WHERE id=?').run(finalStatus, outcome.result, taskId);
       if (outcome.status === 'succeeded' && outcome.artifact) {
-        const { name, text } = outcome.artifact;
-        const content = Buffer.from(text, 'utf8');
+        const { name, text, mime } = outcome.artifact;
+        const content = Buffer.from(text, mime ? 'base64' : 'utf8');
         const id = randomUUID();
         const sha256 = createHash('sha256').update(content).digest('hex');
         this.db.prepare('INSERT INTO artifact VALUES(?,?,?,?,?,?,?)')
           .run(id, taskId, runId, name, sha256, content.length, content);
         this.db.prepare('INSERT INTO artifact_version VALUES(?,?)').run(id, row.version!);
+        if (mime) this.db.prepare('INSERT INTO artifact_image VALUES(?,?)').run(id, now + 5 * 60_000);
         this.event(taskId, 'artifact.created', { id, taskId, runId, name, sha256, size: content.length, version: row.version });
       }
       this.db.prepare('INSERT INTO run_receipt VALUES(?,?,?)').run(runId, device, digest);
@@ -1245,6 +1255,7 @@ export class TaskStore {
   expire(now: number) {
     return this.transaction(() => {
       this.db.prepare('DELETE FROM device_claim WHERE expires<=?').run(now);
+      this.db.prepare('DELETE FROM artifact WHERE id IN (SELECT artifact_id FROM artifact_image WHERE expires<=?)').run(now);
       const approvals = this.db.prepare(`SELECT a.id,a.runId,a.taskId,a.expires FROM approval a
         JOIN run r ON r.id=a.runId JOIN task t ON t.id=a.taskId
         WHERE a.decision IS NULL AND a.expires<=? AND r.expires>?

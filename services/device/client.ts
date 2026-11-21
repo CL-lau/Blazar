@@ -1,5 +1,5 @@
 import { WorkerCleanupError } from '../../packages/workers/process.ts';
-import { clickApp, observeApp, type ObservationConfig } from '../../packages/computer-use/observe.ts';
+import { captureWindow, clickApp, observeApp, type ObservationConfig } from '../../packages/computer-use/observe.ts';
 import { DeviceSocket } from './socket.ts';
 import { runAider } from '../../packages/workers/aider.ts';
 import { runCustomJsonl } from '../../packages/workers/custom-jsonl.ts';
@@ -255,19 +255,26 @@ export class DeviceClient {
       let checkpoint: SessionCheckpoint | undefined;
       try {
         if (this.observation) {
-          const click = assignment.task.goal.startsWith('/click ');
-          const result = click
-            ? await clickApp(this.observation, this.root, assignment.task.goal, active,
-              async (summary, signal) => {
-                const decision = await this.approve(prefix, summary, signal);
-                if (decision?.decision !== 'approved') return undefined;
-                return () => this.consumeApproval(prefix, decision.id, signal);
-              })
-            : await observeApp(this.observation, this.root, assignment.task.goal, active);
-          const windowInventory = /^\/observe [a-z0-9_-]{1,32} --windows-json$/.test(assignment.task.goal);
-          outcome = { status: 'succeeded', result: windowInventory ? result :
-            click ? 'Application action completed.' : 'Application snapshot is ready.',
-            artifact: { name: 'application-observation.txt', text: result } };
+          const visual = /^\/observe ([a-z0-9_-]{1,32}) --window (w-[0-9]{1,20}) --instance ([a-f0-9]{64}) --visual$/.exec(assignment.task.goal);
+          if (visual) {
+            const image = await captureWindow(this.observation, this.root, visual[1], visual[2], visual[3], active);
+            outcome = { status: 'succeeded', result: 'Window image is available for five minutes.',
+              artifact: { name: 'window.png', mime: 'image/png', text: image.toString('base64') } };
+          } else {
+            const click = assignment.task.goal.startsWith('/click ');
+            const result = click
+              ? await clickApp(this.observation, this.root, assignment.task.goal, active,
+                async (summary, signal) => {
+                  const decision = await this.approve(prefix, summary, signal);
+                  if (decision?.decision !== 'approved') return undefined;
+                  return () => this.consumeApproval(prefix, decision.id, signal);
+                })
+              : await observeApp(this.observation, this.root, assignment.task.goal, active);
+            const windowInventory = /^\/observe [a-z0-9_-]{1,32} --windows-json$/.test(assignment.task.goal);
+            outcome = { status: 'succeeded', result: windowInventory ? result :
+              click ? 'Application action completed.' : 'Application snapshot is ready.',
+              artifact: { name: 'application-observation.txt', text: result } };
+          }
         } else if (this.worker) {
           if (this.worker.protocol === 'jsonl' && this.worker.includeFullInputArtifacts) {
             await this.completeInputArtifacts(assignment.predecessors, prefix, active);

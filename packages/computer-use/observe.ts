@@ -1,4 +1,7 @@
-import { isAbsolute } from 'node:path';
+import { constants } from 'node:fs';
+import { mkdtemp, open, rm } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { isAbsolute, join } from 'node:path';
 import { createHash } from 'node:crypto';
 import { lockDatabaseFile } from '../storage/exclusive.ts';
 import { spawnWorker } from '../workers/process.ts';
@@ -6,6 +9,7 @@ import { spawnWorker } from '../workers/process.ts';
 export type ObservationConfig = {
   executable: string;
   apps: ReadonlyMap<string, string>;
+  visualApps?: ReadonlySet<string>;
   buttons?: ReadonlyMap<string, ReadonlySet<string>>;
   desktopLockPath?: string;
 };
@@ -32,7 +36,11 @@ export function observationConfig(env: NodeJS.ProcessEnv, desktopLockPath?: stri
     }
     buttons.set(alias, new Set(values as string[]));
   }
-  return { executable, apps, buttons, desktopLockPath };
+  const visual = JSON.parse(env.BLAZAR_COMPUTER_VISUAL_APPS ?? '[]');
+  if (!Array.isArray(visual) || visual.length > apps.size || visual.some(alias => !apps.has(alias))) {
+    throw new Error('Configure visual capture with approved application aliases.');
+  }
+  return { executable, apps, buttons, visualApps: new Set(visual), desktopLockPath };
 }
 
 function describeTree(input: unknown) {
@@ -105,6 +113,48 @@ async function withDesktopLock<T>(config: ObservationConfig, signal: AbortSignal
 
 export function observeApp(config: ObservationConfig, root: string, goal: string, signal: AbortSignal) {
   return withDesktopLock(config, signal, () => observeWindow(config, root, goal, signal));
+}
+
+export function captureWindow(config: ObservationConfig, root: string, alias: string, id: string,
+                              identity: string, signal: AbortSignal) {
+  return withDesktopLock(config, signal, async () => {
+    const app = config.apps.get(alias);
+    if (!app || !config.visualApps?.has(alias) || !/^w-[0-9]{1,20}$/.test(id) || !/^[a-f0-9]{64}$/.test(identity)) {
+      throw new Error('Choose a window from the current application inventory.');
+    }
+    const assertPresent = async () => {
+      const matches = (await windowsFor(config, root, app, signal)).filter(window => window.id === id);
+      if (matches.length !== 1 || windowIdentity(app, matches[0]) !== identity) {
+        throw new Error('The selected window changed. Refresh the window list.');
+      }
+    };
+    await assertPresent();
+    const scratch = await mkdtemp(join(tmpdir(), 'blazar-window-image-'));
+    try {
+      const path = join(scratch, 'window.png');
+      await runDriver(config, root, ['screenshot', '--app', app, '--window-id', id, path], signal);
+      await assertPresent();
+      const file = await open(path, constants.O_RDONLY | constants.O_NOFOLLOW);
+      try {
+        const limit = 1_000_000;
+        const stat = await file.stat();
+        if (!stat.isFile() || stat.size < 33 || stat.size > limit) throw new Error('Window image has an invalid size.');
+        const buffer = Buffer.alloc(stat.size);
+        const { bytesRead } = await file.read(buffer, 0, buffer.length, 0);
+        const width = buffer.readUInt32BE(16);
+        const height = buffer.readUInt32BE(20);
+        if (bytesRead !== buffer.length || !buffer.subarray(0, 8).equals(Buffer.from('89504e470d0a1a0a', 'hex')) ||
+            buffer.readUInt32BE(8) !== 13 || buffer.toString('ascii', 12, 16) !== 'IHDR' ||
+            !width || !height || width * height > 16_000_000) throw new Error('Window image is not a supported PNG.');
+        signal.throwIfAborted();
+        return buffer;
+      } finally {
+        await file.close();
+      }
+    } finally {
+      await rm(scratch, { recursive: true, force: true });
+    }
+  });
 }
 
 async function observeWindow(config: ObservationConfig, root: string, goal: string, signal: AbortSignal) {

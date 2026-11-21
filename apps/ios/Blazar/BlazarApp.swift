@@ -307,6 +307,8 @@ private struct TaskDetails: View {
     @State private var instruction = ""
     @State private var error: String?
     @State private var preview: String?
+    @State private var imagePreview: Data?
+    @State private var imageExpiry: Int?
     @State private var working = false
     @State private var confirmingRetry = false
     @State private var loadingActivity = false
@@ -348,11 +350,19 @@ private struct TaskDetails: View {
                     ForEach(artifacts) { artifact in
                         Button(artifact.name) {
                             Task {
-                                do { preview = try await client.artifact(artifact) }
-                                catch { self.error = error.localizedDescription }
+                                do {
+                                    if artifact.mime == "image/png" {
+                                        preview = nil
+                                        imagePreview = try await client.artifactData(artifact)
+                                        imageExpiry = artifact.expires
+                                    } else {
+                                        imagePreview = nil
+                                        preview = try await client.artifact(artifact)
+                                    }
+                                } catch { self.error = error.localizedDescription }
                             }
                         }
-                        if let latest = artifacts.first, latest.id != artifact.id {
+                        if let latest = artifacts.first, latest.id != artifact.id, latest.mime == nil, artifact.mime == nil {
                             Button("Compare with latest") {
                                 Task {
                                     do { preview = try await client.compareArtifacts(latest, base: artifact) }
@@ -362,6 +372,17 @@ private struct TaskDetails: View {
                         }
                     }
                     if let preview { Text(preview).textSelection(.enabled) }
+                    #if os(iOS)
+                    if let imagePreview, let image = UIImage(data: imagePreview) {
+                        Image(uiImage: image).resizable().scaledToFit().accessibilityLabel("Captured window")
+                    }
+                    #endif
+                }
+                .task(id: imageExpiry) {
+                    guard let imageExpiry else { return }
+                    let seconds = max(0, Double(imageExpiry) / 1000 - Date().timeIntervalSince1970)
+                    try? await Task.sleep(for: .seconds(seconds))
+                    if !Task.isCancelled { imagePreview = nil }
                 }
             }
             if ["queued", "running", "waiting_user", "waiting_dependency", "waiting_device"].contains(task.status) {

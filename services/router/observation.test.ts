@@ -15,9 +15,16 @@ test('a device observes only configured applications and stores a bounded window
   const directory = realpathSync(mkdtempSync(join(tmpdir(), 'blazar-observe-')));
   const executable = join(directory, 'driver.cjs');
   writeFileSync(executable, `#!${process.execPath}
+if (process.argv[2] === 'screenshot') {
+  if (process.argv.slice(3, 7).join(' ') !== '--app Calculator --window-id w-10') process.exit(2);
+  require('node:fs').writeFileSync(process.argv[7],
+    Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+aS4sAAAAASUVORK5CYII=', 'base64'));
+  console.log(JSON.stringify({ok:true,command:'screenshot',data:{}}));
+  process.exit(0);
+}
 if (process.argv[2] === 'list-windows') {
   console.log(JSON.stringify({ok:true,command:'list-windows',data:[
-    {id:'w-10',app_name:'Calculator',title:'Scientific · Calculator',visible:true,accessible:true},
+    {id:'w-10',app_name:'Calculator',title:'Scientific · Calculator',visible:true,accessible:true,process_instance:'one'},
     {id:'w-11',app_name:'Other',title:'Other workspace',visible:true,accessible:true},
   ]}));
   process.exit(0);
@@ -30,6 +37,7 @@ console.log(JSON.stringify({ok:true,command:'snapshot',data:{tree:{role:'window'
 `, { mode: 0o700 });
   const observation = observationConfig({
     BLAZAR_COMPUTER_DRIVER: executable, BLAZAR_COMPUTER_APPS: '{"calculator":"Calculator"}',
+    BLAZAR_COMPUTER_VISUAL_APPS: '["calculator"]',
   });
   const store = new TaskStore(':memory:');
   const ledger = new DeviceLedger(':memory:');
@@ -85,9 +93,23 @@ console.log(JSON.stringify({ok:true,command:'snapshot',data:{tree:{role:'window'
   assert.equal(Buffer.from(file.content).toString(), 'window: Calculator\n  button: Add');
   const windows = store.create('owner', 'desktop', 'windows', 'work', '/observe calculator --windows-json', computer);
   assert.equal(await client.runOnce(AbortSignal.timeout(8_000)), true);
-  assert.deepEqual(JSON.parse(store.get('owner', windows.id)?.result ?? ''), [
-    { id: 'w-10', title: 'Scientific · Calculator', accessible: true },
-  ]);
+  const inventory = JSON.parse(store.get('owner', windows.id)?.result ?? '');
+  assert.equal(inventory.length, 1);
+  assert.equal(inventory[0].id, 'w-10');
+  assert.equal(inventory[0].title, 'Scientific · Calculator');
+  assert.equal(inventory[0].accessible, true);
+  assert.match(inventory[0].identity, /^[a-f0-9]{64}$/);
+  const visual = store.create('owner', 'desktop', 'visual', 'work',
+    '/observe calculator --window w-10 --instance ' + inventory[0].identity + ' --visual', computer);
+  assert.equal(await client.runOnce(AbortSignal.timeout(8_000)), true);
+  const image = store.snapshot('owner').artifacts.find(item => item.taskId === visual.id)!;
+  assert.equal(image.mime, 'image/png');
+  const picture = new URL('/v1/artifacts/' + image.id, 'http://127.0.0.1:' + address.port);
+  assert.equal((await fetch(picture)).status, 401);
+  const pictureResponse = await fetch(picture, { headers: { Authorization: 'Bearer admin' } });
+  assert.equal(pictureResponse.headers.get('Content-Type'), 'image/png');
+  assert.equal(Buffer.from(await pictureResponse.arrayBuffer()).subarray(0, 8).toString('hex'), '89504e470d0a1a0a');
+  assert.equal(store.artifact('owner', String(image.id), Number(image.expires)), undefined);
   store.updateDeviceReadiness(Date.now());
   assert.equal(store.get('owner', denied.id)?.status, 'waiting_device');
   assert.equal(store.get('owner', preview.id)?.status, 'waiting_device');

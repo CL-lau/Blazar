@@ -1,4 +1,4 @@
-import type { WorkerConfiguration } from '../../packages/protocol/task.ts';
+import type { RunOutcome, WorkerConfiguration } from '../../packages/protocol/task.ts';
 import { artifactDiff } from './artifact-diff.ts';
 import { workerCatalog } from '../../packages/workers/registry.ts';
 import { performance } from 'node:perf_hooks';
@@ -30,7 +30,9 @@ function requiredText(value: unknown, field: string, limit: number): string {
   return value;
 }
 
-async function jsonBody(request: IncomingMessage) {
+const maxDeviceFinishBytes = 1_350_000;
+
+async function jsonBody(request: IncomingMessage, limit = 65_536) {
   if (request.headers['content-type']?.split(';')[0]?.trim() !== 'application/json') {
     throw new RequestError(415, 'Expected application/json');
   }
@@ -38,7 +40,7 @@ async function jsonBody(request: IncomingMessage) {
   const buffers: Buffer[] = [];
   for await (const chunk of request.iterator({ destroyOnReturn: false })) {
     size += chunk.length;
-    if (size > 65_536) {
+    if (size > limit) {
       request.resume();
       throw new RequestError(413, 'Request too large');
     }
@@ -54,8 +56,8 @@ async function jsonBody(request: IncomingMessage) {
   }
 }
 
-async function jsonObject(request: IncomingMessage) {
-  return (await jsonBody(request)).body;
+async function jsonObject(request: IncomingMessage, limit?: number) {
+  return (await jsonBody(request, limit)).body;
 }
 
 function reply(response: ServerResponse, status: number, data: unknown) {
@@ -400,17 +402,30 @@ function deviceOperation(store: TaskStore, bearer: string, pathname: string, dat
   if (data.status !== 'succeeded' && data.status !== 'failed') {
     throw new RequestError(400, 'Invalid outcome status');
   }
-  let artifact: { name: string; text: string } | undefined;
+  let artifact: RunOutcome['artifact'];
   if (data.artifact !== undefined) {
     if (data.status !== 'succeeded' || !data.artifact || typeof data.artifact !== 'object' || Array.isArray(data.artifact)) {
       throw new RequestError(400, 'Invalid artifact');
     }
     const file = data.artifact as Record<string, unknown>;
     const name = requiredText(file.name, 'artifact name', 128);
-    if (typeof file.text !== 'string' || Buffer.byteLength(file.text) > 32_000) {
-      throw new RequestError(400, 'Invalid artifact content');
+    if (typeof file.text !== 'string') throw new RequestError(400, 'Invalid artifact content');
+    if (file.mime === 'image/png') {
+      if (file.text.length > 1_333_336) throw new RequestError(400, 'Window image is too large');
+      const png = Buffer.from(file.text, 'base64');
+      if (png.length < 33 || png.length > 1_000_000 || png.toString('base64') !== file.text ||
+          png.subarray(0, 8).toString('hex') !== '89504e470d0a1a0a' || png.readUInt32BE(8) !== 13 ||
+          png.toString('ascii', 12, 16) !== 'IHDR' || !png.readUInt32BE(16) || !png.readUInt32BE(20) ||
+          png.readUInt32BE(16) * png.readUInt32BE(20) > 16_000_000) {
+        throw new RequestError(400, 'Invalid window image');
+      }
+      artifact = { name, text: file.text, mime: file.mime };
+    } else {
+      if (file.mime !== undefined || Buffer.byteLength(file.text) > 32_000) {
+        throw new RequestError(400, 'Invalid artifact content');
+      }
+      artifact = { name, text: file.text };
     }
-    artifact = { name, text: file.text };
   }
   const accepted = store.finish(run[1], device.id, now, {
     status: data.status,
@@ -483,7 +498,7 @@ export function routerServer(store: TaskStore, config: { owner: string; token: s
       if (url.pathname.startsWith('/v1/device/')) {
         if (request.method !== 'POST') throw new RequestError(405, 'Expected POST');
         if (!auth.startsWith('Bearer ')) throw new RequestError(401, 'Device authentication required');
-        const result = deviceOperation(store, auth.slice(7), url.pathname, await jsonObject(request));
+        const result = deviceOperation(store, auth.slice(7), url.pathname, await jsonObject(request, url.pathname.endsWith('/finish') ? maxDeviceFinishBytes : undefined));
         reply(response, result.status, result.body);
         return;
       }
@@ -618,7 +633,7 @@ export function routerServer(store: TaskStore, config: { owner: string; token: s
         if (!base || !/^[a-f0-9-]{36}$/.test(base)) throw new RequestError(400, 'Invalid base artifact ID');
         const previous = store.artifact(owner, base);
         const current = store.artifact(owner, diff[1]);
-        if (!previous || !current || previous.taskId !== current.taskId) {
+        if (!previous || !current || previous.mime || current.mime || previous.taskId !== current.taskId) {
           throw new RequestError(404, 'Comparable artifacts not found');
         }
         const decode = (bytes: Uint8Array) => Buffer.from(bytes).toString('utf8');
@@ -630,7 +645,7 @@ export function routerServer(store: TaskStore, config: { owner: string; token: s
         const file = store.artifact(owner, artifactPath[1]);
         if (!file) throw new RequestError(404, 'Artifact not found');
         response.writeHead(200, {
-          'Content-Type': 'text/plain; charset=utf-8',
+          'Content-Type': file.mime ?? 'text/plain; charset=utf-8',
           'Content-Length': String(file.content.byteLength),
           'Content-Disposition': "attachment; filename*=UTF-8''" + encodeURIComponent(file.name.toWellFormed())
             .replace(/[!'()*]/g, char => '%' + char.charCodeAt(0).toString(16)),
@@ -783,7 +798,7 @@ export function routerServer(store: TaskStore, config: { owner: string; token: s
     }
   });
 
-  const socketServer = new WebSocketServer({ noServer: true, maxPayload: 65_536, perMessageDeflate: false });
+  const socketServer = new WebSocketServer({ noServer: true, maxPayload: maxDeviceFinishBytes, perMessageDeflate: false });
   server.on('upgrade', (request, socket, head) => {
     const auth = request.headers.authorization ?? '';
     const token = auth.startsWith('Bearer ') ? auth.slice(7) : '';
@@ -817,6 +832,9 @@ export function routerServer(store: TaskStore, config: { owner: string; token: s
             return;
           }
           id = frame.id;
+          if (!Array.isArray(raw) && raw.byteLength > 65_536 && !frame.path.endsWith('/finish')) {
+            throw new RequestError(413, 'Request too large');
+          }
           if (connection.bufferedAmount > 256_000) {
             connection.close(1008, 'Slow device connection');
             return;

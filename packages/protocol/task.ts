@@ -28,7 +28,7 @@ export interface TaskEvent {
 export interface RunOutcome {
   status: 'succeeded' | 'failed';
   result: string;
-  artifact?: { name: string; text: string };
+  artifact?: { name: string; text: string; mime?: 'image/png' };
 }
 
 export interface WorkflowStep {

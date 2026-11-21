@@ -24,6 +24,8 @@ struct RouterSnapshot: Decodable {
         let id: String
         let taskId: String
         let name: String
+        let mime: String?
+        let expires: Int?
     }
     struct Progress: Decodable {
         let taskId: String
@@ -159,7 +161,11 @@ struct RouterClient: Equatable {
     }
 
     func artifact(_ artifact: RouterSnapshot.Artifact) async throws -> String {
-        String(decoding: try await request("v1/artifacts/\(artifact.id)"), as: UTF8.self)
+        String(decoding: try await artifactData(artifact), as: UTF8.self)
+    }
+
+    func artifactData(_ artifact: RouterSnapshot.Artifact) async throws -> Data {
+        try await request("v1/artifacts/\(artifact.id)")
     }
 
     func compareArtifacts(_ current: RouterSnapshot.Artifact, base: RouterSnapshot.Artifact) async throws -> String {
