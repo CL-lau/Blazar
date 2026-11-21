@@ -525,7 +525,9 @@ function App() {
                   <p>Workspace: {plan.workspace}</p>
                   <ol>{plan.steps.map(step => <li key={step.key}>
                     <strong>{step.key}</strong> · {step.goal}
-                    {step.action && <p>Observe {step.action.alias} on device {step.action.deviceId}</p>}
+                    {step.action && <p>{step.action.kind === 'desktop.click'
+                      ? `Click ${step.action.button} in ${step.action.alias}, window ${step.action.windowId}`
+                      : `Observe ${step.action.alias}`} on device {step.action.deviceId}</p>}
                     {step.acceptanceCriteria?.length > 0 && <ul>{step.acceptanceCriteria.map(criterion =>
                       <li key={criterion}>{criterion}</li>)}</ul>}
                     {step.requireReview && <p>Requires your acceptance</p>}

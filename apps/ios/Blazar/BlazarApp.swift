@@ -219,7 +219,11 @@ private struct TaskScreen: View {
                                 VStack(alignment: .leading) {
                                     Text(step.goal)
                                     if let action = step.action {
-                                        Text("Observe \(action.alias) on device \(action.deviceId)").font(.caption)
+                                        if let button = action.button, let window = action.windowId {
+                                            Text("Click \(button) in \(action.alias), window \(window)").font(.caption)
+                                        } else {
+                                            Text("Observe \(action.alias) on device \(action.deviceId)").font(.caption)
+                                        }
                                     }
                                     ForEach(step.acceptanceCriteria ?? [], id: \.self) { criterion in
                                         Text(criterion).font(.caption)

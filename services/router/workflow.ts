@@ -1,4 +1,4 @@
-import type { WorkflowStep } from '../../packages/protocol/task.ts';
+import type { WorkflowAction, WorkflowStep } from '../../packages/protocol/task.ts';
 
 export class InvalidWorkflow extends Error {}
 
@@ -21,20 +21,36 @@ export function workflowSteps(input: unknown): WorkflowStep[] {
     if (value.requireReview !== undefined && typeof value.requireReview !== 'boolean') {
       throw new InvalidWorkflow('Invalid workflow review option');
     }
-    const action = value.action;
-    if (action !== undefined && (!action || typeof action !== 'object' || action.kind !== 'desktop.observe' ||
-        typeof action.alias !== 'string' || !/^[a-z0-9_-]{1,32}$/.test(action.alias) ||
-        typeof action.deviceId !== 'string' || !/^[a-f0-9-]{36}$/.test(action.deviceId))) {
-      throw new InvalidWorkflow('Invalid workflow action');
-    }
+    const action = value.action === undefined ? undefined : workflowAction(value.action);
     const acceptanceCriteria: string[] = Array.isArray(value.acceptanceCriteria)
       ? [...new Set<string>(value.acceptanceCriteria.map((criterion: string) => criterion.trim()))] : [];
     return { key: value.key as string, goal: value.goal as string, needs: [...new Set<string>(value.needs)],
-      ...(action && { action: { kind: 'desktop.observe' as const, alias: action.alias as string, deviceId: action.deviceId as string } }),
+      ...(action && { action }),
       ...(acceptanceCriteria.length && { acceptanceCriteria }), ...(value.requireReview === true && { requireReview: true }) };
   });
   orderWorkflow(steps);
   return steps;
+}
+
+function workflowAction(value: unknown): WorkflowAction {
+  if (!value || typeof value !== 'object') throw new InvalidWorkflow('Invalid workflow action');
+  const { kind, alias, deviceId, windowId, windowIdentity, button } = value as Record<string, unknown>;
+  if (typeof alias !== 'string' || !/^[a-z0-9_-]{1,32}$/.test(alias) ||
+      typeof deviceId !== 'string' || !/^[a-f0-9-]{36}$/.test(deviceId)) {
+    throw new InvalidWorkflow('Invalid workflow desktop target');
+  }
+  if (kind === 'desktop.observe') return { kind, alias, deviceId };
+  if (kind === 'desktop.click' && typeof windowId === 'string' && /^w-[0-9]{1,20}$/.test(windowId) &&
+      typeof windowIdentity === 'string' && /^[a-f0-9]{64}$/.test(windowIdentity) &&
+      typeof button === 'string' && button.trim() && button.length <= 120 && !/[\x00-\x1f\x7f]/.test(button)) {
+    return { kind, alias, deviceId, windowId, windowIdentity, button };
+  }
+  throw new InvalidWorkflow('Invalid workflow action');
+}
+
+export function workflowActionGoal(action: WorkflowAction): string {
+  if (action.kind === 'desktop.observe') return '/observe ' + action.alias;
+  return `/click ${action.alias} --window ${action.windowId} --instance ${action.windowIdentity} ${action.button}`;
 }
 
 export function orderWorkflow(steps: WorkflowStep[]) {

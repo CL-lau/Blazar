@@ -679,7 +679,7 @@ test('Router capability tools only expose active connections and devices in the 
   const memory = new MemoryStore(':memory:');
   const desktop = store.registerDevice('owner', 'Workspace desktop', 'project');
   store.recordDeviceActivity(desktop.id, Date.now(), 'computer.observe');
-  store.recordDesktopApps(desktop.id, ['notes']);
+  store.recordDesktopApps(desktop.id, ['notes'], undefined, [{ alias: 'notes', buttons: ['Add'], visual: false }]);
   store.registerDevice('owner', 'Separate workspace', 'other');
   store.registerDevice('other', 'Separate owner', 'project');
   memory.connect('owner', 'feishu', 'authorized account', 'project');
@@ -758,6 +758,24 @@ test('Router capability tools only expose active connections and devices in the 
   const downstream = claimWorker();
   assert.equal(downstream.task.id, result.steps[1].taskId);
   assert.equal(downstream.predecessors[0].artifact?.excerpt, 'Notes contain a draft');
+
+  const click = (button: string) => fetch('http://127.0.0.1:' + address.port + '/v1/workflows', {
+    method: 'POST',
+    headers: { Authorization: 'Bearer ' + phone.token, 'Content-Type': 'application/json', 'Idempotency-Key': 'click-flow' },
+    body: JSON.stringify({ workspace: 'project', steps: [{
+      key: 'click', goal: 'Add an item in Notes', needs: [], action: {
+        kind: 'desktop.click', alias: 'notes', deviceId: desktop.id, windowId: 'w-10',
+        windowIdentity: 'a'.repeat(64), button,
+      },
+    }] }),
+  });
+  assert.equal((await click('Delete')).status, 404);
+  const admitted = await click('Add');
+  assert.equal(admitted.status, 202);
+  const clicked = await admitted.json();
+  const action = store.claim('owner', 'project', desktop.id, now, 45_000, '/observe ', '', undefined, undefined, ['notes'])!;
+  assert.equal(action.task.id, clicked.steps[0].taskId);
+  assert.equal(action.task.goal, '/click notes --window w-10 --instance ' + 'a'.repeat(64) + ' Add');
 });
 
 test('task and workflow intake deduplicate per paired phone and administrator', async t => {

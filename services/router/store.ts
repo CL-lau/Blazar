@@ -1,5 +1,5 @@
 import type { PushKind, PushResult } from '../../packages/notifications/apns.ts';
-import { orderWorkflow } from './workflow.ts';
+import { orderWorkflow, workflowActionGoal } from './workflow.ts';
 import type { ConversationTurn, Decision, RouteRequest } from './harness.ts';
 import { createHash, randomBytes, randomUUID } from 'node:crypto';
 import { DatabaseSync } from 'node:sqlite';
@@ -1155,12 +1155,12 @@ export class TaskStore {
         const taskId = randomUUID();
         tasks.set(name, taskId);
         const status = step.needs.length ? 'waiting_dependency' : 'queued';
-        const goal = step.action ? '/observe ' + step.action.alias : step.goal;
+        const goal = step.action ? workflowActionGoal(step.action) : step.goal;
         this.db.prepare('INSERT INTO task(id,owner,workspace,goal,status) VALUES(?,?,?,?,?)')
           .run(taskId, owner, workspace, goal, status);
         if (step.action) {
           this.db.prepare('INSERT INTO task_desktop_device VALUES(?,?)').run(taskId, step.action.deviceId);
-          this.db.prepare('INSERT INTO workflow_observation(task_id) VALUES(?)').run(taskId);
+          if (step.action.kind === 'desktop.observe') this.db.prepare('INSERT INTO workflow_observation(task_id) VALUES(?)').run(taskId);
         }
         this.db.prepare('INSERT INTO workflow_step VALUES(?,?,?)').run(id, name, taskId);
         if (step.requireReview) this.db.prepare('INSERT INTO task_review VALUES(?)').run(taskId);

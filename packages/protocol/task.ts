@@ -42,13 +42,17 @@ export interface RunOutcome {
   artifact?: { name: string; text: string; mime?: 'image/png' };
 }
 
+export type WorkflowAction =
+  | { kind: 'desktop.observe'; alias: string; deviceId: string }
+  | { kind: 'desktop.click'; alias: string; deviceId: string; windowId: string; windowIdentity: string; button: string };
+
 export interface WorkflowStep {
   key: string;
   goal: string;
   needs: string[];
   acceptanceCriteria?: string[];
   requireReview?: boolean;
-  action?: { kind: 'desktop.observe'; alias: string; deviceId: string };
+  action?: WorkflowAction;
 }
 
 

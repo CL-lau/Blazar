@@ -215,6 +215,9 @@ struct RouterClient: Equatable {
             let kind: String
             let alias: String
             let deviceId: String
+            let windowId: String?
+            let windowIdentity: String?
+            let button: String?
         }
         var action: Action? = nil
         let key: String
