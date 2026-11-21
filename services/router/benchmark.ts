@@ -104,7 +104,7 @@ try {
     while (accepted.size < jobs) {
       active.throwIfAborted();
       const claim = await socket.request('claim', {
-        ...(mixed ? { capability: 'agent.acp', worker: { protocol: 'jsonl', label: 'Benchmark fixture' } }
+        ...(mixed ? { capability: 'agent.acp', worker: { protocol: 'jsonl', label: 'Benchmark fixture', capabilities: ['git-worktree'] } }
           : { capability: 'document.preview' }),
         requestId: randomUUID(),
       }, active);

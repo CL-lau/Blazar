@@ -45,9 +45,10 @@ export function deviceOperation(store: DeviceTasks, bearer: string, pathname: st
       if (/[\x00-\x1f\x7f]/.test(label)) throw new RequestError(400, 'Invalid Worker label');
       worker = { label, protocol };
       if (reported.capabilities !== undefined) {
-        const supported = protocol === 'codex' || protocol === 'pi' ? ['steer']
-          : protocol === 'jsonl' ? ['full-input-artifacts'] : [];
-        if (!Array.isArray(reported.capabilities) || reported.capabilities.length > supported.length ||
+        const supported = ['git-worktree'];
+        if (protocol === 'codex' || protocol === 'pi') supported.push('steer');
+        if (protocol === 'jsonl') supported.push('full-input-artifacts');
+        if (!Array.isArray(reported.capabilities) || new Set(reported.capabilities).size !== reported.capabilities.length ||
             reported.capabilities.some(capability => !supported.includes(capability))) {
           throw new RequestError(400, 'Invalid Worker capabilities');
         }

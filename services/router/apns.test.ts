@@ -116,11 +116,12 @@ test('dispatcher sends a pending approval via HTTP/2 and skips a decided approva
   const token = 'ab'.repeat(32);
   assert.equal(store.registerPush(pair.token, token), true);
   const old = store.create('owner', 'desktop', 'old', 'project', 'Old draft');
-  const oldRun = store.claim('owner', 'project', 'device', now, 45_000)!;
+  const worker = { label: 'Isolated fixture', protocol: 'acp', capabilities: ['git-worktree' as const] };
+  const oldRun = store.claim('owner', 'project', 'device', now, 45_000, '', '', undefined, worker)!;
   const decided = store.requestApproval(oldRun.run.id, 'device', 'Already reviewed', now)!;
   assert.ok(store.command('owner', old.id, 1, { action: 'approve', approvalId: String(decided.id) }));
   store.create('owner', 'desktop', 'new', 'project', 'Current draft');
-  const newRun = store.claim('owner', 'project', 'another-device', now + 10, 45_000)!;
+  const newRun = store.claim('owner', 'project', 'another-device', now + 10, 45_000, '', '', undefined, worker)!;
   store.requestApproval(newRun.run.id, 'another-device', 'Private review details', now + 10);
   let count = 0;
   const arrived = Promise.withResolvers<string>();

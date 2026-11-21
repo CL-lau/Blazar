@@ -50,6 +50,7 @@ export class DeviceClient {
         ...(prepareWorkerRoot ? ['git-worktree'] : []),
       ])).digest('hex');
       const capabilities: WorkerCapability[] = [];
+      if (prepareWorkerRoot) capabilities.push('git-worktree');
       if (protocol === 'codex' || protocol === 'pi') capabilities.push('steer');
       if (worker.protocol === 'jsonl' && worker.includeFullInputArtifacts) capabilities.push('full-input-artifacts');
       this.workerConfiguration = { label: worker.label, protocol, adapterVersion, revision,

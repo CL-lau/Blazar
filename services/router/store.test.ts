@@ -6,6 +6,8 @@ import { join } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 import { TaskStore } from './store.ts';
 
+const isolatedFixture = { label: 'Isolated fixture', protocol: 'acp', capabilities: ['git-worktree' as const] };
+
 test('deduplicates creation and fences results after a newer instruction', t => {
   const db = new TaskStore(':memory:');
   t.after(() => db.close());
@@ -233,13 +235,13 @@ test('workflow creation is atomic and dependent steps receive completed results'
   assert.equal(db.createWorkflow('owner', 'plan', 'project', steps).id, workflow.id);
   assert.equal(db.snapshot('other').workflowSteps.length, 0);
 
-  const draft = db.claim('owner', 'project', 'first', 0, 100)!;
-  const reference = db.claim('owner', 'project', 'second', 0, 100)!;
+  const draft = db.claim('owner', 'project', 'first', 0, 100, '', '', undefined, isolatedFixture)!;
+  const reference = db.claim('owner', 'project', 'second', 0, 100, '', '', undefined, isolatedFixture)!;
   assert.equal(draft.task.goal, 'Write notes');
   assert.equal(reference.task.goal, 'Find references');
-  assert.equal(db.claim('owner', 'project', 'third', 0, 100), undefined);
+  assert.equal(db.claim('owner', 'project', 'third', 0, 100, '', '', undefined, isolatedFixture), undefined);
   db.finish(draft.run.id, 'first', 1, { status: 'succeeded', result: 'Draft text' });
-  assert.equal(db.claim('owner', 'project', 'third', 2, 100), undefined);
+  assert.equal(db.claim('owner', 'project', 'third', 2, 100, '', '', undefined, isolatedFixture), undefined);
   db.finish(reference.run.id, 'second', 2, { status: 'succeeded', result: 'Source material' });
   const review = db.claim('owner', 'project', 'third', 3, 100)!;
   assert.equal(review.task.goal, 'Review notes');
@@ -342,13 +344,13 @@ test('running workflow steps cannot commit after a predecessor is replaced', t =
   assert.equal(db.finish(draft.run.id, 'author', now + 1, {
     status: 'succeeded', result: 'First draft', artifact: { name: 'draft.md', text: 'Original artifact' },
   }), true);
-  const review = db.claim('owner', 'project', 'reviewer', now + 2, 100)!;
+  const review = db.claim('owner', 'project', 'reviewer', now + 2, 100, '', '', undefined, isolatedFixture)!;
   const approval = db.requestApproval(review.run.id, 'reviewer', 'Approve the review', now + 3)!;
   assert.equal(db.command('owner', draft.task.id, 1, { action: 'append', text: 'Replace the draft' })?.version, 2);
   assert.equal(db.snapshot('owner').approvals.length, 0);
   assert.equal(db.command('owner', review.task.id, 1, { action: 'approve', approvalId: String(approval.id) }), undefined);
   assert.equal(db.renew(review.run.id, 'reviewer', now + 4, 100), undefined);
-  const revised = db.claim('owner', 'project', 'author', now + 5, 100)!;
+  const revised = db.claim('owner', 'project', 'author', now + 5, 100, '', '', undefined, isolatedFixture)!;
   assert.equal(db.finish(revised.run.id, 'author', now + 6, {
     status: 'succeeded', result: 'Revised draft', artifact: { name: 'draft.md', text: 'X'.repeat(2100) },
   }), true);
@@ -638,7 +640,7 @@ test('claims rotate incoming channels within each owner and workspace while pres
   receive('feishu', 'feishu-other-owner', 'project', 'other-owner');
   const desktop = store.create('owner', 'desktop', 'local', 'project', 'Local task');
   const take = (device: string, key: string, workspace = 'project', owner = 'owner') =>
-    store.claim(owner, workspace, device, 1, 10_000, '', '', key)!;
+    store.claim(owner, workspace, device, 1, 10_000, '', '', key, isolatedFixture)!;
   const first = take('device-a', 'first');
   assert.equal(first.task.goal, 'wx-1');
   assert.equal(take('device-a', 'first').run.id, first.run.id);
@@ -735,14 +737,14 @@ test('retry waits for an approval-timed-out run to stop even without a workspace
   t.after(() => db.close());
   const now = Date.now();
   const task = db.create('owner', 'fixture', 'approval-retry', 'project', 'Prepare notes');
-  const run = db.claim('owner', 'project', 'first', now, 400_000)!.run;
+  const run = db.claim('owner', 'project', 'first', now, 400_000, '', '', undefined, isolatedFixture)!.run;
   const expiry = Number(db.requestApproval(run.id, run.device, 'Review notes', now)?.expires);
   assert.equal(db.expire(expiry), 1);
   assert.equal(db.command('owner', task.id, task.version, { action: 'retry' })?.version, task.version + 1);
 
   assert.equal(db.snapshot('owner').tasks.find(item => item.id === task.id)?.waitingForPreviousRun, true);
   const unrelated = db.create('owner', 'fixture', 'unrelated', 'project', 'Read another file');
-  const claim = (device: string) => db.claim('owner', 'project', device, expiry, 45_000);
+  const claim = (device: string) => db.claim('owner', 'project', device, expiry, 45_000, '', '', undefined, isolatedFixture);
   assert.equal(claim('other-device')?.task.id, unrelated.id);
   assert.equal(claim('replacement-device'), undefined);
   assert.ok(db.acknowledgeStop(run.id, run.device, expiry));
@@ -1053,4 +1055,32 @@ test('desktop workflows resolve a click only against one accessible observed win
   assert.ok(db.finish(click.run.id, device.id, now, { status: 'failed', result: 'Fixture finished' }));
   assert.equal(claim(), undefined);
   assert.equal(db.get('owner', String(workflow.steps[2].taskId))?.status, 'waiting_user');
+});
+
+test('parallel Worker claims require isolated checkouts for every active run', t => {
+  const store = new TaskStore(':memory:');
+  t.after(() => store.close());
+  const now = Date.now();
+  const shared = { label: 'Shared checkout', protocol: 'acp' };
+  const isolated = { label: 'Isolated checkout', protocol: 'acp', capabilities: ['git-worktree' as const] };
+  const claim = (device: string, worker = shared) =>
+    store.claim('owner', 'project', device, now, 45_000, '', '/preview ', undefined, worker);
+
+  for (let index = 0; index < 5; index++) {
+    store.create('owner', 'fixture', 'worktree-' + index, 'project', 'Implement step ' + index);
+  }
+  store.setWorkspaceWorkerPolicy('owner', 'project', ['acp'], 2);
+  const original = claim('shared-device')!;
+  assert(original);
+  assert.equal(claim('isolated-a', isolated), undefined);
+  assert.equal(store.command('owner', original.task.id, 1, { action: 'cancel' })?.status, 'cancelling');
+  assert.equal(claim('isolated-a', isolated), undefined);
+  assert.equal(store.acknowledgeStop(original.run.id, original.run.device, now), true);
+  const first = claim('isolated-a', isolated)!;
+  const second = claim('isolated-b', isolated)!;
+  assert(first && second);
+  assert.equal(claim('isolated-c', isolated), undefined);
+  assert.equal(store.finish(first.run.id, first.run.device, now, { status: 'succeeded', result: 'Done' }), true);
+  assert.equal(claim('shared-device'), undefined);
+  assert(claim('isolated-c', isolated));
 });

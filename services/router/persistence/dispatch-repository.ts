@@ -61,16 +61,22 @@ export class DispatchRepository {
       UNION ALL SELECT 1 FROM expired_approval_stop WHERE device_id=? AND expires>? LIMIT 1`)
       .get(device, now, device, now)) return undefined;
     let workerHasCapacity = true;
-    if (policy?.max_concurrent != null && goalPrefix !== '/preview ' && goalPrefix !== '/observe ') {
+    if (goalPrefix !== '/preview ' && goalPrefix !== '/observe ') {
       const active = this.db.prepare(`WITH occupied AS (
-        SELECT taskId AS task_id,expires FROM run
-        UNION ALL SELECT task_id,expires FROM expired_approval_stop
+        SELECT id,taskId AS task_id,expires FROM run
+        UNION ALL SELECT run_id,task_id,expires FROM expired_approval_stop
       )
-        SELECT COUNT(*) AS count FROM occupied r JOIN task t ON t.id=r.task_id
+        SELECT COUNT(*) AS count, COUNT(*) FILTER (WHERE NOT EXISTS(
+          SELECT 1 FROM event e, json_each(e.data,'$.worker.capabilities') capability
+          WHERE e.taskId=t.id AND e.type='run.started' AND json_extract(e.data,'$.runId')=r.id
+          AND capability.value='git-worktree'
+        )) AS exclusive_count FROM occupied r JOIN task t ON t.id=r.task_id
         WHERE t.owner=? AND t.workspace=? AND r.expires>?
         AND substr(t.goal,1,9) NOT IN ('/observe ','/preview ') AND substr(t.goal,1,7)<>'/click '`)
         .get(owner, workspace, now);
-      workerHasCapacity = Number(active?.count) < Number(policy.max_concurrent);
+      const count = Number(active?.count);
+      workerHasCapacity = (policy?.max_concurrent == null || count < Number(policy.max_concurrent)) &&
+        (count === 0 || (worker?.capabilities?.includes('git-worktree') === true && Number(active?.exclusive_count) === 0));
     }
     const task = this.db.prepare(`WITH eligible AS (
       SELECT task.rowid AS queue_order, task.*, COALESCE((
