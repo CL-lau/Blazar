@@ -1182,14 +1182,16 @@ export class TaskStore {
     const attachments = this.db.prepare('SELECT name,text FROM task_attachment WHERE task_id=? ORDER BY position')
       .all(run.taskId) as unknown as TaskAttachment[];
     const task = this.get(owner, run.taskId)!;
-    const expected = /^\/(observe|click) /.test(task.goal) ? this.db.prepare(`SELECT json_extract(data,'$.action.expectedText') AS text
-      FROM event WHERE taskId=? AND type='task.created' ORDER BY seq LIMIT 1`).get(run.taskId)?.text : undefined;
+    const action = /^\/(observe|click) /.test(task.goal) ? this.workflowDesktopAction(task.id) : undefined;
+    const expected = action && 'expectedText' in action ? action.expectedText : undefined;
+    const observationWaitSeconds = action?.kind === 'desktop.observe' && action.mode === 'window' ? action.waitSeconds : undefined;
     const required = this.db.prepare('SELECT capability FROM task_worker_capability WHERE task_id=?').get(run.taskId)?.capability;
     return { run, task, instructions, predecessors, acceptanceCriteria,
       ...(required === 'full-input-artifacts' && { fullInputRequired: true }),
       ...(required === 'read-only' && { readOnlyRequired: true }),
       ...(typeof expected === 'string' && (task.goal.startsWith('/click ')
         ? { clickExpectedText: expected } : { observationExpectedText: expected })),
+      ...(observationWaitSeconds !== undefined && { observationWaitSeconds }),
       ...(attachments.length && { attachments }),
       ...(memoryInputs.length && { memoryInputs }),
     };

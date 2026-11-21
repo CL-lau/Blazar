@@ -14,7 +14,7 @@ import { executeDesktopAction } from './execution/desktop.ts';
 import type { gitRunWorktrees } from './execution/git-worktree.ts';
 import { executeWorker } from './execution/worker.ts';
 
-type Assignment = { clickExpectedText?: string; observationExpectedText?: string; fullInputRequired?: boolean; readOnlyRequired?: boolean; run: Run; task: Task; instructions: string[]; predecessors: PredecessorInput[]; acceptanceCriteria?: string[]; memoryInputs?: TaskMemoryInput[]; attachments?: TaskAttachment[] };
+type Assignment = { clickExpectedText?: string; observationExpectedText?: string; observationWaitSeconds?: number; fullInputRequired?: boolean; readOnlyRequired?: boolean; run: Run; task: Task; instructions: string[]; predecessors: PredecessorInput[]; acceptanceCriteria?: string[]; memoryInputs?: TaskMemoryInput[]; attachments?: TaskAttachment[] };
 
 export class DeviceClient {
   private socket: DeviceSocket;
@@ -186,7 +186,7 @@ export class DeviceClient {
               const decision = await this.approve(prefix, summary, signal);
               if (decision?.decision !== 'approved') return undefined;
               return () => this.consumeApproval(prefix, decision.id, signal);
-            }, assignment.clickExpectedText ?? assignment.observationExpectedText);
+            }, assignment.clickExpectedText ?? assignment.observationExpectedText, assignment.observationWaitSeconds);
         } else if (this.worker) {
           const root = this.worktrees ? await this.worktrees.prepare(assignment.run.id) : this.root;
           active.throwIfAborted();

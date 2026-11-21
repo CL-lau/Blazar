@@ -275,9 +275,14 @@ if (command === 'permissions') {
 } else if (command === 'list-windows') {
   data = [{id:'w-18',app_name:'Notes',title:'Draft',visible:true,accessible:true,process_instance:'fixture'}];
 } else if (command === 'snapshot' && process.argv.slice(3).includes('w-18')) {
+  let savedCount = 0;
+  if (fs.existsSync('saved')) {
+    savedCount = fs.existsSync('saved-count') ? Number(fs.readFileSync('saved-count', 'utf8')) + 1 : 1;
+    fs.writeFileSync('saved-count', String(savedCount));
+  }
   data = {window_id:'w-18',pid:42,tree:{role:'window',name:'Draft',children:[
     {role:'button',name:'Save',ref_id:'@save:e1',available_actions:['Click']},
-    {role:'label',name:fs.existsSync('saved')?'Saved':'Draft pending'}
+    {role:'label',name:savedCount >= 3 ? 'Saved and indexed' : savedCount ? 'Saved' : 'Draft pending'}
   ]}};
 } else if (command === 'click' && process.argv[3] === '@save:e1') {
   fs.writeFileSync('saved', 'yes', {flag:'wx'});
@@ -323,11 +328,11 @@ console.log(JSON.stringify({ok:true,command,data}));
         action: { kind: 'desktop.click', alias: 'notes', deviceId: device.id, button: 'Save', expectedText: 'Saved',
           windowFrom: { step: 'windows', title: 'Draft' } } },
       { key: 'snapshot', goal: 'Read the saved Draft window', needs: ['windows', 'save'],
-        action: { kind: 'desktop.observe', alias: 'notes', deviceId: device.id, mode: 'window', expectedText: 'Saved',
+        action: { kind: 'desktop.observe', alias: 'notes', deviceId: device.id, mode: 'window', expectedText: 'Saved and indexed', waitSeconds: 3,
           windowFrom: { step: 'windows', title: 'Draft' } } },
       { key: 'review', goal: 'Review the saved draft', needs: ['snapshot'] },
       { key: 'missing', goal: 'Look for Published', needs: ['windows', 'snapshot'],
-        action: { kind: 'desktop.observe', alias: 'notes', deviceId: device.id, mode: 'window', expectedText: 'Published',
+        action: { kind: 'desktop.observe', alias: 'notes', deviceId: device.id, mode: 'window', expectedText: 'Published', waitSeconds: 1,
           windowFrom: { step: 'windows', title: 'Draft' } } },
       { key: 'blocked', goal: 'Review publication', needs: ['missing'] },
     ],
@@ -358,7 +363,7 @@ console.log(JSON.stringify({ok:true,command,data}));
   assert.equal(store.snapshot('owner').approvals.length, 0);
   const handoff = store.claim('owner', 'project', 'review-worker', Date.now(), 45_000, '', '/preview ')!;
   assert.equal(handoff.task.id, steps[3].taskId);
-  assert.match(handoff.predecessors[0].artifact?.excerpt ?? '', /Saved/);
+  assert.match(handoff.predecessors[0].artifact?.excerpt ?? '', /Saved and indexed/);
   assert.equal(await client.runOnce(signal), true);
   assert.equal(store.get('owner', steps[4].taskId)?.status, 'failed');
   assert.equal(store.get('owner', steps[5].taskId)?.status, 'waiting_dependency');

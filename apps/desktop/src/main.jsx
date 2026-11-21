@@ -531,7 +531,8 @@ function App() {
                     {step.runLimitSeconds && <p>Time limit: {step.runLimitSeconds} seconds</p>}
                     {step.workerCapability && <p>Requires {({ steer: 'live instructions', 'full-input-artifacts': 'full input artifacts', 'git-worktree': 'an isolated Git checkout', 'read-only': 'a read-only Worker' })[step.workerCapability] ?? step.workerCapability}</p>}
                     {step.workerProtocols?.length > 0 && <p>Worker protocols: {step.workerProtocols.join(', ')}</p>}
-                    {step.action?.expectedText && <p>Expected text: {step.action.expectedText}</p>}
+                    {step.action?.expectedText && <p>Expected text: {step.action.expectedText}
+                      {step.action.waitSeconds && ` (wait up to ${step.action.waitSeconds} seconds)`}</p>}
                     {step.acceptanceCriteria?.length > 0 && <ul>{step.acceptanceCriteria.map(criterion =>
                       <li key={criterion}>{criterion}</li>)}</ul>}
                     {step.requireReview && <p>Requires your acceptance</p>}

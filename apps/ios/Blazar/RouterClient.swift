@@ -226,6 +226,7 @@ struct RouterClient: Equatable {
             let windowIdentity: String?
             let button: String?
             let expectedText: String?
+            let waitSeconds: Int?
         }
         var action: Action? = nil
         var workerProtocols: [String]? = nil

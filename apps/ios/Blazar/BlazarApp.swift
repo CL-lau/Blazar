@@ -226,6 +226,7 @@ private struct TaskScreen: View {
                                         } else if let title = action.windowFrom?.title {
                                             Text("\(action.mode == "visual" ? "Capture screenshot of" : "Observe") \(action.alias), window \(title) on device \(action.deviceId)").font(.caption)
                                             if let expected = action.expectedText { Text("Expected text: \(expected)").font(.caption) }
+                                            if let seconds = action.waitSeconds { Text("Wait up to \(seconds) seconds").font(.caption) }
                                         } else {
                                             Text(action.mode == "windows" ? "List windows for \(action.alias)" : "Observe \(action.alias) on device \(action.deviceId)").font(.caption)
                                         }

@@ -52,7 +52,7 @@ export function workflowSteps(input: unknown): WorkflowStep[] {
 
 function workflowAction(value: unknown): WorkflowAction {
   if (!value || typeof value !== 'object') throw new InvalidWorkflow('Invalid workflow action');
-  const { kind, alias, deviceId, windowId, windowIdentity, button, expectedText, mode, windowFrom } = value as Record<string, unknown>;
+  const { kind, alias, deviceId, windowId, windowIdentity, button, expectedText, mode, windowFrom, waitSeconds } = value as Record<string, unknown>;
   if (typeof alias !== 'string' || !/^[a-z0-9_-]{1,32}$/.test(alias) ||
       typeof deviceId !== 'string' || !/^[a-f0-9-]{36}$/.test(deviceId)) {
     throw new InvalidWorkflow('Invalid workflow desktop target');
@@ -70,11 +70,15 @@ function workflowAction(value: unknown): WorkflowAction {
     throw new InvalidWorkflow('Invalid expected desktop text');
   }
   const expectation = expectedText ? { expectedText: expectedText.trim() } : {};
+  if (waitSeconds !== undefined && (kind !== 'desktop.observe' || mode !== 'window' || !expectedText ||
+      typeof waitSeconds !== 'number' || !Number.isSafeInteger(waitSeconds) || waitSeconds < 1 || waitSeconds > 20)) {
+    throw new InvalidWorkflow('Invalid desktop observation wait');
+  }
   if (kind === 'desktop.observe' && mode === 'visual' && reference && expectedText === undefined) {
     return { kind, alias, deviceId, mode, windowFrom: reference };
   }
   if (kind === 'desktop.observe' && mode === 'window' && reference) {
-    return { kind, alias, deviceId, mode, windowFrom: reference, ...expectation };
+    return { kind, alias, deviceId, mode, windowFrom: reference, ...expectation, ...(waitSeconds !== undefined && { waitSeconds }) };
   }
   if (kind === 'desktop.observe' && (mode === undefined || mode === 'windows') && windowFrom === undefined && expectedText === undefined) {
     return { kind, alias, deviceId, ...(mode && { mode }) };
