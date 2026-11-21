@@ -10,7 +10,7 @@ import { workerCatalog } from '../../packages/workers/registry.ts';
 import { performance } from 'node:perf_hooks';
 import { RouterMetrics, type StreamHealth } from './metrics.ts';
 import type { DocumentConnector } from '../../packages/apps/documents.ts';
-import { WebSocket, WebSocketServer } from 'ws';
+import { createDeviceSocketTransport, maxDeviceClaimBytes, maxDeviceFinishBytes } from './transport/device-sockets.ts';
 import { createQQHandler, qqChannel, type QQConfig } from '../../packages/channels/qq.ts';
 import { feishuChannel, parseFeishu, type FeishuConfig } from '../../packages/channels/feishu.ts';
 import { InvalidWorkflow, workflowSteps } from './domain/workflow.ts';
@@ -20,9 +20,6 @@ import { createServer, type IncomingMessage, type ServerResponse } from 'node:ht
 import { setTimeout as delay } from 'node:timers/promises';
 import type { MemoryStore } from './memory.ts';
 import { IdempotencyConflict, TaskStore, type AppEvidence } from './store.ts';
-
-const maxDeviceFinishBytes = 1_350_000;
-const maxDeviceClaimBytes = 400_000;
 
 async function stream(store: TaskStore, owner: string, cursor: number, response: ServerResponse, authorized: () => boolean,
                       once: boolean, canReadTask: (taskId: string) => boolean, replayThrough: number, metrics: RouterMetrics) {
@@ -101,18 +98,11 @@ export function routerServer(store: TaskStore, config: { owner: string; token: s
     return metrics;
   }
   const routeConversation = createConversationRouter(store, config);
-  const stopSubscribers = new Map<string, Set<WebSocket>>();
-  function sendStop(device: string, runId: string) {
-    for (const peer of stopSubscribers.get(device) ?? []) {
-      if (peer.readyState === WebSocket.OPEN && peer.bufferedAmount < 256_000) {
-        peer.send(JSON.stringify({ type: 'run.stop', runId }));
-      }
-    }
-  }
-  const expireRuns = (now: number) => store.expire(now, sendStop);
+  const devices = createDeviceSocketTransport(store);
+  const expireRuns = (now: number) => store.expire(now, devices.sendStop);
   function notifyStop(owner: string, taskId: string) {
     const target = store.stopTarget(owner, taskId);
-    if (target) sendStop(target.device, target.runId);
+    if (target) devices.sendStop(target.device, target.runId);
   }
   async function attachFromChannel(channel: string, workspace: string,
                                    message: Parameters<TaskStore['channelAttachmentTask']>[3],
@@ -149,9 +139,7 @@ export function routerServer(store: TaskStore, config: { owner: string; token: s
         else store.suspendTaskForMemory(task.id);
       }
     }
-    for (const device of stopSubscribers.keys()) {
-      for (const row of store.deviceStopTargets(device)) sendStop(device, String(row.id));
-    }
+    devices.flushStops();
   }
   const expected = Buffer.from(`Bearer ${config.token}`);
   const qq = config.qq ? createQQHandler(config.qq) : undefined;
@@ -713,71 +701,6 @@ export function routerServer(store: TaskStore, config: { owner: string; token: s
     }
   });
 
-  const socketServer = new WebSocketServer({ noServer: true, maxPayload: maxDeviceFinishBytes, perMessageDeflate: false });
-  server.on('upgrade', (request, socket, head) => {
-    const auth = request.headers.authorization ?? '';
-    const token = auth.startsWith('Bearer ') ? auth.slice(7) : '';
-    const device = store.deviceForToken(token);
-    if (request.url !== '/v1/devices/connect' || !device) {
-      socket.end('HTTP/1.1 401 Unauthorized\r\nConnection: close\r\n\r\n');
-      return;
-    }
-    socketServer.handleUpgrade(request, socket, head, connection => {
-      connection.on('error', () => connection.terminate());
-      if (request.headers['x-blazar-device-stop-push'] === '1') {
-        const peers = stopSubscribers.get(device.id) ?? new Set<WebSocket>();
-        stopSubscribers.set(device.id, peers);
-        peers.add(connection);
-        connection.once('close', () => {
-          peers.delete(connection);
-          if (!peers.size) stopSubscribers.delete(device.id);
-        });
-        for (const row of store.deviceStopTargets(device.id)) {
-          connection.send(JSON.stringify({ type: 'run.stop', runId: row.id }));
-        }
-      }
-      connection.on('message', (raw, binary) => {
-        let id: number | undefined;
-        try {
-          const frame = binary ? null : JSON.parse(raw.toString());
-          if (!frame || !Number.isSafeInteger(frame.id) || frame.id < 1 ||
-              typeof frame.path !== 'string' || frame.path.length > 128 || !frame.body ||
-              typeof frame.body !== 'object' || Array.isArray(frame.body)) {
-            connection.close(1003, 'Invalid frame');
-            return;
-          }
-          id = frame.id;
-          const limit = frame.path.endsWith('/finish') ? maxDeviceFinishBytes :
-            frame.path === 'claim' ? maxDeviceClaimBytes : 65_536;
-          if (!Array.isArray(raw) && raw.byteLength > limit) {
-            throw new RequestError(413, 'Request too large');
-          }
-          if (connection.bufferedAmount > 256_000) {
-            connection.close(1008, 'Slow device connection');
-            return;
-          }
-          const result = deviceOperation(store, token, '/v1/device/' + frame.path, frame.body, expireRuns, config.memory);
-          connection.send(JSON.stringify({ id, ...result }));
-        } catch (error) {
-          if (id === undefined) {
-            connection.close(1003, 'Invalid frame');
-            return;
-          }
-          const status = error instanceof RequestError ? error.status : error instanceof IdempotencyConflict ? 409 : 500;
-          connection.send(JSON.stringify({ id, status, body: { error: status === 500
-            ? 'Internal server error' : (error as Error).message } }));
-          if (status === 401) connection.close(1008, 'Device revoked');
-        }
-      });
-    });
-  });
-  let socketsClosed = false;
-  const closeDeviceSockets = () => {
-    if (socketsClosed) return;
-    socketsClosed = true;
-    for (const connection of socketServer.clients) connection.terminate();
-    socketServer.close();
-  };
-  server.once('close', closeDeviceSockets);
-  return Object.assign(server, { closeDeviceSockets, flushStopNotifications, expireRuns });
+  devices.attach(server, (token, path, body) => deviceOperation(store, token, path, body, expireRuns, config.memory));
+  return Object.assign(server, { closeDeviceSockets: devices.closeDeviceSockets, flushStopNotifications, expireRuns });
 }
