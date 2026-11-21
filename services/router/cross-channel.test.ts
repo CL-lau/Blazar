@@ -1,6 +1,9 @@
 import assert from 'node:assert/strict';
 import { randomBytes } from 'node:crypto';
 import { once } from 'node:events';
+import { mkdtempSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import test from 'node:test';
 import { parseWeixin, type WeixinConfig } from '../../packages/channels/weixin.ts';
 import { feishuChannel } from '../../packages/channels/feishu.ts';
@@ -9,7 +12,9 @@ import { routerServer } from './http.ts';
 import { TaskStore } from './store.ts';
 
 test('WeChat intake, paired-phone approval, desktop artifact and Feishu follow-up share one task', async t => {
-  const store = new TaskStore(':memory:');
+  const dir = mkdtempSync(join(tmpdir(), 'blazar-cross-channel-'));
+  const database = join(dir, 'router.sqlite');
+  let store = new TaskStore(database);
   const owner = 'owner';
   const workspace = 'project';
   const wechat: WeixinConfig = {
@@ -20,20 +25,30 @@ test('WeChat intake, paired-phone approval, desktop artifact and Feishu follow-u
     token: 'fixture-feishu', appId: 'app', tenant: 'tenant', workspace,
     senders: new Set(['feishu-user']), chats: new Set(['feishu-chat']),
   };
-  const server = routerServer(store, { owner, token: 'admin-fixture', feishu });
-  server.listen(0, '127.0.0.1');
-  await once(server, 'listening');
-  const address = server.address();
-  assert(address && typeof address !== 'string');
-  const base = new URL('http://127.0.0.1:' + address.port);
+  function createRouter() {
+    return routerServer(store, { owner, token: 'admin-fixture', feishu });
+  }
+  async function listen(server: ReturnType<typeof createRouter>) {
+    server.listen(0, '127.0.0.1');
+    await once(server, 'listening');
+    const address = server.address();
+    assert(address && typeof address !== 'string');
+    return new URL('http://127.0.0.1:' + address.port);
+  }
+  let server = createRouter();
+  let base = await listen(server);
   const signal = AbortSignal.timeout(5000);
   const device = store.registerDevice(owner, 'Execution fixture', workspace);
-  const socket = new DeviceSocket(base, device.token);
-  t.after(async () => {
+  let socket = new DeviceSocket(base, device.token);
+  async function shutdown() {
     socket.close();
     server.closeDeviceSockets();
     await new Promise<void>(resolve => server.close(() => resolve()));
     store.close();
+  }
+  t.after(async () => {
+    try { await shutdown(); }
+    finally { rmSync(dir, { recursive: true, force: true }); }
   });
 
   const post = (path: string, body: Record<string, unknown>, bearer?: string, key?: string) =>
@@ -99,6 +114,16 @@ test('WeChat intake, paired-phone approval, desktop artifact and Feishu follow-u
   assert.doesNotMatch(receipt.text, /Private review content/);
   assert.equal(receipt.context, 'fixture-context');
 
+  store.finishChannelNotice(receipt.id, true);
+  await shutdown();
+  store = new TaskStore(database);
+  server = createRouter();
+  base = await listen(server);
+  socket = new DeviceSocket(base, device.token);
+  store.receiveChannelMessage(owner, wxChannel, workspace, incoming.message, incoming.context);
+  assert.equal((await snapshot(mobile)).tasks.length, 1);
+  assert.equal(store.leaseWeixinNotice(owner, wxChannel, Date.now(), ['wechat-user']), undefined);
+
   const invite = await post('/v1/admin/task-links', { taskId }, admin);
   assert.equal(invite.status, 201);
   const { code } = await invite.json();
@@ -120,6 +145,11 @@ test('WeChat intake, paired-phone approval, desktop artifact and Feishu follow-u
   assert.doesNotMatch(statusNotice.text, /Private review content/);
   assert.equal(store.get(owner, taskId)?.version, 1);
   assert.equal((await feishuMessage('feishu-follow', '/blazar Add recommendations', 'feishu-root')).status, 200);
+  const update = await fetch(new URL('/v1/stream?once=1&after=' + desktop.cursor, base), {
+    headers: { Authorization: 'Bearer ' + mobile }, signal,
+  });
+  assert.equal(update.status, 200);
+  assert.match(await update.text(), /task\.channel_linked/);
   const latest = await snapshot(mobile);
   assert.equal(latest.tasks.length, 1);
   assert.equal(latest.tasks[0].id, taskId);
@@ -127,4 +157,15 @@ test('WeChat intake, paired-phone approval, desktop artifact and Feishu follow-u
   assert.equal(store.taskChannels(owner, taskId).length, 2);
   const follow = await (await socket.request('claim', { capability: 'agent.acp' }, signal)).json();
   assert.deepEqual(follow.assignment.instructions, ['Add recommendations']);
+  assert.equal(follow.assignment.task.id, taskId);
+  assert.equal((await socket.request('runs/' + follow.assignment.run.id + '/finish', {
+    status: 'succeeded', result: 'Revised', artifact: { name: 'review.md', text: 'Updated review content' },
+  }, signal)).status, 200);
+  const revised = await snapshot(mobile);
+  assert.equal(revised.tasks[0].status, 'succeeded');
+  const diff = await fetch(new URL('/v1/artifacts/' + revised.artifacts[0].id + '/diff?base=' + desktop.artifacts[0].id, base), {
+    headers: { Authorization: 'Bearer ' + mobile }, signal,
+  });
+  assert.equal(diff.status, 200);
+  assert.match((await diff.json()).text, /-Private review content\n\+Updated review content/);
 });
