@@ -139,7 +139,8 @@ async function accessDocument(store: MemoryStore, owner: string, workspace: stri
     content = await reader.read(document, signal ? AbortSignal.any([timeout, signal]) : timeout);
   } catch (error) {
     if (error instanceof DocumentAccessDenied && permitted()) store.recordDocumentAccess(connection, document, usageId, false);
-    store.finishAppUsage(usageId, 'failed');
+    store.finishAppUsage(usageId, !permitted() ? 'access_changed' :
+      error instanceof DocumentAccessDenied ? 'access_denied' : 'failed');
     throw new RequestError(502, error instanceof DocumentUnavailable ? error.message : 'Document read failed');
   }
   if (!permitted()) {

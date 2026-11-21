@@ -156,6 +156,13 @@ export function Knowledge({ token }) {
                   disconnected: 'Disconnected' }[capability.state]}
               </li>)}
             </ul>}
+            {connection.lastDocumentTest && <small>
+              Last document test · {({
+                succeeded: 'Passed', access_denied: 'Access denied', failed: 'Failed', access_changed: 'Access changed',
+              })[connection.lastDocumentTest.status] ?? connection.lastDocumentTest.status}
+              {' · '}{connection.lastDocumentTest.workspace}
+              {' · '}{new Date(connection.lastDocumentTest.started).toLocaleString()}
+            </small>}
             {connection.active && <form onSubmit={event => changeWorkspace(event, connection)}>
               <label>Limit to workspace<input name="workspace" defaultValue={connection.workspace ?? ''} maxLength={128} /></label>
               <button>Save scope</button>
@@ -194,9 +201,13 @@ export function Knowledge({ token }) {
             const testAccess = event.nativeEvent.submitter?.value === 'test';
             void perform(async () => {
               setUsage(null);
-              await request('/app-connections/' + connection + (testAccess ? '/test-document' : '/import-document'), {
-                method: 'POST', body: { workspace, document },
-              });
+              try {
+                await request('/app-connections/' + connection + (testAccess ? '/test-document' : '/import-document'), {
+                  method: 'POST', body: { workspace, document },
+                });
+              } finally {
+                if (testAccess) await refreshConnections().catch(() => {});
+              }
               if (testAccess) {
                 setNotice('Document access verified.');
                 return;

@@ -41,6 +41,8 @@ export class MemoryStore {
         workspace TEXT NOT NULL, operation TEXT NOT NULL, status TEXT NOT NULL, started INTEGER NOT NULL
       );
       CREATE INDEX IF NOT EXISTS app_usage_connection ON app_usage(connection,id);
+      CREATE INDEX IF NOT EXISTS app_usage_document_test ON app_usage(connection,id)
+        WHERE operation='test' AND status<>'started';
       CREATE TABLE IF NOT EXISTS worker_app_usage (
         connection TEXT NOT NULL REFERENCES app_connection(id), run_id TEXT NOT NULL,
         task_id TEXT NOT NULL, workspace TEXT NOT NULL, started INTEGER NOT NULL,
@@ -184,8 +186,20 @@ export class MemoryStore {
   }
 
   connections(owner: string) {
-    return this.db.prepare('SELECT id,app,account,active,workspace FROM app_connection WHERE owner=? ORDER BY rowid DESC')
-      .all(owner) as { id: string; app: string; account: string; active: number; workspace: string | null }[];
+    const rows = this.db.prepare(`SELECT a.id,a.app,a.account,a.active,a.workspace,
+      u.status AS test_status,u.started AS test_started,u.workspace AS test_workspace
+      FROM app_connection a LEFT JOIN app_usage u ON u.id=(
+        SELECT test.id FROM app_usage test WHERE test.connection=a.id AND test.operation='test'
+        AND test.status<>'started' AND (a.workspace IS NULL OR test.workspace=a.workspace)
+        ORDER BY test.id DESC LIMIT 1
+      ) WHERE a.owner=? ORDER BY a.rowid DESC`).all(owner);
+    return rows.map(({ id, app, account, active, workspace, test_status, test_started, test_workspace }) => ({
+      id: String(id), app: String(app), account: String(account), active: Number(active),
+      workspace: workspace === null ? null : String(workspace),
+      ...(test_status !== null && { lastDocumentTest: {
+        status: String(test_status), started: Number(test_started), workspace: String(test_workspace),
+      } }),
+    }));
   }
 
   connection(owner: string, id: string, workspace?: string) {
@@ -199,7 +213,7 @@ export class MemoryStore {
       .run(connection, workspace, operation, Date.now()).lastInsertRowid;
   }
 
-  finishAppUsage(id: number | bigint, status: 'succeeded' | 'failed' | 'access_changed') {
+  finishAppUsage(id: number | bigint, status: 'succeeded' | 'failed' | 'access_changed' | 'access_denied') {
     this.db.prepare('UPDATE app_usage SET status=? WHERE id=?').run(status, id);
   }
 

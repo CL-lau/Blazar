@@ -32,7 +32,7 @@ test('Router authenticates, deduplicates commands and replays task changes over 
       assert.equal(new Headers(init?.headers).get('authorization'), 'Bearer fixture');
       return Response.json({ code: 0, data: { content: 'Design review findings' } });
     }), githubDocuments('engineering', 'example/handbook', 'other-fixture', async (url, init) => {
-      assert.equal(String(url), 'https://api.github.com/repos/example/handbook/contents/docs/review.md');
+      assert.match(String(url), /^https:\/\/api\.github\.com\/repos\/example\/handbook\/contents\/docs\/(review|other)\.md$/);
       assert.equal(new Headers(init?.headers).get('authorization'), 'Bearer other-fixture');
       return new Response(githubStatus === 200 ? githubBody : null, { status: githubStatus });
     })],
@@ -186,6 +186,10 @@ test('Router authenticates, deduplicates commands and replays task changes over 
   const configured = await (await fetch(url + '/v1/app-connections', { headers })).json();
   assert.equal(configured.connections.filter(item => item.canImportDocument).length, 3);
   assert.equal(configured.connections.find(item => item.id === scopedConnection)?.workspace, 'private');
+  const successfulTest = configured.connections.find(item => item.id === scopedConnection).lastDocumentTest;
+  assert.equal(successfulTest.status, 'succeeded');
+  assert.equal(successfulTest.workspace, 'private');
+  assert.equal(typeof successfulTest.started, 'number');
   const feishuDefinition = configured.definitions.find(item => item.id === 'feishu');
   assert.deepEqual(feishuDefinition.accounts, ['project account']);
   assert.deepEqual(feishuDefinition.capabilities.map(item => [item.id, item.effect]),
@@ -202,6 +206,14 @@ test('Router authenticates, deduplicates commands and replays task changes over 
     body: JSON.stringify({ workspace: 'archive' }),
   });
   assert.equal(changedScope.status, 200);
+  githubStatus = 403;
+  assert.equal((await post('/v1/app-connections/' + github + '/test-document', 'github-test-denied',
+    { workspace: 'demo', document: 'docs/other.md' })).status, 502);
+  githubStatus = 200;
+  const tested = await (await fetch(url + '/v1/app-connections', { headers })).json();
+  assert.equal(tested.connections.find(item => item.id === scopedConnection).lastDocumentTest, undefined);
+  assert.equal(tested.connections.find(item => item.id === github).lastDocumentTest.status, 'access_denied');
+  assert.doesNotMatch(JSON.stringify(tested.connections.find(item => item.id === github).lastDocumentTest), /other\.md/);
   assert.deepEqual((await (await fetch(url + scopedRecall, { headers })).json()).items, []);
   assert.equal((await post(scopedImport, 'stale-scope', { workspace: 'private', document: 'doc123' })).status, 404);
   const answerRequest = { workspace: 'demo', query: 'findings', question: 'What did we find?' };
