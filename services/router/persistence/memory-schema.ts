@@ -42,6 +42,10 @@ export function initializeMemorySchema(db: DatabaseSync): boolean {
       body TEXT NOT NULL, connection TEXT REFERENCES app_connection(id),
       resource TEXT, revision TEXT, created INTEGER NOT NULL, expires INTEGER
     );
+    CREATE TABLE IF NOT EXISTS memory_derivation (
+      id TEXT PRIMARY KEY REFERENCES memory(id) ON DELETE CASCADE,
+      evidence_id TEXT NOT NULL, evidence_version INTEGER NOT NULL
+    );
     CREATE TABLE IF NOT EXISTS memory_state (
       id TEXT PRIMARY KEY REFERENCES memory(id) ON DELETE CASCADE,
       version INTEGER NOT NULL, pinned INTEGER NOT NULL, disabled INTEGER NOT NULL DEFAULT 0

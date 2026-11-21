@@ -195,6 +195,22 @@ export class MemoryStore {
     return inserted.changes === 1 ? id : undefined;
   }
 
+  rememberFromEvidence(owner: string, workspace: string, sourceId: string, version: number, body: string) {
+    return sqliteTransaction(this.db, () => {
+      if (!this.resolveAppEvidence(owner, workspace, [{ id: sourceId, version }])) return undefined;
+      const source = this.db.prepare('SELECT connection,resource,revision,expires FROM memory WHERE id=?')
+        .get(sourceId) as (ResourceRef & { expires: number | null }) | undefined;
+      if (!source) return undefined;
+      const prior = this.db.prepare(`SELECT m.id FROM memory m JOIN memory_derivation d ON d.id=m.id
+        WHERE m.owner=? AND m.workspace=? AND d.evidence_id=? AND d.evidence_version=? AND m.body=?`)
+        .get(owner, workspace, sourceId, version, body);
+      if (prior) return String(prior.id);
+      const id = this.remember(owner, workspace, body, source, source.expires ?? undefined);
+      if (id) this.db.prepare('INSERT INTO memory_derivation VALUES(?,?,?)').run(id, sourceId, version);
+      return id;
+    });
+  }
+
   rememberTaskResult(owner: string, workspace: string, taskId: string, version: number, body: string) {
     return sqliteTransaction(this.db, () => {
       const existing = this.db.prepare(`SELECT m.id FROM memory_task_origin o JOIN memory m ON m.id=o.id
@@ -220,7 +236,7 @@ export class MemoryStore {
         SELECT 1 FROM app_connection a WHERE a.id=m.connection AND a.owner=m.owner AND a.active=1 AND (a.workspace IS NULL OR a.workspace=m.workspace)
         AND a.id IN (SELECT value FROM json_each(?))
       ))`;
-    const fields = `m.id,m.body,m.connection,m.resource,m.revision,m.created,m.expires,o.task_id AS taskId,o.task_version AS taskVersion,
+    const fields = `m.id,m.workspace,m.body,m.connection,m.resource,m.revision,m.created,m.expires,o.task_id AS taskId,o.task_version AS taskVersion,
       COALESCE(s.version,1) AS version,COALESCE(s.pinned,0) AS pinned,COALESCE(s.disabled,0) AS disabled`;
     const state = 'LEFT JOIN memory_state s ON s.id=m.id LEFT JOIN memory_task_origin o ON o.id=m.id';
     const values = [owner, workspace, Number(disabled), Date.now(), Number(includePersonal), allowed] as const;
@@ -316,7 +332,8 @@ export class MemoryStore {
       LEFT JOIN document_head h ON h.owner=m.owner AND h.workspace=m.workspace AND h.connection=m.connection AND h.resource=m.resource
       WHERE m.owner=? AND m.workspace=? AND m.connection=? AND m.resource=? AND (m.expires IS NULL OR m.expires>?)
       ORDER BY m.created DESC,m.rowid DESC LIMIT 50`).all(owner, item.workspace!, item.connection!, item.resource!, now);
-    return { item, edits, sourceRevisions };
+    const evidence = this.db.prepare('SELECT evidence_id AS id,evidence_version AS version FROM memory_derivation WHERE id=?').get(id);
+    return { item, edits, sourceRevisions, ...(evidence && { derivedFrom: evidence }) };
   }
 
   revise(owner: string, id: string, expectedVersion: number, change: { body?: string; pinned?: boolean; disabled?: boolean }) {

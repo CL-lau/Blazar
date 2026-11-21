@@ -8,6 +8,7 @@ export function Knowledge({ token }) {
   const [documentSync, setDocumentSync] = useState([]);
   const [results, setResults] = useState(null);
   const [searchQuery, setSearchQuery] = useState('');
+  const [deriving, setDeriving] = useState(null);
   const [editing, setEditing] = useState(null);
   const [selected, setSelected] = useState('');
   const [importAccount, setImportAccount] = useState('');
@@ -330,6 +331,21 @@ export function Knowledge({ token }) {
             <small>{source ? `${accountName(source)} · ${item.resource} · ${item.revision}` :
               item.taskId ? `Task ${item.taskId} · version ${item.taskVersion}` : 'Personal note'}</small>
             {item.expires && <small> · Expires {new Date(item.expires).toLocaleString()}</small>}
+            {source && (deriving === item.id ? <form onSubmit={event => {
+              event.preventDefault();
+              const body = new FormData(event.currentTarget).get('body');
+              void perform(async () => {
+                await request('/memory', { method: 'POST', body: {
+                  workspace: item.workspace, body, derivedFrom: { id: item.id, version: item.version },
+                } });
+                setDeriving(null);
+                setNotice('Source-backed memory saved.');
+              });
+            }}>
+              <label>Memory to save<textarea name="body" required maxLength={16000} /></label>
+              <button>Confirm and save</button>
+              <button type="button" onClick={() => setDeriving(null)}>Cancel</button>
+            </form> : <button type="button" onClick={() => setDeriving(item.id)}>Draft memory from this source</button>)}
             {editing === item.id ? <form onSubmit={event => {
               event.preventDefault();
               const body = new FormData(event.currentTarget).get('body');
@@ -345,6 +361,7 @@ export function Knowledge({ token }) {
             {history?.item.id === item.id && <section aria-label="Memory version history">
               <h3>Version history</h3>
               <p>Current memory version {history.item.version}</p>
+              {history.derivedFrom && <p>Evidence {history.derivedFrom.id} · version {history.derivedFrom.version}</p>}
               {history.edits.length > 0 && <ul>{history.edits.map(edit => <li key={edit.version}>
                 Version {edit.version} replaced {new Date(edit.replacedAt).toLocaleString()}
               </li>)}</ul>}

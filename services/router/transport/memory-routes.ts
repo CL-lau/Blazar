@@ -167,6 +167,18 @@ export async function handleMemory(
     const data = await jsonObject(request);
     const workspace = requiredText(data.workspace, 'workspace', 128);
     const body = requiredText(data.body, 'body', 16_000);
+    if (data.derivedFrom !== undefined) {
+      const ref = data.derivedFrom as { id?: unknown; version?: unknown } | null;
+      if (!ref || typeof ref.id !== 'string' || !/^[a-f0-9-]{36}$/.test(ref.id) ||
+          typeof ref.version !== 'number' || !Number.isSafeInteger(ref.version) || ref.version < 1 ||
+          data.source !== undefined || data.expires !== undefined) {
+        throw new RequestError(400, 'Invalid memory evidence');
+      }
+      const id = store.rememberFromEvidence(owner, workspace, ref.id, ref.version, body);
+      if (!id) throw new RequestError(409, 'Source memory changed or is no longer available');
+      reply(response, 201, { id });
+      return true;
+    }
     const expires = data.expires;
     if (expires !== undefined && (typeof expires !== 'number' || !Number.isSafeInteger(expires) || expires <= Date.now())) {
       throw new RequestError(400, 'Invalid expiry');

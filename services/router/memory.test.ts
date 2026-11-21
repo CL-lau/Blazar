@@ -204,3 +204,27 @@ test('a delayed document import cannot replace the newer revision in recall', t 
   assert.equal(store.recall('owner', 'project', 'review', [connection]).length, 0);
   assert.equal(store.revokeResource('owner', connection, source.resource), 1);
 });
+
+test('confirming a derived memory rechecks the evidence version and inherits source access', t => {
+  const store = new MemoryStore(':memory:');
+  t.after(() => store.close());
+  const connection = store.connect('owner', 'github', 'workspace repository', 'project');
+  const source = { connection, resource: 'docs/review.md', revision: 'commit-one' };
+  const original = store.remember('owner', 'project', 'The source document describes the review.', source)!;
+  const body = 'Use three review bullets.';
+  assert.equal(store.rememberFromEvidence('another', 'project', original, 1, body), undefined);
+  assert.equal(store.rememberFromEvidence('owner', 'other-workspace', original, 1, body), undefined);
+  assert.equal(store.revise('owner', original, 1, { body: 'The document describes the revised review.' })?.version, 2);
+  assert.equal(store.rememberFromEvidence('owner', 'project', original, 1, body), undefined);
+  const id = store.rememberFromEvidence('owner', 'project', original, 2, body);
+  assert.ok(id);
+  assert.equal(store.rememberFromEvidence('owner', 'project', original, 2, body), id);
+  const recalled = store.recall('owner', 'project', 'three review bullets', [connection]);
+  assert.equal(recalled[0].id, id);
+  assert.equal(recalled[0].resource, source.resource);
+  assert.equal(recalled[0].revision, source.revision);
+  assert.deepEqual({ ...store.history('owner', id)?.derivedFrom }, { id: original, version: 2 });
+  assert.ok(store.revokeResource('owner', connection, source.resource));
+  assert.deepEqual(store.recall('owner', 'project', 'three review bullets', [connection]), []);
+  assert.equal(store.rememberFromEvidence('owner', 'project', original, 2, body), undefined);
+});
