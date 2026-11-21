@@ -1931,11 +1931,11 @@ export class TaskStore {
     });
   }
 
-  expire(now: number) {
-    return this.transaction(() => {
+  expire(now: number, notifyStop?: (device: string, runId: string) => void) {
+    const stopped = this.transaction(() => {
       this.db.prepare('DELETE FROM device_claim WHERE expires<=?').run(now);
       this.db.prepare('DELETE FROM artifact WHERE id IN (SELECT artifact_id FROM artifact_image WHERE expires<=?)').run(now);
-      const approvals = this.db.prepare(`SELECT a.id,a.runId,a.taskId,a.expires FROM approval a
+      const approvals = this.db.prepare(`SELECT a.id,a.runId,a.taskId,a.expires,r.device FROM approval a
         JOIN run r ON r.id=a.runId JOIN task t ON t.id=a.taskId
         WHERE a.decision IS NULL AND a.expires<=? AND a.expires<r.expires
         AND t.status='waiting_user' AND a.version=r.version AND r.version=t.version
@@ -1950,7 +1950,7 @@ export class TaskStore {
           approvalId: approval.id, runId: approval.runId, expires: approval.expires, status: 'failed',
         });
       }
-      const rows = this.db.prepare(`SELECT r.id, r.taskId, t.status,r.expires=d.deadline AS deadlineReached,
+      const rows = this.db.prepare(`SELECT r.id,r.device,r.taskId,t.status,r.expires=d.deadline AS deadlineReached,
         EXISTS(SELECT 1 FROM invalid_workflow_run i WHERE i.id=r.id) AS staleInputs FROM run r
         JOIN task t ON r.taskId=t.id JOIN run_deadline d ON d.run_id=r.id WHERE r.expires<=?`).all(now);
       for (const row of rows) {
@@ -1971,7 +1971,12 @@ export class TaskStore {
         const event = inputsChanged ? 'run.inputs_changed' : timedOut ? 'run.deadline_exceeded' : 'run.lease_expired';
         this.event(taskId, event, { runId: row.id, status });
       }
-      return approvals.length + rows.length;
+      return [
+        ...approvals.map(row => ({ device: String(row.device), runId: String(row.runId) })),
+        ...rows.map(row => ({ device: String(row.device), runId: String(row.id) })),
+      ];
     });
+    if (notifyStop) for (const { device, runId } of stopped) notifyStop(device, runId);
+    return stopped.length;
   }
 }

@@ -127,3 +127,33 @@ test('lease renewal recovers after a TCP partition drops the device WebSocket', 
   assert.equal(recovered, true);
   assert.equal(store.get('owner', task.id)?.result, 'Recovered');
 });
+
+test('approval expiry sends a stop on the live device socket after fencing the run', { timeout: 5000 }, async t => {
+  const store = new TaskStore(':memory:');
+  const server = routerServer(store, { owner: 'owner', token: 'admin' });
+  server.listen(0, '127.0.0.1');
+  await once(server, 'listening');
+  const address = server.address();
+  assert(address && typeof address !== 'string');
+  const device = store.registerDevice('owner', 'Computer', 'work');
+  const socket = new DeviceSocket(new URL('http://127.0.0.1:' + address.port), device.token);
+  t.after(async () => {
+    socket.close();
+    server.closeDeviceSockets();
+    await new Promise<void>(resolve => server.close(() => resolve()));
+    store.close();
+  });
+  const signal = AbortSignal.timeout(3000);
+  assert.equal((await socket.request('claim', { capability: 'document.preview' }, signal)).status, 200);
+  const now = Date.now();
+  const task = store.create('owner', 'test', 'approval-stop', 'work', 'Prepare notes');
+  const { run } = store.claim('owner', 'work', device.id, now, 400_000)!;
+  const approval = store.requestApproval(run.id, device.id, 'Review draft', now)!;
+  const stopped = Promise.withResolvers<void>();
+  const unwatch = socket.onStop(run.id, stopped.resolve);
+  t.after(unwatch);
+  assert.equal(server.expireRuns(Number(approval.expires)), 1);
+  await stopped.promise;
+  assert.equal(store.get('owner', task.id)?.status, 'failed');
+  assert.equal(store.renew(run.id, device.id, Number(approval.expires), 45_000), undefined);
+});

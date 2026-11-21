@@ -417,7 +417,7 @@ function workerMemoryAvailable(store: TaskStore, memory: MemoryStore | undefined
     (!personal.length || Boolean(memory?.resolvePersonalEvidence(owner, workspace, personal)));
 }
 
-function deviceOperation(store: TaskStore, bearer: string, pathname: string, data: Record<string, unknown>, memory?: MemoryStore) {
+function deviceOperation(store: TaskStore, bearer: string, pathname: string, data: Record<string, unknown>, expireRuns: (now: number) => number, memory?: MemoryStore) {
   const device = store.deviceForToken(bearer);
   if (!device) throw new RequestError(401, 'Device authentication required');
   const now = Date.now();
@@ -498,7 +498,7 @@ function deviceOperation(store: TaskStore, bearer: string, pathname: string, dat
     store.recordDesktopApps(device.id, desktopApps, desktopPermissions, desktopControls);
     store.recordDeviceWorker(device.id, worker);
     store.recordDeviceActivity(device.id, now, data.capability, platform);
-    store.expire(now);
+    expireRuns(now);
     const claim = store.claim(device.owner, device.workspace, device.id, now, leaseMs,
       data.capability === 'document.preview' ? '/preview ' : data.capability === 'computer.observe' ? '/observe ' : '',
       data.capability === 'agent.acp' ? '/preview ' : '', key, worker, desktopApps, data.capability === 'agent.acp');
@@ -635,6 +635,7 @@ export function routerServer(store: TaskStore, config: { owner: string; token: s
       }
     }
   }
+  const expireRuns = (now: number) => store.expire(now, sendStop);
   function notifyStop(owner: string, taskId: string) {
     const target = store.stopTarget(owner, taskId);
     if (target) sendStop(target.device, target.runId);
@@ -734,7 +735,7 @@ export function routerServer(store: TaskStore, config: { owner: string; token: s
         if (request.method !== 'POST') throw new RequestError(405, 'Expected POST');
         if (!auth.startsWith('Bearer ')) throw new RequestError(401, 'Device authentication required');
         const result = deviceOperation(store, auth.slice(7), url.pathname, await jsonObject(request, url.pathname.endsWith('/finish') ? maxDeviceFinishBytes :
-          url.pathname === '/v1/device/claim' ? maxDeviceClaimBytes : undefined), config.memory);
+          url.pathname === '/v1/device/claim' ? maxDeviceClaimBytes : undefined), expireRuns, config.memory);
         reply(response, result.status, result.body);
         return;
       }
@@ -1346,7 +1347,7 @@ export function routerServer(store: TaskStore, config: { owner: string; token: s
             connection.close(1008, 'Slow device connection');
             return;
           }
-          const result = deviceOperation(store, token, '/v1/device/' + frame.path, frame.body, config.memory);
+          const result = deviceOperation(store, token, '/v1/device/' + frame.path, frame.body, expireRuns, config.memory);
           connection.send(JSON.stringify({ id, ...result }));
         } catch (error) {
           if (id === undefined) {
@@ -1369,5 +1370,5 @@ export function routerServer(store: TaskStore, config: { owner: string; token: s
     socketServer.close();
   };
   server.once('close', closeDeviceSockets);
-  return Object.assign(server, { closeDeviceSockets, flushStopNotifications });
+  return Object.assign(server, { closeDeviceSockets, flushStopNotifications, expireRuns });
 }

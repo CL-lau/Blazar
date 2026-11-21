@@ -78,7 +78,7 @@ let nextMemoryCleanup = 0;
 const cleanupBatch = 1_000;
 const watchdog = setInterval(() => {
   const now = Date.now();
-  store.expire(now);
+  server.expireRuns(now);
   store.watchSilentRuns(now);
   store.updateDeviceReadiness(now);
   server.flushStopNotifications();
