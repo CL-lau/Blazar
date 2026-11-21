@@ -46,6 +46,7 @@ export type DesktopWindowReference = { windowId: string; windowIdentity: string 
 
 export type WorkflowAction =
   | { kind: 'desktop.observe'; alias: string; deviceId: string; mode?: 'windows' }
+  | { kind: 'desktop.observe'; alias: string; deviceId: string; mode: 'window'; windowFrom: { step: string; title: string } }
   | ({ kind: 'desktop.click'; alias: string; deviceId: string; button: string; expectedText?: string } &
     (DesktopWindowReference | { windowFrom: { step: string; title: string } }));
 

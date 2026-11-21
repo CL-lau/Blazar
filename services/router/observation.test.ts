@@ -292,7 +292,10 @@ console.log(JSON.stringify({ok:true,command,data}));
       { key: 'save', goal: 'Save the draft', needs: ['windows'],
         action: { kind: 'desktop.click', alias: 'notes', deviceId: device.id, button: 'Save', expectedText: 'Saved',
           windowFrom: { step: 'windows', title: 'Draft' } } },
-      { key: 'review', goal: 'Review the saved draft', needs: ['save'] },
+      { key: 'snapshot', goal: 'Read the saved Draft window', needs: ['windows', 'save'],
+        action: { kind: 'desktop.observe', alias: 'notes', deviceId: device.id, mode: 'window',
+          windowFrom: { step: 'windows', title: 'Draft' } } },
+      { key: 'review', goal: 'Review the saved draft', needs: ['snapshot'] },
     ],
   });
   assert.equal(workflow.status, 202);
@@ -316,7 +319,10 @@ console.log(JSON.stringify({ok:true,command,data}));
   assert.equal(approved.status, 200);
   assert.equal(await clicking, true);
   assert.equal(store.get('owner', steps[1].taskId)?.status, 'succeeded');
+  assert.equal(await client.runOnce(signal), true);
+  assert.equal(store.get('owner', steps[2].taskId)?.status, 'succeeded');
+  assert.equal(store.snapshot('owner').approvals.length, 0);
   const handoff = store.claim('owner', 'project', 'review-worker', Date.now(), 45_000, '', '/preview ')!;
-  assert.equal(handoff.task.id, steps[2].taskId);
+  assert.equal(handoff.task.id, steps[3].taskId);
   assert.match(handoff.predecessors[0].artifact?.excerpt ?? '', /Saved/);
 });

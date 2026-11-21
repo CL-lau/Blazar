@@ -1086,9 +1086,9 @@ export class TaskStore {
         return { ...(selection.assignment as ReturnType<TaskStore['assignment']>), replayed: true };
       }
       const { task, fingerprint, workerLimitSeconds } = selection;
-      const action = task.goal.startsWith('/click ') ? this.workflowClickAction(task.id) : undefined;
+      const action = /^\/(observe|click) /.test(task.goal) ? this.workflowDesktopAction(task.id) : undefined;
       let resolvedGoal: string | undefined;
-      if (action?.kind === 'desktop.click' && 'windowFrom' in action) {
+      if (action && 'windowFrom' in action) {
         const input = this.db.prepare(`SELECT p.result FROM workflow_dependency d JOIN task p ON p.id=d.predecessor
           JOIN workflow_step source ON source.task_id=p.id WHERE d.task_id=? AND source.step_key=? AND p.status='succeeded'`)
           .get(task.id, action.windowFrom.step);
@@ -1138,7 +1138,7 @@ export class TaskStore {
     });
   }
 
-  private workflowClickAction(taskId: string) {
+  private workflowDesktopAction(taskId: string) {
     const row = this.db.prepare(`SELECT json_extract(data,'$.action') AS action FROM event
       WHERE taskId=? AND type='task.created' ORDER BY seq LIMIT 1`).get(taskId);
     return typeof row?.action === 'string' ? JSON.parse(row.action) as WorkflowAction : undefined;

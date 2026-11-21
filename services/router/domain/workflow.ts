@@ -57,7 +57,18 @@ function workflowAction(value: unknown): WorkflowAction {
       typeof deviceId !== 'string' || !/^[a-f0-9-]{36}$/.test(deviceId)) {
     throw new InvalidWorkflow('Invalid workflow desktop target');
   }
-  if (kind === 'desktop.observe' && (mode === undefined || mode === 'windows')) {
+  let reference: { step: string; title: string } | undefined;
+  if (windowFrom && typeof windowFrom === 'object' && windowId === undefined && windowIdentity === undefined) {
+    const { step, title } = windowFrom as Record<string, unknown>;
+    if (typeof step === 'string' && /^[a-zA-Z0-9_-]{1,128}$/.test(step) &&
+        typeof title === 'string' && title.trim() && title.length <= 200 && !/[\x00-\x1f\x7f]/.test(title)) {
+      reference = { step, title };
+    }
+  }
+  if (kind === 'desktop.observe' && mode === 'window' && reference) {
+    return { kind, alias, deviceId, mode, windowFrom: reference };
+  }
+  if (kind === 'desktop.observe' && (mode === undefined || mode === 'windows') && windowFrom === undefined) {
     return { kind, alias, deviceId, ...(mode && { mode }) };
   }
   if (kind === 'desktop.click' && typeof button === 'string' && button.trim() &&
@@ -71,19 +82,18 @@ function workflowAction(value: unknown): WorkflowAction {
         typeof windowIdentity === 'string' && /^[a-f0-9]{64}$/.test(windowIdentity)) {
       return { ...click, windowId, windowIdentity };
     }
-    if (windowFrom && typeof windowFrom === 'object' && windowId === undefined && windowIdentity === undefined) {
-      const { step, title } = windowFrom as Record<string, unknown>;
-      if (typeof step === 'string' && /^[a-zA-Z0-9_-]{1,128}$/.test(step) &&
-          typeof title === 'string' && title.trim() && title.length <= 200 && !/[\x00-\x1f\x7f]/.test(title)) {
-        return { ...click, windowFrom: { step, title } };
-      }
-    }
+    if (reference) return { ...click, windowFrom: reference };
   }
   throw new InvalidWorkflow('Invalid workflow action');
 }
 
 export function workflowActionGoal(action: WorkflowAction, observed?: DesktopWindowReference): string {
-  if (action.kind === 'desktop.observe') return '/observe ' + action.alias + (action.mode === 'windows' ? ' --windows-json' : '');
+  if (action.kind === 'desktop.observe') {
+    if (action.mode === 'window') return observed
+      ? `/observe ${action.alias} --window ${observed.windowId} --instance ${observed.windowIdentity}`
+      : `/observe ${action.alias} [resolve workflow window]`;
+    return '/observe ' + action.alias + (action.mode === 'windows' ? ' --windows-json' : '');
+  }
   const target = 'windowFrom' in action ? observed : action;
   return target ? `/click ${action.alias} --window ${target.windowId} --instance ${target.windowIdentity} ${action.button}`
     : `/click ${action.alias} [resolve workflow window]`;
@@ -114,11 +124,11 @@ export function orderWorkflow(steps: WorkflowStep[]) {
     const step = byKey.get(name);
     if (!step) throw new InvalidWorkflow('Unknown dependency: ' + name);
     const action = step.action;
-    if (action?.kind === 'desktop.click' && 'windowFrom' in action) {
+    if (action && 'windowFrom' in action) {
       const source = byKey.get(action.windowFrom.step)?.action;
       if (!step.needs.includes(action.windowFrom.step) || source?.kind !== 'desktop.observe' || source.mode !== 'windows' ||
           source.alias !== action.alias || source.deviceId !== action.deviceId) {
-        throw new InvalidWorkflow('The click must directly depend on a window observation of the same device and app');
+        throw new InvalidWorkflow('The action must directly depend on a window inventory of the same device and app');
       }
     }
     visiting.add(name);
