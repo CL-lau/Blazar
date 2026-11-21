@@ -169,3 +169,5 @@ Feishu and Lark can attach UTF-8 `.txt`, `.md`, `.csv`, `.json`, and `.log` file
 For QQ attachments, set `BLAZAR_QQ_MEDIA_HOSTS` to the exact QQ media hostnames your bot receives. Send a single UTF-8 file with `/blazar follow TASK_ID /attach` in the linked chat. The same size limits apply. Downloads are restricted to configured HTTPS hosts under `qq.com` or `qpic.cn`.
 
 For DingTalk bot direct messages, set `BLAZAR_DINGTALK_MEDIA_HOSTS` to the exact HTTPS hostnames returned by the [message-file API](https://opensource.dingtalk.com/developerpedia/docs/learn/bot/message/). In the linked chat, send `/blazar follow TASK_ID /attach`, then send one UTF-8 file within five minutes. Each command accepts one file from the same sender and chat.
+
+For WeCom smart-bot file messages, set `BLAZAR_WECOM_MEDIA_HOSTS` to the exact HTTPS media hostnames under `qq.com` used by the bot. In the linked chat, send `/blazar follow TASK_ID /attach`, then send one UTF-8 file within five minutes from the same account. Blazar decrypts the downloaded file using the [official WeCom SDK](https://github.com/WecomTeam/aibot-node-sdk).
