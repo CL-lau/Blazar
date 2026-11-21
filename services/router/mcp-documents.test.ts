@@ -5,7 +5,14 @@ import { documentAppCatalog } from '../../packages/apps/documents.ts';
 
 test('a configured MCP account reads allowlisted text resources without invoking tools', async () => {
   const methods: string[] = [];
+  const primary = 'http://127.0.0.1:4198/primary';
+  let primaryStatus = 503;
   const transport: typeof fetch = async (input, init) => {
+    if (String(input) === primary) {
+      assert.equal(new Headers(init?.headers).get('authorization'), 'Bearer primary-token');
+      methods.push('primary');
+      return new Response(null, { status: primaryStatus });
+    }
     assert.equal(String(input), 'http://127.0.0.1:4198/mcp');
     assert.equal(new Headers(init?.headers).get('authorization'), 'Bearer fixture-token');
     assert.equal(init?.redirect, 'error');
@@ -32,11 +39,13 @@ test('a configured MCP account reads allowlisted text resources without invoking
     account: 'handbook', endpoint: 'http://127.0.0.1:4198/mcp', tokenEnv: 'BLAZAR_MCP_TOKEN_HANDBOOK',
     resources: { review: 'docs://handbook/review' },
   };
-  const custom = { ...account, version: 1, connector: 'mcp-resources', id: 'custom.handbook', label: 'Team Handbook' };
+  const custom = { ...account, version: 1, connector: 'mcp-resources', id: 'custom.handbook', label: 'Team Handbook',
+    endpoint: primary, tokenEnv: 'BLAZAR_MCP_TOKEN_PRIMARY', fallbacks: [{ endpoint: account.endpoint, tokenEnv: account.tokenEnv }] };
   const env = {
     BLAZAR_MCP_DOCS: JSON.stringify([account]),
     BLAZAR_APP_MANIFESTS: JSON.stringify([custom]),
     BLAZAR_MCP_TOKEN_HANDBOOK: 'fixture-token',
+    BLAZAR_MCP_TOKEN_PRIMARY: 'primary-token',
   };
   const [connector, extension] = configuredDocuments(env, transport);
   assert.equal(extension.app, 'custom.handbook');
@@ -57,5 +66,9 @@ test('a configured MCP account reads allowlisted text resources without invoking
   const content = await extension.read('review', signal);
   assert.equal(content.text, 'MCP review guidance');
   assert.match(content.revision, /^sha256:/);
-  assert.deepEqual(methods, ['initialize', 'notifications/initialized', 'resources/read', 'close']);
+  assert.deepEqual(methods, ['primary', 'initialize', 'notifications/initialized', 'resources/read', 'close']);
+  methods.length = 0;
+  primaryStatus = 403;
+  await assert.rejects(extension.read('review', signal), /denied access/);
+  assert.deepEqual(methods, ['primary']);
 });

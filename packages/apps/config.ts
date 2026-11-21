@@ -1,4 +1,4 @@
-import type { DocumentConnector } from './documents.ts';
+import { DocumentBackendUnavailable, type DocumentConnector } from './documents.ts';
 import { feishuDocuments } from './feishu-docs.ts';
 import { mcpDocuments } from './mcp-docs.ts';
 import { githubDocuments } from './github-docs.ts';
@@ -73,7 +73,30 @@ export function configuredDocuments(env: NodeJS.ProcessEnv, transport = fetch): 
     const previousLabel = customLabels.get(entry.id);
     if (previousLabel !== undefined && previousLabel !== label) throw new Error('Conflicting application manifest labels');
     customLabels.set(entry.id, label);
-    register({ ...mcpReader(entry), app: entry.id, definition: { label, version: entry.version } });
+    const primary = mcpReader(entry);
+    const fallbacks = entry.fallbacks ?? [];
+    if (!Array.isArray(fallbacks) || fallbacks.length > 2 || fallbacks.some(backend =>
+      !backend || typeof backend !== 'object' || Array.isArray(backend) ||
+      Object.keys(backend).some(key => key !== 'endpoint' && key !== 'tokenEnv'))) {
+      throw new Error('Invalid MCP fallback backends');
+    }
+    const backends = [primary, ...fallbacks.map(backend =>
+      mcpReader({ ...backend, account: entry.account, resources: entry.resources }))];
+    register({
+      ...primary, app: entry.id, definition: { label, version: entry.version },
+      async read(alias, signal) {
+        for (const backend of backends.slice(0, -1)) {
+          signal.throwIfAborted();
+          try {
+            return await backend.read(alias, signal);
+          } catch (error) {
+            if (!(error instanceof DocumentBackendUnavailable)) throw error;
+          }
+        }
+        signal.throwIfAborted();
+        return backends[backends.length - 1].read(alias, signal);
+      },
+    });
   }
   return [...readers.values()];
 }

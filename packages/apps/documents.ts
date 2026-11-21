@@ -2,6 +2,7 @@ import { createHash } from 'node:crypto';
 
 export class DocumentUnavailable extends Error {}
 export class DocumentAccessDenied extends DocumentUnavailable {}
+export class DocumentBackendUnavailable extends DocumentUnavailable {}
 
 export type DocumentConnector = {
   app: string;

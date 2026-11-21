@@ -158,6 +158,8 @@ export BLAZAR_APP_MANIFESTS='[{"version":1,"id":"custom.handbook","label":"Team 
 
 Restart the Router, then connect `custom.handbook` with account `Production` in the desktop app. Credentials and endpoints stay on the Router. The catalog exposes the manifest name, account label, and document capabilities.
 
+A manifest can list up to two ordered `fallbacks` with an `endpoint` and optional `tokenEnv` each. Configure only mirrors of the same resources. Every endpoint uses the application account's existing resource URI map and its own credential reference. The Router tries the next backend after HTTP 502, 503, or 504. Authentication failures, access denials, and application errors end the read.
+
 Router administrators can invoke a catalog capability with `POST /v1/app-connections/{connection-id}/capabilities/{capability-id}`. Supported document capabilities are `document.test`, `document.import`, and `document.refresh`. The JSON body includes `workspace`, plus `document` for test and import or an optional `after` cursor for refresh.
 
 In **Apps and memory**, choose a source account and workspace to refresh previously imported documents. You can also save an automatic refresh interval for that account and workspace.
