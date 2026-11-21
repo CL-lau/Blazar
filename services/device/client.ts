@@ -5,7 +5,7 @@ import type { Worker } from '../../packages/workers/registry.ts';
 import { createHash, createHmac, randomUUID } from 'node:crypto';
 import { DeviceLedger, type SessionCheckpoint } from './ledger.ts';
 import { setTimeout as delay } from 'node:timers/promises';
-import type { PredecessorInput, Run, RunOutcome, Task, TaskAttachment, TaskMemoryInput, WorkerCapability, WorkerConfiguration } from '../../packages/protocol/task.ts';
+import type { PredecessorInput, Run, RunHistoryEntry, RunOutcome, Task, TaskAttachment, TaskMemoryInput, WorkerCapability, WorkerConfiguration } from '../../packages/protocol/task.ts';
 import { performance } from 'node:perf_hooks';
 import { maintainLease } from './lease.ts';
 import { platform } from 'node:os';
@@ -15,7 +15,7 @@ import { applyGitPatchInputs, GitPatchInputError, type gitRunWorktrees } from '.
 import { completeInputArtifacts } from './execution/input-artifacts.ts';
 import { executeWorker } from './execution/worker.ts';
 
-type Assignment = { clickExpectedText?: string; observationExpectedText?: string; observationWaitSeconds?: number; fullInputRequired?: boolean; readOnlyRequired?: boolean; gitPatchInputsRequired?: boolean; run: Run; task: Task; instructions: string[]; predecessors: PredecessorInput[]; acceptanceCriteria?: string[]; memoryInputs?: TaskMemoryInput[]; attachments?: TaskAttachment[] };
+type Assignment = { clickExpectedText?: string; observationExpectedText?: string; observationWaitSeconds?: number; fullInputRequired?: boolean; readOnlyRequired?: boolean; gitPatchInputsRequired?: boolean; run: Run; task: Task; instructions: string[]; predecessors: PredecessorInput[]; runHistory?: RunHistoryEntry[]; acceptanceCriteria?: string[]; memoryInputs?: TaskMemoryInput[]; attachments?: TaskAttachment[] };
 
 export class DeviceClient {
   private socket: DeviceSocket;
@@ -212,6 +212,7 @@ export class DeviceClient {
             consumeApproval: (path, id, signal) => this.consumeApproval(path, id, signal),
           }, this.worker, prefix, assignment.task.id, {
             goal: assignment.task.goal, instructions: assignment.instructions, predecessors: assignment.predecessors,
+            runHistory: assignment.runHistory,
             acceptanceCriteria: assignment.acceptanceCriteria, memoryInputs: assignment.memoryInputs, attachments: assignment.attachments,
           }, stop, active, assignment.fullInputRequired);
           checkpoint = this.worktrees ? undefined : session;

@@ -1,4 +1,4 @@
-import type { PredecessorInput, TaskAttachment, TaskMemoryInput } from '../protocol/task.ts';
+import type { PredecessorInput, RunHistoryEntry, TaskAttachment, TaskMemoryInput } from '../protocol/task.ts';
 
 export type WorkerSteer = (text: string, messageId: string) => Promise<boolean>;
 export type OnSteerReady = (steer: WorkerSteer) => () => void;
@@ -10,6 +10,7 @@ export type JobContext = {
   predecessors: PredecessorInput[];
   memoryInputs?: TaskMemoryInput[];
   attachments?: TaskAttachment[];
+  runHistory?: RunHistoryEntry[];
 };
 
 export function jobPrompt(job: JobContext) {
@@ -19,6 +20,7 @@ export function jobPrompt(job: JobContext) {
     ...(job.acceptanceCriteria?.length && { acceptanceCriteria: job.acceptanceCriteria }),
     ...(job.memoryInputs?.length && { backgroundMemory: job.memoryInputs }),
     ...(job.attachments?.length && { attachments: job.attachments }),
+    ...(job.runHistory?.length && { previousRuns: job.runHistory }),
     predecessorResults: job.predecessors.map(value => ({ ...value, result: value.result?.slice(0, 4_000) })),
   });
 }

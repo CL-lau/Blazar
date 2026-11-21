@@ -1,5 +1,5 @@
 import type { DatabaseSync } from 'node:sqlite';
-import type { PredecessorInput, Run, Task, TaskAttachment, TaskMemoryInput, WorkflowAction } from '../../../packages/protocol/task.ts';
+import type { PredecessorInput, Run, RunHistoryEntry, Task, TaskAttachment, TaskMemoryInput, WorkflowAction } from '../../../packages/protocol/task.ts';
 import { resolveWorkflowWindow, workflowActionGoal } from '../domain/workflow.ts';
 
 export class RunInputRepository {
@@ -52,6 +52,28 @@ export class RunInputRepository {
     });
   }
 
+  private runHistory(taskId: string): RunHistoryEntry[] {
+    const rows = this.db.prepare(`SELECT seq,json_extract(data,'$.runId') AS run_id,
+      CASE type
+        WHEN 'run.device_interrupted' THEN 'interrupted'
+        WHEN 'run.device_revoked' THEN 'device_revoked'
+        WHEN 'run.lease_expired' THEN 'lease_expired'
+        WHEN 'run.deadline_exceeded' THEN 'deadline_exceeded'
+        WHEN 'run.inputs_changed' THEN 'inputs_changed'
+        WHEN 'run.finished' THEN CASE
+          WHEN json_extract(data,'$.waitingReason')='git_patch_inputs' THEN 'git_patch_inputs'
+          WHEN json_extract(data,'$.status') IN ('succeeded','failed') THEN json_extract(data,'$.status')
+          ELSE 'review_required'
+        END
+      END AS outcome
+      FROM event WHERE taskId=? AND type IN ('run.finished','run.device_interrupted','run.device_revoked',
+        'run.lease_expired','run.deadline_exceeded','run.inputs_changed')
+      AND json_type(data,'$.runId')='text' ORDER BY seq DESC LIMIT 5`).all(taskId);
+    return rows.reverse().map(row => ({
+      eventSeq: Number(row.seq), runId: String(row.run_id), outcome: row.outcome as RunHistoryEntry['outcome'],
+    }));
+  }
+
   assignment(task: Task, run: Run, predecessors: PredecessorInput[], requireReadOnly: boolean, action?: WorkflowAction) {
     const instructions = this.db.prepare(`SELECT data FROM event WHERE taskId=?
       AND type='task.instruction_added' ORDER BY seq`).all(run.taskId)
@@ -65,7 +87,9 @@ export class RunInputRepository {
     const expected = action && 'expectedText' in action ? action.expectedText : undefined;
     const observationWaitSeconds = action?.kind === 'desktop.observe' && action.mode === 'window' ? action.waitSeconds : undefined;
     const required = this.db.prepare('SELECT capability FROM task_worker_capability WHERE task_id=?').get(run.taskId)?.capability;
+    const runHistory = run.version > 1 ? this.runHistory(run.taskId) : [];
     return { run, task, instructions, predecessors, acceptanceCriteria,
+      ...(runHistory.length && { runHistory }),
       ...(required === 'full-input-artifacts' && { fullInputRequired: true }),
       ...(required === 'git-patch-inputs' && { gitPatchInputsRequired: true }),
       ...((required === 'read-only' || requireReadOnly) && { readOnlyRequired: true }),

@@ -94,6 +94,13 @@ export interface WorkerConfiguration {
 }
 
 
+export interface RunHistoryEntry {
+  eventSeq: number;
+  runId: string;
+  outcome: 'succeeded' | 'failed' | 'review_required' | 'git_patch_inputs' |
+    'interrupted' | 'device_revoked' | 'lease_expired' | 'deadline_exceeded' | 'inputs_changed';
+}
+
 export interface PredecessorInput {
   taskId: string;
   version: number;

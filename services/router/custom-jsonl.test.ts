@@ -19,6 +19,18 @@ test('a registered JSONL extension executes a real subprocess through Router and
   await writeFile(script, `
     const request = JSON.parse(require('node:fs').readFileSync(0, 'utf8'));
     if (request.version !== 1 || request.type !== 'run') process.exit(2);
+    if (request.input.goal === 'Recover a failed attempt') {
+      const history = request.input.previousRuns;
+      if (!history) {
+        console.log(JSON.stringify({version:1,type:'failed',message:'Private prior diagnostic'}));
+        return;
+      }
+      if (history.length !== 1 || history[0].outcome !== 'failed' ||
+          !/^[a-f0-9-]{36}$/.test(history[0].runId) || !Number.isSafeInteger(history[0].eventSeq) ||
+          JSON.stringify(request.input).includes('Private prior diagnostic')) process.exit(9);
+      console.log(JSON.stringify({version:1,type:'completed',result:'Previous attempt identified'}));
+      return;
+    }
     if (request.input.goal === 'Wait with the forecast') {
       if (!request.input.backgroundMemory?.some(note => note.body === 'Forecast input active')) process.exit(8);
       console.log(JSON.stringify({version:1,type:'progress',message:'Forecast input loaded'}));
@@ -211,6 +223,13 @@ test('a registered JSONL extension executes a real subprocess through Router and
   assert.equal(store.get('owner', revisable.id)?.status, 'queued');
   assert.equal(await client.runOnce(revisionSignal), true);
   assert.equal(store.get('owner', revisable.id)?.result, 'Use the updated instructions');
+
+  const retryTask = store.create('owner', 'fixture', 'retry-history', 'project', 'Recover a failed attempt');
+  assert.equal(await client.runOnce(AbortSignal.timeout(5_000)), true);
+  assert.equal(store.get('owner', retryTask.id)?.status, 'failed');
+  assert.equal(store.command('owner', retryTask.id, 1, { action: 'retry' })?.version, 2);
+  assert.equal(await client.runOnce(AbortSignal.timeout(5_000)), true);
+  assert.equal(store.get('owner', retryTask.id)?.result, 'Previous attempt identified');
 
   const connection = memory.connect('owner', 'github', 'Handbook', 'project');
   const source = { connection, resource: 'guide.md', revision: '1' };
