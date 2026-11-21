@@ -441,6 +441,7 @@ function deviceOperation(store: TaskStore, bearer: string, pathname: string, dat
     if (assignment) {
       const refs = store.appEvidence(assignment.task.id);
       if (refs) {
+        if (store.runEvidenceStopping(assignment.run.id)) return { status: 200, body: { assignment: null } };
         const evidence = data.capability === 'agent.acp' ? memory?.resolveAppEvidence(device.owner, device.workspace, refs) : undefined;
         if (!evidence) {
           store.rejectRunEvidence(assignment.run.id, device.id);
@@ -454,11 +455,12 @@ function deviceOperation(store: TaskStore, bearer: string, pathname: string, dat
   }
   const run = /^\/v1\/device\/runs\/([a-f0-9-]{36})\/(renew|finish|stopped|request-approval|approval|consume-approval|progress|input-artifact|steer)$/.exec(pathname);
   if (!run) throw new RequestError(404, 'Route not found');
-  if (['renew', 'finish', 'progress', 'request-approval', 'approval', 'consume-approval', 'steer'].includes(run[2])) {
+  if (['renew', 'finish', 'progress', 'request-approval', 'approval', 'consume-approval', 'input-artifact', 'steer'].includes(run[2])) {
     const taskId = store.runTaskId(run[1], device.id);
     const refs = taskId ? store.appEvidence(taskId) : undefined;
-    if (refs && !memory?.resolveAppEvidence(device.owner, device.workspace, refs)) {
-      store.rejectRunEvidence(run[1], device.id);
+    if (refs && (store.runEvidenceStopping(run[1]) || !memory?.resolveAppEvidence(device.owner, device.workspace, refs))) {
+      if (run[2] === 'finish') store.rejectRunEvidence(run[1], device.id);
+      else store.requestRunEvidenceStop(run[1], device.id);
       return { status: 409, body: { accepted: false } };
     }
   }
@@ -559,6 +561,11 @@ export function routerServer(store: TaskStore, config: { owner: string; token: s
     if (target) sendStop(target.device, target.runId);
   }
   function flushStopNotifications() {
+    for (const run of store.activeAppEvidenceRuns()) {
+      if (!config.memory?.resolveAppEvidence(run.owner, run.workspace, run.refs)) {
+        store.requestRunEvidenceStop(run.id, run.device);
+      }
+    }
     for (const device of stopSubscribers.keys()) {
       for (const row of store.deviceStopTargets(device)) sendStop(device, String(row.id));
     }
@@ -997,7 +1004,10 @@ export function routerServer(store: TaskStore, config: { owner: string; token: s
         }
         return;
       }
-      if (config.memory && await handleMemory(request, response, url, owner, config.memory, config.documents, config.answerMemory)) return;
+      if (config.memory && await handleMemory(request, response, url, owner, config.memory, config.documents, config.answerMemory)) {
+        if (request.method !== 'GET') flushStopNotifications();
+        return;
+      }
       throw new RequestError(404, 'Route not found');
     } catch (error) {
       if (response.headersSent) {

@@ -156,6 +156,9 @@ export class TaskStore {
       CREATE TABLE IF NOT EXISTS run_steering (
         run_id TEXT PRIMARY KEY REFERENCES run(id) ON DELETE CASCADE
       );
+      CREATE TABLE IF NOT EXISTS run_evidence_stop (
+        run_id TEXT PRIMARY KEY REFERENCES run(id) ON DELETE CASCADE
+      );
       CREATE INDEX IF NOT EXISTS run_device ON run(device);
       CREATE TABLE IF NOT EXISTS run_dependency (
         run_id TEXT NOT NULL REFERENCES run(id) ON DELETE CASCADE,
@@ -696,16 +699,52 @@ export class TaskStore {
     return this.db.prepare('SELECT taskId FROM run WHERE id=? AND device=?').get(runId, device)?.taskId as string | undefined;
   }
 
+  activeAppEvidenceRuns() {
+    return this.db.prepare(`SELECT r.id,r.device,t.owner,t.workspace,e.refs FROM task_app_evidence e
+      JOIN run r ON r.taskId=e.task_id JOIN task t ON t.id=r.taskId
+      WHERE t.status IN ('running','waiting_user') AND NOT EXISTS(SELECT 1 FROM run_evidence_stop s WHERE s.run_id=r.id)`)
+      .all().map(row => ({
+        id: String(row.id), device: String(row.device), owner: String(row.owner), workspace: String(row.workspace),
+        refs: JSON.parse(String(row.refs)) as { id: string; version: number }[],
+      }));
+  }
+
+  requestRunEvidenceStop(runId: string, device: string) {
+    return this.transaction(() => {
+      const taskId = this.runTaskId(runId, device);
+      if (!taskId) return false;
+      const inserted = this.db.prepare(`INSERT OR IGNORE INTO run_evidence_stop
+        SELECT r.id FROM run r JOIN task t ON t.id=r.taskId WHERE r.id=? AND t.status IN ('running','waiting_user')`).run(runId);
+      if (inserted.changes) {
+        this.db.prepare("UPDATE task SET status='waiting_user',result=NULL WHERE id=?").run(taskId);
+        this.event(taskId, 'run.memory_access_changed', { runId, status: 'waiting_user' });
+      }
+      return Boolean(inserted.changes);
+    });
+  }
+
+  runEvidenceStopping(runId: string) {
+    return Boolean(this.db.prepare('SELECT 1 FROM run_evidence_stop WHERE run_id=?').get(runId));
+  }
+
   rejectRunEvidence(runId: string, device: string) {
     this.transaction(() => {
       const taskId = this.runTaskId(runId, device);
       if (!taskId) return;
-      const updated = this.db.prepare(`UPDATE task SET status='waiting_user',result=NULL
-        WHERE id=? AND status NOT IN ('pausing','cancelling')`).run(taskId);
-      if (!updated.changes) return;
-      this.db.prepare('DELETE FROM run WHERE id=?').run(runId);
-      this.event(taskId, 'run.memory_access_changed', { runId, status: 'waiting_user' });
+      const status = this.db.prepare('SELECT status FROM task WHERE id=?').get(taskId)?.status;
+      if (status === 'pausing' || status === 'cancelling') {
+        this.finishStoppedRun(runId, taskId, status === 'pausing');
+      } else {
+        this.finishRejectedEvidence(runId, taskId);
+      }
     });
+  }
+
+  private finishRejectedEvidence(runId: string, taskId: string) {
+    const wasStopping = this.runEvidenceStopping(runId);
+    this.db.prepare("UPDATE task SET status='waiting_user',result=NULL WHERE id=?").run(taskId);
+    this.db.prepare('DELETE FROM run WHERE id=?').run(runId);
+    if (!wasStopping) this.event(taskId, 'run.memory_access_changed', { runId, status: 'waiting_user' });
   }
 
   createWorkflow(owner: string, key: string, workspace: string, steps: WorkflowStep[]) {
@@ -1294,7 +1333,8 @@ export class TaskStore {
 
   stopTarget(owner: string, taskId: string) {
     return this.db.prepare(`SELECT r.id AS runId,r.device FROM run r JOIN task t ON t.id=r.taskId
-      WHERE t.owner=? AND t.id=? AND (t.status IN ('pausing','cancelling') OR (
+      WHERE t.owner=? AND t.id=? AND (t.status IN ('pausing','cancelling') OR
+          EXISTS(SELECT 1 FROM run_evidence_stop s WHERE s.run_id=r.id) OR (
           t.status='running' AND r.version<>t.version
           AND NOT EXISTS(SELECT 1 FROM run_steering s WHERE s.run_id=r.id)
           AND NOT EXISTS(SELECT 1 FROM invalid_workflow_run i WHERE i.id=r.id)))`).get(owner, taskId) as
@@ -1303,7 +1343,8 @@ export class TaskStore {
 
   deviceStopTargets(device: string) {
     return this.db.prepare(`SELECT r.id FROM run r JOIN task t ON t.id=r.taskId
-      WHERE r.device=? AND (t.status IN ('pausing','cancelling') OR (
+      WHERE r.device=? AND (t.status IN ('pausing','cancelling') OR
+          EXISTS(SELECT 1 FROM run_evidence_stop s WHERE s.run_id=r.id) OR (
           t.status='running' AND r.version<>t.version
           AND NOT EXISTS(SELECT 1 FROM run_steering s WHERE s.run_id=r.id)
           AND NOT EXISTS(SELECT 1 FROM invalid_workflow_run i WHERE i.id=r.id)))`).all(device);
@@ -1312,12 +1353,19 @@ export class TaskStore {
   acknowledgeStop(runId: string, device: string, now: number) {
     return this.transaction(() => {
       const run = this.db.prepare(`SELECT r.taskId,t.status FROM run r JOIN task t ON t.id=r.taskId
-        WHERE r.id=? AND r.device=? AND r.expires>? AND (t.status IN ('pausing','cancelling') OR (
+        WHERE r.id=? AND r.device=? AND r.expires>? AND (t.status IN ('pausing','cancelling') OR
+          EXISTS(SELECT 1 FROM run_evidence_stop s WHERE s.run_id=r.id) OR (
           t.status='running' AND r.version<>t.version
           AND NOT EXISTS(SELECT 1 FROM invalid_workflow_run i WHERE i.id=r.id)))`).get(runId, device, now);
       if (!run) return false;
-      if (run.status === 'running') this.finishSupersededRun(runId, String(run.taskId));
-      else this.finishStoppedRun(runId, String(run.taskId), run.status === 'pausing');
+      const taskId = String(run.taskId);
+      if (run.status === 'pausing' || run.status === 'cancelling') {
+        this.finishStoppedRun(runId, taskId, run.status === 'pausing');
+      } else if (this.runEvidenceStopping(runId)) {
+        this.finishRejectedEvidence(runId, taskId);
+      } else {
+        this.finishSupersededRun(runId, taskId);
+      }
       return true;
     });
   }
@@ -1431,7 +1479,8 @@ export class TaskStore {
         JOIN run r ON r.id=a.runId JOIN task t ON t.id=a.taskId
         WHERE a.decision IS NULL AND a.expires<=? AND r.expires>?
         AND t.status='waiting_user' AND a.version=r.version AND r.version=t.version
-        AND NOT EXISTS(SELECT 1 FROM invalid_workflow_run i WHERE i.id=r.id)`).all(now, now);
+        AND NOT EXISTS(SELECT 1 FROM invalid_workflow_run i WHERE i.id=r.id)
+        AND NOT EXISTS(SELECT 1 FROM run_evidence_stop s WHERE s.run_id=r.id)`).all(now, now);
       for (const approval of approvals) {
         const taskId = String(approval.taskId);
         this.db.prepare('DELETE FROM run WHERE id=?').run(approval.runId!);
@@ -1446,6 +1495,10 @@ export class TaskStore {
         JOIN task t ON r.taskId=t.id JOIN run_deadline d ON d.run_id=r.id WHERE r.expires<=?`).all(now);
       for (const row of rows) {
         const taskId = String(row.taskId);
+        if (row.status === 'waiting_user' && this.runEvidenceStopping(String(row.id))) {
+          this.finishRejectedEvidence(String(row.id), taskId);
+          continue;
+        }
         const status = row.status === 'cancelling' ? 'cancelled' : 'waiting_user';
         this.db.prepare('DELETE FROM run WHERE id=?').run(row.id!);
         this.db.prepare('UPDATE task SET status=? WHERE id=?').run(status, taskId);

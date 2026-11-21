@@ -30,9 +30,14 @@ test('a registered JSONL extension executes a real subprocess through Router and
       console.log(JSON.stringify({version:1,type:'completed',result:request.input.instructions.join(' ')}));
       return;
     }
-    if (request.input.goal === 'Use the review template') {
+    if (['Use the review template', 'Wait with the review template'].includes(request.input.goal)) {
       const evidence = request.input.backgroundMemory;
       if (evidence?.length !== 1 || evidence[0].body !== 'Private review template') process.exit(5);
+      if (request.input.goal === 'Wait with the review template') {
+        console.log(JSON.stringify({version:1,type:'progress',message:'Review template loaded'}));
+        setInterval(() => {}, 1000);
+        return;
+      }
       console.log(JSON.stringify({version:1,type:'completed',result:evidence[0].body}));
       return;
     }
@@ -157,11 +162,11 @@ test('a registered JSONL extension executes a real subprocess through Router and
   const source = { connection, resource: 'guide.md', revision: '1' };
   memory.importDocument('owner', 'project', 'Private review template', source);
   const base = 'http://127.0.0.1:' + address.port;
-  const createWithEvidence = (key: string) => fetch(base + '/v1/events', {
+  const createWithEvidence = (key: string, sourceId = connection, goal = 'Use the review template') => fetch(base + '/v1/events', {
     method: 'POST', headers: {
       Authorization: 'Bearer local', 'Content-Type': 'application/json', 'Idempotency-Key': key,
-    }, body: JSON.stringify({ workspace: 'project', text: 'Use the review template',
-      appMemory: { query: 'review', sources: [connection] } }),
+    }, body: JSON.stringify({ workspace: 'project', text: goal,
+      appMemory: { query: 'review', sources: [sourceId] } }),
   });
   const creationWithEvidence = await createWithEvidence('app-evidence');
   assert.equal(creationWithEvidence.status, 202);
@@ -218,6 +223,27 @@ test('a registered JSONL extension executes a real subprocess through Router and
   assert.equal((await download(phone.token)).status, 404);
   const hidden = await (await fetch(base + '/v1/state', { headers: { Authorization: 'Bearer local' } })).json();
   assert.equal(hidden.tasks.find((item: { id: string }) => item.id === protectedTask.id)?.result, null);
+
+  const liveConnection = memory.connect('owner', 'github', 'Live handbook', 'project');
+  memory.importDocument('owner', 'project', 'Private review template', { ...source, connection: liveConnection });
+  const liveResponse = await createWithEvidence('live-revocation', liveConnection, 'Wait with the review template');
+  assert.equal(liveResponse.status, 202);
+  const liveTask = await liveResponse.json();
+  const revokeSignal = AbortSignal.timeout(5_000);
+  const revokedRun = assert.rejects(client.runOnce(revokeSignal), /aborted/i);
+  while (!store.timeline('owner', liveTask.id)?.events.some(event => event.data.message === 'Review template loaded')) {
+    await delay(10, undefined, { signal: revokeSignal });
+  }
+  const revoked = await fetch(base + '/v1/app-connections/' + liveConnection, {
+    method: 'DELETE', signal: revokeSignal, headers: { Authorization: 'Bearer local' },
+  });
+  assert.equal(revoked.status, 200);
+  await revokedRun;
+  assert.equal(store.get('owner', liveTask.id)?.status, 'waiting_user');
+  const evidenceEvents = store.timeline('owner', liveTask.id)?.events.filter(event => event.type === 'run.memory_access_changed');
+  assert.equal(evidenceEvents?.length, 1);
+  assert.equal(typeof evidenceEvents[0].data.runId, 'string');
+  assert.equal(store.runTaskId(String(evidenceEvents[0].data.runId), device.id), undefined);
 });
 
 test('JSONL rejects duplicate terminal events and stops a cancelled subprocess', async () => {
