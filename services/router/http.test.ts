@@ -490,8 +490,14 @@ test('Router authenticates, deduplicates commands and replays task changes over 
   assert.deepEqual(catalog.presets.find(item => item.id === 'deepseek'), {
     id: 'deepseek', label: 'DeepSeek Harness', protocol: 'acp',
   });
+  const streamPath = url + '/v1/stream?once=1&after=' + store.eventCursor();
+  const openFeed = await fetch(streamPath, { headers: mobileHeaders });
+  assert.equal(openFeed.status, 200);
   assert.equal((await fetch(url + '/v1/admin/mobile-clients/' + mobile.id, { method: 'DELETE', headers })).status, 200);
   assert.equal((await fetch(url + '/v1/state', { headers: mobileHeaders })).status, 401);
+  store.create('test', 'fixture', 'post-mobile-revocation', 'demo', 'Created after removing the phone');
+  assert.equal(await openFeed.text(), '');
+  assert.equal((await fetch(streamPath, { headers: mobileHeaders })).status, 401);
   assert.deepEqual(await (await pairingStatus()).json(), { state: 'denied' });
   const rejectedCode = await (await fetch(url + '/v1/pairings', { method: 'POST', headers })).json();
   const rejectedToken = randomBytes(32).toString('base64url');

@@ -189,6 +189,7 @@ struct RouterClient: Equatable {
         guard let http = response as? HTTPURLResponse else {
             throw RouterError(error: "The Router event stream is unavailable.")
         }
+        if http.statusCode == 401 || http.statusCode == 403 { throw RouterAccessDenied() }
         if http.statusCode == 409 { return }
         guard http.statusCode == 200, http.mimeType == "text/event-stream" else {
             throw RouterError(error: "The Router event stream is unavailable.")

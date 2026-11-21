@@ -356,6 +356,7 @@ private struct TaskScreen: View {
                     continue
                 } catch {
                     guard !Task.isCancelled, self.client == client else { return }
+                    if error is RouterAccessDenied { clearUnauthorizedState() }
                     self.error = error.localizedDescription
                 }
             }
@@ -378,12 +379,18 @@ private struct TaskScreen: View {
         } catch {
             guard !Task.isCancelled, self.client == client, snapshotRequest == request else { return }
             snapshot = nil
-            if error is RouterAccessDenied {
-                OfflineTaskSummary.clear()
-                offlineSummary = nil
-            }
+            if error is RouterAccessDenied { clearUnauthorizedState() }
             self.error = error.localizedDescription
         }
+    }
+
+    private func clearUnauthorizedState() {
+        snapshotRequest = UUID()
+        snapshot = nil
+        OfflineTaskSummary.clear()
+        offlineSummary = nil
+        answer = nil
+        plan = nil
     }
 }
 
