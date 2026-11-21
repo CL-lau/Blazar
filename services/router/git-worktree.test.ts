@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
+import { once } from 'node:events';
 import { randomUUID } from 'node:crypto';
 import { mkdir, mkdtemp, readFile, realpath, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
@@ -7,6 +8,10 @@ import { join } from 'node:path';
 import test from 'node:test';
 import { gitRunWorktrees, inspectRunWorktree } from '../device/execution/git-worktree.ts';
 import { executeWorker } from '../device/execution/worker.ts';
+import { DeviceClient } from '../device/client.ts';
+import { DeviceLedger } from '../device/ledger.ts';
+import { routerServer } from './http.ts';
+import { TaskStore } from './store.ts';
 
 test('isolated Worker runs keep their changes in independent retained worktrees', async t => {
   const state = await realpath(await mkdtemp(join(tmpdir(), 'blazar-git-runs-')));
@@ -20,7 +25,8 @@ test('isolated Worker runs keep their changes in independent retained worktrees'
   git('add', 'notes.txt');
   git('-c', 'user.name=Test', '-c', 'user.email=test@example.com', '-c', 'commit.gpgsign=false', 'commit', '-m', 'Initial');
   await writeFile(notes, 'Uncommitted user edit');
-  const prepare = await gitRunWorktrees(repository, state);
+  const worktrees = await gitRunWorktrees(repository, state);
+  const { prepare, artifact } = worktrees;
   const firstId = randomUUID();
   const [first, second] = await Promise.all([prepare(firstId), prepare(randomUUID())]);
   const worker = {
@@ -46,7 +52,7 @@ test('isolated Worker runs keep their changes in independent retained worktrees'
   assert.equal(await readFile(notes, 'utf8'), 'Uncommitted user edit');
   assert.equal(await readFile(join(first, 'notes.txt'), 'utf8'), 'First edit');
   assert.equal(await readFile(join(second, 'notes.txt'), 'utf8'), 'Second edit');
-  const initial = await inspectRunWorktree(repository, state, firstId);
+  const initial = await inspectRunWorktree(repository, join(state, 'run-worktrees'), firstId);
   assert.equal(initial.state, 'ready');
   assert(initial.state === 'ready');
   assert.deepEqual(initial.changes, [' M notes.txt']);
@@ -54,11 +60,46 @@ test('isolated Worker runs keep their changes in independent retained worktrees'
   execFileSync('git', ['-c', 'user.name=Test', '-c', 'user.email=test@example.com', '-c',
     'commit.gpgsign=false', 'commit', '-am', 'Worker edit'], { cwd: first, stdio: 'pipe' });
   await writeFile(join(first, 'untracked.txt'), 'Retained output');
-  const changed = await inspectRunWorktree(repository, state, firstId);
+  const changed = await inspectRunWorktree(repository, join(state, 'run-worktrees'), firstId);
   assert(changed.state === 'ready');
   assert.equal(changed.baseCommit, initial.head);
   assert.deepEqual(changed.commits, [changed.head]);
   assert.deepEqual(changed.changes, ['?? untracked.txt']);
-  assert.deepEqual(await inspectRunWorktree(repository, state, randomUUID()), { state: 'missing' });
+  assert.deepEqual(await inspectRunWorktree(repository, join(state, 'run-worktrees'), randomUUID()), { state: 'missing' });
+  const report = await artifact(firstId, AbortSignal.timeout(5_000));
+  assert.equal(report.name, 'git-changes.json');
+  assert.deepEqual(JSON.parse(report.text), {
+    version: 1, baseCommit: initial.head, head: changed.head, commits: [changed.head],
+    trackedFiles: ['M\tnotes.txt'], changes: ['?? untracked.txt'],
+  });
   await assert.rejects(prepare(firstId), /Unable to prepare the run Git worktree/);
+
+  const store = new TaskStore(':memory:');
+  const ledger = new DeviceLedger(':memory:');
+  const device = store.registerDevice('owner', 'Git fixture', 'project');
+  const server = routerServer(store, { owner: 'owner', token: 'fixture' });
+  server.listen(0, '127.0.0.1');
+  await once(server, 'listening');
+  const address = server.address();
+  assert(address && typeof address !== 'string');
+  const client = new DeviceClient(new URL('http://127.0.0.1:' + address.port), device.token,
+    repository, ledger, worker, undefined, repository, worktrees);
+  t.after(async () => {
+    client.close();
+    server.closeDeviceSockets();
+    await new Promise<void>(resolve => server.close(() => resolve()));
+    ledger.close();
+    store.close();
+  });
+  store.createWorkflow('owner', 'git-handoff', 'project', [
+    { key: 'draft', goal: 'Draft content', needs: [], workerCapability: 'git-worktree' },
+    { key: 'review', goal: 'Review changes', needs: ['draft'] },
+  ]);
+  assert.equal(await client.runOnce(AbortSignal.timeout(5_000)), true);
+  const receiver = store.claim('owner', 'project', 'reviewer', Date.now(), 45_000)!;
+  assert.equal(receiver.task.goal, 'Review changes');
+  assert.equal(receiver.predecessors[0].result, 'Draft content');
+  assert.equal(receiver.predecessors[0].artifact?.name, 'git-changes.json');
+  assert.deepEqual(JSON.parse(receiver.predecessors[0].artifact!.excerpt).trackedFiles, ['M\tnotes.txt']);
+
 });

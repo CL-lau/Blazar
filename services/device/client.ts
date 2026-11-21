@@ -11,6 +11,7 @@ import { maintainLease } from './lease.ts';
 import { platform } from 'node:os';
 import { preview } from './preview.ts';
 import { executeDesktopAction } from './execution/desktop.ts';
+import type { gitRunWorktrees } from './execution/git-worktree.ts';
 import { executeWorker } from './execution/worker.ts';
 
 type Assignment = { clickExpectedText?: string; fullInputRequired?: boolean; run: Run; task: Task; instructions: string[]; predecessors: PredecessorInput[]; acceptanceCriteria?: string[]; memoryInputs?: TaskMemoryInput[]; attachments?: TaskAttachment[] };
@@ -27,10 +28,10 @@ export class DeviceClient {
   private nextDesktopProbe = 0;
   private workspaceIdentity: string;
   private claimId = randomUUID();
-  private readonly prepareWorkerRoot?: (runId: string) => Promise<string>;
+  private readonly worktrees?: Awaited<ReturnType<typeof gitRunWorktrees>>;
 
   constructor(base: URL, token: string, root: string, ledger: DeviceLedger, worker?: Worker, observation?: ObservationConfig, workspaceIdentity = root,
-              prepareWorkerRoot?: (runId: string) => Promise<string>) {
+              worktrees?: Awaited<ReturnType<typeof gitRunWorktrees>>) {
     if (base.protocol !== 'https:' && !(base.protocol === 'http:' && base.hostname === '127.0.0.1')) {
       throw new Error('Router URL must use HTTPS or local loopback HTTP.');
     }
@@ -39,7 +40,7 @@ export class DeviceClient {
     this.workspaceIdentity = workspaceIdentity;
     this.ledger = ledger;
     this.worker = worker;
-    this.prepareWorkerRoot = prepareWorkerRoot;
+    this.worktrees = worktrees;
     if (worker) {
       const protocol = worker.protocol ?? 'acp';
       const adapterVersion = 1;
@@ -47,10 +48,10 @@ export class DeviceClient {
       const revision = createHmac('sha256', token).update(JSON.stringify([
         adapterVersion, worker.label, protocol, worker.executable, worker.args, worker.env ?? [],
         worker.protocol === 'jsonl' && worker.includeFullInputArtifacts === true,
-        ...(prepareWorkerRoot ? ['git-worktree'] : []),
+        ...(worktrees ? ['git-worktree'] : []),
       ])).digest('hex');
       const capabilities: WorkerCapability[] = [];
-      if (prepareWorkerRoot) capabilities.push('git-worktree');
+      if (worktrees) capabilities.push('git-worktree');
       if (protocol === 'codex' || protocol === 'pi') capabilities.push('steer');
       if (worker.protocol === 'jsonl' && worker.includeFullInputArtifacts) capabilities.push('full-input-artifacts');
       this.workerConfiguration = { label: worker.label, protocol, adapterVersion, revision,
@@ -183,10 +184,10 @@ export class DeviceClient {
               return () => this.consumeApproval(prefix, decision.id, signal);
             }, assignment.clickExpectedText);
         } else if (this.worker) {
-          const root = this.prepareWorkerRoot ? await this.prepareWorkerRoot(assignment.run.id) : this.root;
+          const root = this.worktrees ? await this.worktrees.prepare(assignment.run.id) : this.root;
           active.throwIfAborted();
           const { result, checkpoint: session } = await executeWorker({
-            root, scope: this.scope, workspaceIdentity: this.prepareWorkerRoot ? root : this.workspaceIdentity,
+            root, scope: this.scope, workspaceIdentity: this.worktrees ? root : this.workspaceIdentity,
             revision: this.workerConfiguration?.revision, ledger: this.ledger,
             post: (path, data, signal) => this.post(path, data, signal),
             approve: (path, summary, signal) => this.approve(path, summary, signal),
@@ -195,8 +196,17 @@ export class DeviceClient {
             goal: assignment.task.goal, instructions: assignment.instructions, predecessors: assignment.predecessors,
             acceptanceCriteria: assignment.acceptanceCriteria, memoryInputs: assignment.memoryInputs, attachments: assignment.attachments,
           }, stop, active, assignment.fullInputRequired);
-          checkpoint = this.prepareWorkerRoot ? undefined : session;
-          outcome = { status: 'succeeded', result, artifact: { name: 'worker-result.txt', text: result } };
+          checkpoint = this.worktrees ? undefined : session;
+          let artifact = { name: 'worker-result.txt', text: result };
+          if (this.worktrees) {
+            try {
+              artifact = await this.worktrees.artifact(assignment.run.id, active);
+            } catch {
+              active.throwIfAborted();
+              throw new Error('The Worker finished but its Git evidence is unavailable. Inspect the retained checkout.');
+            }
+          }
+          outcome = { status: 'succeeded', result, artifact };
         } else {
           if (assignment.instructions.length) throw new Error('Submit a new preview to change the document path.');
           const document = await preview(this.root, assignment.task.goal, active);

@@ -19,7 +19,7 @@ if (!workspace || !runId || extra.length || !/^[a-f0-9-]{36}$/.test(runId)) {
     try {
       if (inspect) {
         if (ledger.interrupted(locked.identity) !== runId) throw new Error('No matching interrupted run');
-        console.log(JSON.stringify(await inspectRunWorktree(locked.root, state, runId), null, 2));
+        console.log(JSON.stringify(await inspectRunWorktree(locked.root, join(state, 'run-worktrees'), runId), null, 2));
       } else {
         if (!ledger.clearExecution(locked.identity, runId)) throw new Error('No matching interrupted run');
         console.log('Cleared interrupted run ' + runId);

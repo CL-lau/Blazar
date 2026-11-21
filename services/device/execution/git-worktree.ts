@@ -5,11 +5,11 @@ import { promisify } from 'node:util';
 
 const exec = promisify(execFile);
 
-function gitAt(workspace: string) {
+function gitAt(workspace: string, signal?: AbortSignal) {
   const env = Object.fromEntries(Object.entries(process.env).filter(([key]) => !key.toUpperCase().startsWith('GIT_')));
   return async (...args: string[]) => {
     const { stdout } = await exec('git', ['-c', 'core.hooksPath=/dev/null', '-c', 'core.fsmonitor=false', ...args],
-      { cwd: workspace, env, timeout: 15_000, maxBuffer: 64_000, windowsHide: true });
+      { cwd: workspace, env, timeout: 15_000, maxBuffer: 64_000, windowsHide: true, signal });
     return stdout.replace(/\r?\n$/, '');
   };
 }
@@ -30,7 +30,7 @@ export async function gitRunWorktrees(workspace: string, stateDirectory: string)
   if (!isAbsolute(fromRepository) && fromRepository !== '..' && !fromRepository.startsWith('..' + sep)) {
     throw new Error('Git worktree storage must be outside the workspace');
   }
-  return async (runId: string) => {
+  const prepare = async (runId: string) => {
     const root = runPath(storage, runId);
     // Reserve the path before Git setup. A repeated run must never reuse an earlier checkout.
     try {
@@ -43,10 +43,22 @@ export async function gitRunWorktrees(workspace: string, stateDirectory: string)
     }
     return root;
   };
+  const artifact = async (runId: string, signal: AbortSignal) => {
+    const checkout = await inspectRunWorktree(workspace, storage, runId, signal);
+    if (checkout.state !== 'ready' || !checkout.baseCommit) throw new Error('Run checkout evidence is unavailable');
+    const { baseCommit, head, changes, commits } = checkout;
+    const command = gitAt(checkout.root, signal);
+    const trackedFiles = await command('diff', '--no-ext-diff', '--no-textconv', '--name-status', baseCommit, '--');
+    signal.throwIfAborted();
+    const text = JSON.stringify({ version: 1, baseCommit, head, commits, trackedFiles: trackedFiles ? trackedFiles.split('\n') : [], changes }, null, 2);
+    if (Buffer.byteLength(text) > 32_000) throw new Error('Run checkout evidence exceeds the artifact limit');
+    return { name: 'git-changes.json', text };
+  };
+  return { prepare, artifact };
 }
 
-export async function inspectRunWorktree(workspace: string, stateDirectory: string, runId: string) {
-  const root = runPath(join(stateDirectory, 'run-worktrees'), runId);
+export async function inspectRunWorktree(workspace: string, storage: string, runId: string, signal?: AbortSignal) {
+  const root = runPath(storage, runId);
   const path = await lstat(root).catch(error => {
     if (error.code === 'ENOENT') return undefined;
     throw error;
@@ -59,9 +71,9 @@ export async function inspectRunWorktree(workspace: string, stateDirectory: stri
   });
   if (!marker) return { state: 'incomplete' as const, root };
   if (!marker.isFile()) throw new Error('Run checkout is not a linked worktree');
-  const git = gitAt(root);
+  const git = gitAt(root, signal);
   const commonDir = (command: ReturnType<typeof gitAt>) => command('rev-parse', '--path-format=absolute', '--git-common-dir').then(realpath);
-  if (await commonDir(git) !== await commonDir(gitAt(workspace))) {
+  if (await commonDir(git) !== await commonDir(gitAt(workspace, signal))) {
     throw new Error('Run checkout belongs to another repository');
   }
   const baseCommit = await readFile(root + '.base', 'utf8').then(value => value.trim(), error => {
