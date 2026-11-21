@@ -222,7 +222,7 @@ export function deviceOperation(store: DeviceTasks, bearer: string, pathname: st
   }
   let additionalArtifacts: RunOutcome['additionalArtifacts'];
   if (data.additionalArtifacts !== undefined) {
-    if (data.status !== 'succeeded' || !artifact || artifact.mime || !Array.isArray(data.additionalArtifacts) ||
+    if (data.status !== 'succeeded' || !artifact || !Array.isArray(data.additionalArtifacts) ||
         data.additionalArtifacts.length > 4) throw new RequestError(400, 'Invalid additional artifacts');
     additionalArtifacts = [];
     const names = new Set([artifact.name]);

@@ -490,7 +490,7 @@ export function routerServer(store: TaskStore, config: { owner: string; token: s
           if (desktopSteps.some(action => !targets.some(target => target.workspace === workspace &&
               target.deviceId === action.deviceId && target.alias === action.alias &&
               (action.kind === 'desktop.observe'
-                ? action.mode !== 'visual' || (target.controls?.visual === true && target.screenRecording !== 'denied')
+                ? (action.mode !== 'visual' && action.mode !== 'hybrid') || (target.controls?.visual === true && target.screenRecording !== 'denied')
                 : target.controls?.buttons.includes(action.button))))) {
             throw new RequestError(404, 'Workflow desktop target unavailable');
           }

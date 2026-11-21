@@ -1397,7 +1397,10 @@ export class TaskStore {
       const taskId = String(row.taskId);
       const observing = String(row.goal).startsWith('/observe ');
       const observation = observing ? this.runInputs.desktopAction({ id: taskId, goal: String(row.goal) }) : undefined;
-      const visual = observation?.kind === 'desktop.observe' && observation.mode === 'visual';
+      const hybrid = (observation?.kind === 'desktop.observe' && observation.mode === 'hybrid') ||
+        /^\/observe [a-z0-9_-]{1,32} --window w-[0-9]{1,20} --instance [a-f0-9]{64} --hybrid$/.test(String(row.goal));
+      const visual = hybrid || (observation?.kind === 'desktop.observe' && observation.mode === 'visual');
+      if (outcome.artifact?.mime && outcome.additionalArtifacts?.length && !hybrid) return false;
       if (outcome.artifact?.mime && !visual && !/^\/observe [a-z0-9_-]{1,32} --window w-[0-9]{1,20} --instance [a-f0-9]{64} --visual$/.test(String(row.goal))) return false;
       if (row.status === 'cancelling' || row.status === 'pausing') {
         this.finishStoppedRun(runId, taskId, row.status === 'pausing');
@@ -1418,6 +1421,11 @@ export class TaskStore {
             JOIN approval a ON a.id=u.id WHERE a.runId=? AND a.version=?`).get(runId, row.runVersion!))) return false;
       if (outcome.status === 'succeeded' && visual && outcome.artifact?.mime !== 'image/png') {
         outcome = { status: 'failed', result: 'The window screenshot was unavailable.' };
+      }
+      if (outcome.status === 'succeeded' && hybrid &&
+          (outcome.additionalArtifacts?.length !== 1 || outcome.additionalArtifacts[0].name !== 'application-observation.txt' ||
+            !outcome.additionalArtifacts[0].text.trim())) {
+        outcome = { status: 'failed', result: 'The semantic window observation was unavailable.' };
       }
       if (outcome.status === 'succeeded' && observing) {
         const action = observation;

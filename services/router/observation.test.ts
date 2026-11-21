@@ -35,7 +35,8 @@ if (process.argv[2] === 'list-windows') {
   ]}));
   process.exit(0);
 }
-if (JSON.stringify(process.argv.slice(2)) !== JSON.stringify(['snapshot','--app','Calculator','-i'])) process.exit(2);
+if (![['snapshot','--app','Calculator','-i'], ['snapshot','--app','Calculator','-i','--window-id','w-10']]
+    .some(args => JSON.stringify(process.argv.slice(2)) === JSON.stringify(args))) process.exit(2);
 console.log(JSON.stringify({ok:true,command:'snapshot',data:{tree:{role:'window',name:'Calculator',children:[
   {role:'button',name:'Add',value:'private value',ref_id:'@temporary'},
   {role:'secureTextField',name:'Secret title'},
@@ -139,7 +140,7 @@ console.log(JSON.stringify({ok:true,command:'snapshot',data:{tree:{role:'window'
       { key: 'inventory', goal: 'List calculator windows', needs: [],
         action: { kind: 'desktop.observe', alias: 'calculator', deviceId, mode: 'windows' } },
       { key: 'capture', goal: 'Capture calculator screenshot', needs: ['inventory'],
-        action: { kind: 'desktop.observe', alias: 'calculator', deviceId, mode: 'visual',
+        action: { kind: 'desktop.observe', alias: 'calculator', deviceId, mode: 'hybrid',
           windowFrom: { step: 'inventory', title: 'Scientific · Calculator' } } },
       { key: 'next', goal: 'Acknowledge completion', needs: ['capture'] },
     ] }),
@@ -157,11 +158,12 @@ console.log(JSON.stringify({ok:true,command:'snapshot',data:{tree:{role:'window'
   assert.equal(store.get('owner', blockedVisual.id)?.status, 'failed');
   assert.match(store.get('owner', blockedVisual.id)?.result ?? '', /Screen Recording permission is required/);
   assert.equal(store.snapshot('owner').artifacts.some(item => item.taskId === blockedVisual.id), false);
-  const captured = store.snapshot('owner').artifacts.find(item => item.taskId === steps[1].taskId)!;
+  const captured = store.snapshot('owner').artifacts.find(item => item.taskId === steps[1].taskId && item.mime === 'image/png')!;
   assert.equal(captured.mime, 'image/png');
   const downstream = store.claim('owner', 'work', 'reviewer', Date.now(), 45_000, '', '/preview ')!;
   assert.equal(downstream.task.id, steps[2].taskId);
-  assert.equal(downstream.predecessors[0].artifact, undefined);
+  assert.equal(downstream.predecessors[0].artifact?.name, 'application-observation.txt');
+  assert.match(downstream.predecessors[0].artifact?.excerpt ?? '', /button: Add/);
   assert.equal(store.runInputArtifact(downstream.run.id, 'reviewer', String(captured.id), Date.now()), undefined);
   store.updateDeviceReadiness(Date.now());
   assert.equal(store.get('owner', denied.id)?.status, 'waiting_device');

@@ -1,5 +1,5 @@
 import { setTimeout as delay } from 'node:timers/promises';
-import { captureWindow, clickApp, observeApp, type ObservationConfig } from '../../../packages/computer-use/observe.ts';
+import { captureWindow, clickApp, observeApp, observeWindowWithImage, type ObservationConfig } from '../../../packages/computer-use/observe.ts';
 import type { RunOutcome } from '../../../packages/protocol/task.ts';
 
 export async function executeDesktopAction(
@@ -11,13 +11,16 @@ export async function executeDesktopAction(
   expectedText?: string,
   waitSeconds?: number,
 ): Promise<RunOutcome> {
-  const visual = /^\/observe ([a-z0-9_-]{1,32}) --window (w-[0-9]{1,20}) --instance ([a-f0-9]{64}) --visual$/.exec(goal);
+  const visual = /^\/observe ([a-z0-9_-]{1,32}) --window (w-[0-9]{1,20}) --instance ([a-f0-9]{64}) --(visual|hybrid)$/.exec(goal);
   if (visual) {
-    const image = await captureWindow(config, root, visual[1], visual[2], visual[3], signal);
+    const args = [config, root, visual[1], visual[2], visual[3], signal] as const;
+    const hybrid = visual[4] === 'hybrid' ? await observeWindowWithImage(...args) : undefined;
+    const image = hybrid?.image ?? await captureWindow(...args);
     return {
       status: 'succeeded',
       result: 'Window image is available for five minutes.',
       artifact: { name: 'window.png', mime: 'image/png', text: image.toString('base64') },
+      ...(hybrid && { additionalArtifacts: [{ name: 'application-observation.txt', text: hybrid.text }] }),
     };
   }
 

@@ -117,48 +117,60 @@ export function observeApp(config: ObservationConfig, root: string, goal: string
 
 export function captureWindow(config: ObservationConfig, root: string, alias: string, id: string,
                               identity: string, signal: AbortSignal) {
+  return withDesktopLock(config, signal, () => captureWindowImage(config, root, alias, id, identity, signal));
+}
+
+export function observeWindowWithImage(config: ObservationConfig, root: string, alias: string, id: string,
+                                       identity: string, signal: AbortSignal) {
   return withDesktopLock(config, signal, async () => {
-    const app = config.apps.get(alias);
-    if (!app || !config.visualApps?.has(alias) || !/^w-[0-9]{1,20}$/.test(id) || !/^[a-f0-9]{64}$/.test(identity)) {
-      throw new Error('Choose a window from the current application inventory.');
-    }
-    const permissions = await probeComputer(config, root, signal);
-    if (permissions.screen_recording !== 'granted') {
-      throw new Error('Screen Recording permission is required for window screenshots.');
-    }
-    const assertPresent = async () => {
-      const matches = (await windowsFor(config, root, app, signal)).filter(window => window.id === id);
-      if (matches.length !== 1 || windowIdentity(app, matches[0]) !== identity) {
-        throw new Error('The selected window changed. Refresh the window list.');
-      }
-    };
-    await assertPresent();
-    const scratch = await mkdtemp(join(tmpdir(), 'blazar-window-image-'));
-    try {
-      const path = join(scratch, 'window.png');
-      await runDriver(config, root, ['screenshot', '--app', app, '--window-id', id, path], signal);
-      await assertPresent();
-      const file = await open(path, constants.O_RDONLY | constants.O_NOFOLLOW);
-      try {
-        const limit = 1_000_000;
-        const stat = await file.stat();
-        if (!stat.isFile() || stat.size < 33 || stat.size > limit) throw new Error('Window image has an invalid size.');
-        const buffer = Buffer.alloc(stat.size);
-        const { bytesRead } = await file.read(buffer, 0, buffer.length, 0);
-        const width = buffer.readUInt32BE(16);
-        const height = buffer.readUInt32BE(20);
-        if (bytesRead !== buffer.length || !buffer.subarray(0, 8).equals(Buffer.from('89504e470d0a1a0a', 'hex')) ||
-            buffer.readUInt32BE(8) !== 13 || buffer.toString('ascii', 12, 16) !== 'IHDR' ||
-            !width || !height || width * height > 16_000_000) throw new Error('Window image is not a supported PNG.');
-        signal.throwIfAborted();
-        return buffer;
-      } finally {
-        await file.close();
-      }
-    } finally {
-      await rm(scratch, { recursive: true, force: true });
-    }
+    const image = await captureWindowImage(config, root, alias, id, identity, signal);
+    const text = await observeWindow(config, root, '/observe ' + alias + ' --window ' + id + ' --instance ' + identity, signal);
+    return { image, text };
   });
+}
+
+async function captureWindowImage(config: ObservationConfig, root: string, alias: string, id: string,
+                                  identity: string, signal: AbortSignal) {
+  const app = config.apps.get(alias);
+  if (!app || !config.visualApps?.has(alias) || !/^w-[0-9]{1,20}$/.test(id) || !/^[a-f0-9]{64}$/.test(identity)) {
+    throw new Error('Choose a window from the current application inventory.');
+  }
+  const permissions = await probeComputer(config, root, signal);
+  if (permissions.screen_recording !== 'granted') {
+    throw new Error('Screen Recording permission is required for window screenshots.');
+  }
+  const assertPresent = async () => {
+    const matches = (await windowsFor(config, root, app, signal)).filter(window => window.id === id);
+    if (matches.length !== 1 || windowIdentity(app, matches[0]) !== identity) {
+      throw new Error('The selected window changed. Refresh the window list.');
+    }
+  };
+  await assertPresent();
+  const scratch = await mkdtemp(join(tmpdir(), 'blazar-window-image-'));
+  try {
+    const path = join(scratch, 'window.png');
+    await runDriver(config, root, ['screenshot', '--app', app, '--window-id', id, path], signal);
+    await assertPresent();
+    const file = await open(path, constants.O_RDONLY | constants.O_NOFOLLOW);
+    try {
+      const limit = 1_000_000;
+      const stat = await file.stat();
+      if (!stat.isFile() || stat.size < 33 || stat.size > limit) throw new Error('Window image has an invalid size.');
+      const buffer = Buffer.alloc(stat.size);
+      const { bytesRead } = await file.read(buffer, 0, buffer.length, 0);
+      const width = buffer.readUInt32BE(16);
+      const height = buffer.readUInt32BE(20);
+      if (bytesRead !== buffer.length || !buffer.subarray(0, 8).equals(Buffer.from('89504e470d0a1a0a', 'hex')) ||
+          buffer.readUInt32BE(8) !== 13 || buffer.toString('ascii', 12, 16) !== 'IHDR' ||
+          !width || !height || width * height > 16_000_000) throw new Error('Window image is not a supported PNG.');
+      signal.throwIfAborted();
+      return buffer;
+    } finally {
+      await file.close();
+    }
+  } finally {
+    await rm(scratch, { recursive: true, force: true });
+  }
 }
 
 async function observeWindow(config: ObservationConfig, root: string, goal: string, signal: AbortSignal) {

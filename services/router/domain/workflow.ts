@@ -103,7 +103,7 @@ function workflowAction(value: unknown): WorkflowAction {
       typeof waitSeconds !== 'number' || !Number.isSafeInteger(waitSeconds) || waitSeconds < 1 || waitSeconds > 20)) {
     throw new InvalidWorkflow('Invalid desktop observation wait');
   }
-  if (kind === 'desktop.observe' && mode === 'visual' && reference && expectedText === undefined) {
+  if (kind === 'desktop.observe' && (mode === 'visual' || mode === 'hybrid') && reference && expectedText === undefined) {
     return { kind, alias, deviceId, mode, windowFrom: reference };
   }
   if (kind === 'desktop.observe' && mode === 'window' && reference) {
@@ -126,8 +126,8 @@ function workflowAction(value: unknown): WorkflowAction {
 
 export function workflowActionGoal(action: WorkflowAction, observed?: DesktopWindowReference): string {
   if (action.kind === 'desktop.observe') {
-    if (action.mode === 'window' || action.mode === 'visual') return observed
-      ? `/observe ${action.alias} --window ${observed.windowId} --instance ${observed.windowIdentity}${action.mode === 'visual' ? ' --visual' : ''}`
+    if (action.mode === 'window' || action.mode === 'visual' || action.mode === 'hybrid') return observed
+      ? `/observe ${action.alias} --window ${observed.windowId} --instance ${observed.windowIdentity}${action.mode === 'window' ? '' : ' --' + action.mode}`
       : `/observe ${action.alias} [resolve workflow window]`;
     return '/observe ' + action.alias + (action.mode === 'windows' ? ' --windows-json' : '');
   }
