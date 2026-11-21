@@ -20,6 +20,7 @@ const documentApps = new Map([
 const appCapabilities = [
   { id: 'document.test', label: 'Test document access', input: ['workspace', 'document'], effect: 'read' },
   { id: 'document.import', label: 'Import document', input: ['workspace', 'document'], effect: 'local_write' },
+  { id: 'document.search', label: 'Search imported documents', input: ['workspace', 'query'], effect: 'read' },
   { id: 'document.refresh', label: 'Refresh imported documents', input: ['workspace'], effect: 'local_write' },
 ] as const;
 

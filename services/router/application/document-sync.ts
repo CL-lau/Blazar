@@ -4,7 +4,7 @@ import { RequestError, requiredText } from '../protocol/request.ts';
 
 type DocumentMemory = Pick<MemoryStore, 'connection' | 'documentSyncActive' | 'documentsToRefresh' |
   'finishAppUsage' | 'finishDocumentSync' | 'importDocument' | 'leaseDocumentSync' |
-  'recordDocumentAccess' | 'resourceRevoked' | 'startAppUsage'>;
+  'recall' | 'recordDocumentAccess' | 'resourceRevoked' | 'startAppUsage'>;
 
 export async function accessDocument(store: DocumentMemory, owner: string, workspace: string, connection: string,
                               reader: DocumentConnector, document: string, operation: 'test' | 'import' | 'refresh',
@@ -61,6 +61,19 @@ export async function invokeDocumentCapability(store: DocumentMemory, owner: str
   if (!connection) throw new RequestError(404, 'Active connection not found');
   const reader = readers.find(candidate => candidate.app === connection.app && candidate.account === connection.account);
   if (!reader) throw new RequestError(409, 'No document reader is configured for this connection');
+  if (capability === 'document.search') {
+    const query = requiredText(input.query, 'search terms', 256);
+    const usage = store.startAppUsage(connectionId, workspace, 'search');
+    try {
+      const items = store.recall(owner, workspace, query, [connectionId], false, false, { documentsOnly: true })
+        .map(({ id, resource, revision, body }) => ({ id, resource, revision, excerpt: String(body).slice(0, 1200).toWellFormed() }));
+      store.finishAppUsage(usage, 'succeeded');
+      return { items };
+    } catch (error) {
+      store.finishAppUsage(usage, 'failed');
+      throw error;
+    }
+  }
   if (capability === 'document.refresh') {
     const after = input.after === undefined ? '' : requiredText(input.after, 'document cursor', 128);
     return refreshDocumentPage(store, owner, workspace, connectionId, reader, after);

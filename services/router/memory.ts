@@ -80,7 +80,7 @@ export class MemoryStore {
       .get(owner, id, workspace ?? null, workspace ?? null) as { app: string; account: string } | undefined;
   }
 
-  startAppUsage(connection: string, workspace: string, operation: 'import' | 'test' | 'refresh') {
+  startAppUsage(connection: string, workspace: string, operation: 'import' | 'test' | 'refresh' | 'search') {
     return this.db.prepare("INSERT INTO app_usage(connection,workspace,operation,status,started) VALUES(?,?,?,'started',?)")
       .run(connection, workspace, operation, Date.now()).lastInsertRowid;
   }
@@ -238,12 +238,13 @@ export class MemoryStore {
   }
 
   recall(owner: string, workspace: string, query: string, allowedSources: readonly string[],
-         disabled = false, includePersonal = true) {
+         disabled = false, includePersonal = true, options?: { documentsOnly?: boolean }) {
     const term = query.trim();
     if (!term || term.length > 256) return [];
     const allowed = JSON.stringify(allowedSources);
     const filter = `m.owner=? AND m.workspace=? AND COALESCE(s.disabled,0)=? AND (m.expires IS NULL OR m.expires>?)
       AND ${currentDerivation}
+      ${options?.documentsOnly ? 'AND EXISTS(SELECT 1 FROM document_import i WHERE i.id=m.id)' : ''}
       AND NOT EXISTS(SELECT 1 FROM document_access x WHERE x.connection=m.connection AND x.resource=m.resource AND x.allowed=0)
       AND (NOT EXISTS(SELECT 1 FROM document_import i WHERE i.id=m.id) OR EXISTS (
         SELECT 1 FROM document_head h WHERE h.owner=m.owner AND h.workspace=m.workspace
