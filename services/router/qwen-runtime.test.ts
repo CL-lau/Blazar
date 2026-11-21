@@ -10,7 +10,7 @@ import { resolveWorker } from '../../packages/workers/registry.ts';
 
 const executable = process.env.BLAZAR_TEST_QWEN_EXECUTABLE;
 
-test('Qwen Code completes an ACP task using the configured local model', {
+test('Qwen Code completes, restores, and cancels ACP tasks with the configured local model', {
   skip: !executable && 'Set BLAZAR_TEST_QWEN_EXECUTABLE to an installed qwen executable',
 }, async t => {
   const root = await realpath(await mkdtemp(join(tmpdir(), 'blazar-qwen-runtime-')));
@@ -81,11 +81,20 @@ test('Qwen Code completes an ACP task using the configured local model', {
   const worker = await resolveWorker('qwen', undefined, executable);
   assert(worker?.label === 'Qwen Code' && worker.protocol === undefined);
   const signal = AbortSignal.timeout(30_000);
-  assert.equal((await probeAcp(worker, workspace, signal)).version, 1);
+  const capabilities = await probeAcp(worker, workspace, signal);
+  assert.equal(capabilities.version, 1);
+  assert.ok(capabilities.loadSession || capabilities.resumeSession);
+  let session: string | undefined;
   assert.equal(await runAcp(worker, workspace, {
     goal: 'Qwen Code ACP smoke test', instructions: ['Return the fixture response'], predecessors: [],
-  }, signal), 'QWEN_ACP_OK');
+  }, signal, undefined, undefined, { onCompleted: id => { session = id; } }), 'QWEN_ACP_OK');
   assert.ok(prompts.some(body => body.includes('Return the fixture response')));
+  assert.ok(session);
+  assert.equal(await runAcp(worker, workspace, {
+    goal: 'Continue the fixture conversation', instructions: [], predecessors: [],
+  }, signal, undefined, undefined, { resumeId: session, onCompleted: id => assert.equal(id, session) }), 'QWEN_ACP_OK');
+  const resumed = prompts.find(body => body.includes('Continue the fixture conversation'));
+  assert.ok(resumed?.includes('Return the fixture response'), 'Restored model context must include the previous user turn');
   const stop = new AbortController();
   const interrupted = assert.rejects(runAcp(worker, workspace, {
     goal: 'Cancel this fixture run', instructions: [], predecessors: [],
