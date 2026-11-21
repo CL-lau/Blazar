@@ -66,7 +66,7 @@ fn allowed(method: &Method, path: &str) -> bool {
         ("PATCH" | "DELETE", ["", "app-connections" | "memory", id]) => {
             identifier(id)
         }
-        ("GET", ["", "admin", "mobile-clients" | "mobile-pairings" | "devices" | "workers" | "metrics"]) => true,
+        ("GET", ["", "admin", "mobile-clients" | "mobile-pairings" | "devices" | "workers" | "worker-registry" | "metrics"]) => true,
         ("GET" | "PUT", ["", "admin", "worker-policies"]) => true,
         ("POST", ["", "admin", "devices" | "task-links"]) => true,
         ("POST", ["", "admin", "mobile-pairings", id]) => identifier(id),
@@ -183,6 +183,7 @@ mod tests {
         for (method, path) in [
             (Method::GET, "/health"),
             (Method::GET, "/admin/metrics"),
+            (Method::GET, "/admin/worker-registry"),
             (Method::PUT, "/admin/worker-policies"),
             (Method::GET, "/admin/mobile-pairings"),
             (Method::POST, "/admin/mobile-pairings/00000000-0000-0000-0000-000000000000"),

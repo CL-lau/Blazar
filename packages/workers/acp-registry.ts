@@ -49,6 +49,12 @@ export async function readAcpRegistry(transport = fetch) {
 
 type Entry = Awaited<ReturnType<typeof readAcpRegistry>>[number];
 
+export function registryListing(entries: Entry[]) {
+  return entries.map(({ id, name, version, distribution }) => ({
+    id, name, version, distributions: (['npx', 'uvx', 'binary'] as const).filter(kind => object(distribution[kind])),
+  }));
+}
+
 export async function registryWorkerManifest(entry: Entry, kind: Distribution, binaryPath?: string) {
   const arch = { arm64: 'aarch64', x64: 'x86_64' }[process.arch as 'arm64' | 'x64'];
   const platform = process.platform === 'win32' ? 'windows' : process.platform;

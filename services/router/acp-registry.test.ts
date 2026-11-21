@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import { mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { createWorkerRegistry } from './application/worker-registry.ts';
 import { resolveWorker } from '../../packages/workers/registry.ts';
 import test from 'node:test';
 import { readAcpRegistry, registryWorkerManifest } from '../../packages/workers/acp-registry.ts';
@@ -43,4 +44,24 @@ test('ACP registry import pins package launch arguments and validates the select
   await assert.rejects(registryWorkerManifest({ ...entry, distribution: {
     npx: { package: '@sample/worker@latest' },
   } }, 'npx'), /must use an exact version/);
+});
+
+
+test('the Router registry catalog shares concurrent fetches and returns only listing metadata', async t => {
+  let requests = 0;
+  t.mock.method(globalThis, 'fetch', async () => {
+    requests++;
+    return Response.json({ version: '1.0.0', agents: [{
+      id: 'example', name: 'Example', version: '1.2.3', distribution: {
+        npx: { package: '@example/agent@1.2.3', env: { EXAMPLE_SECRET: 'server-default' } },
+      },
+    }] });
+  });
+  const list = createWorkerRegistry();
+  const [first, second] = await Promise.all([list(), list()]);
+  assert.deepEqual(first, second);
+  assert.deepEqual(first.items, [{ id: 'example', name: 'Example', version: '1.2.3', distributions: ['npx'] }]);
+  assert.equal(requests, 1);
+  assert.deepEqual(await list(), first);
+  assert.equal(requests, 1);
 });

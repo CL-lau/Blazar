@@ -1,11 +1,12 @@
 import type { IncomingMessage, ServerResponse } from 'node:http';
+import type { createWorkerRegistry } from '../application/worker-registry.ts';
 import { workerCatalog } from '../../../packages/workers/registry.ts';
 import { RequestError, requiredText } from '../protocol/request.ts';
 import type { TaskStore } from '../store.ts';
 import { jsonObject, reply } from './json.ts';
 
 export async function handleAdmin(request: IncomingMessage, response: ServerResponse, url: URL,
-                                  owner: string, store: TaskStore): Promise<boolean> {
+                                  owner: string, store: TaskStore, registry: ReturnType<typeof createWorkerRegistry>): Promise<boolean> {
   if (url.pathname === '/v1/pairings' && request.method === 'POST') {
     reply(response, 201, store.createPairing(owner, Date.now()));
     return true;
@@ -68,6 +69,10 @@ export async function handleAdmin(request: IncomingMessage, response: ServerResp
       reply(response, 200, { policies: store.workspaceWorkerPolicies(owner) });
       return true;
     }
+  }
+  if (url.pathname === '/v1/admin/worker-registry' && request.method === 'GET') {
+    reply(response, 200, await registry());
+    return true;
   }
   if (url.pathname === '/v1/admin/workers' && request.method === 'GET') {
     reply(response, 200, { presets: workerCatalog(), extensionProtocols: ['acp', 'jsonl'] });

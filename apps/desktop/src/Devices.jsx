@@ -1,4 +1,5 @@
 import React, { useEffect, useState } from 'react';
+import { AcpRegistry } from './AcpRegistry.jsx';
 import { callRouter } from './router.js';
 
 export function Devices({ token }) {
@@ -172,5 +173,6 @@ export function Devices({ token }) {
         </>}
       </>}
     </details>
+    <AcpRegistry token={token} />
   </section>;
 }

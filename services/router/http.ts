@@ -7,6 +7,7 @@ import { RequestError, requiredText } from './protocol/request.ts';
 import type { Task, TaskAttachment } from '../../packages/protocol/task.ts';
 import { ConversationError, createConversationRouter } from './application/conversation.ts';
 import { artifactDiff } from './artifact-diff.ts';
+import { createWorkerRegistry } from './application/worker-registry.ts';
 import { handleAdmin } from './transport/admin-routes.ts';
 import { performance } from 'node:perf_hooks';
 import { RouterMetrics, type StreamHealth } from './metrics.ts';
@@ -98,6 +99,7 @@ export function routerServer(store: TaskStore, config: { owner: string; token: s
     }
     return metrics;
   }
+  const workerRegistry = createWorkerRegistry();
   const routeConversation = createConversationRouter(store, config);
   const devices = createDeviceSocketTransport(store);
   const expireRuns = (now: number) => store.expire(now, devices.sendStop);
@@ -335,7 +337,7 @@ export function routerServer(store: TaskStore, config: { owner: string; token: s
         });
         return;
       }
-      if (admin && await handleAdmin(request, response, url, owner, store)) return;
+      if (admin && await handleAdmin(request, response, url, owner, store, workerRegistry)) return;
       const shareResult = /^\/v1\/tasks\/([a-f0-9-]{36})\/share-result$/.exec(url.pathname);
       if (shareResult && (request.method === 'GET' || request.method === 'POST')) {
         if (!admin) throw new RequestError(403, 'Administrator required');

@@ -524,6 +524,8 @@ test('Router authenticates, deduplicates commands and replays task changes over 
   assert.deepEqual((await (await editPolicy(['codex'], headers, 2, 120, true)).json()).policies,
     [{ workspace: 'policy-fixture', protocols: ['codex'], maxConcurrent: 2, runLimitSeconds: 120, requireReadOnly: true }]);
   assert.deepEqual((await (await editPolicy(null)).json()).policies, []);
+  assert.equal((await fetch(url + '/v1/admin/worker-registry', { headers: mobileHeaders })).status, 403);
+  assert.equal((await fetch(url + '/v1/admin/worker-registry', { headers: { ...headers, 'X-Blazar-Public-Gateway': '1' } })).status, 401);
   const catalog = await (await fetch(url + '/v1/admin/workers', { headers })).json();
   assert.deepEqual(catalog.extensionProtocols, ['acp', 'jsonl']);
   assert.deepEqual(catalog.presets.map(item => item.id).sort(), [
