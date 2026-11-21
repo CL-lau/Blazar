@@ -75,13 +75,19 @@ export function cuaDesktop(executable: string, socket?: string): ComputerDriver 
         const elements = new Map<number, DesktopElement>();
         for (const row of data.elements) {
           if (!Number.isSafeInteger(row?.element_index) || elements.has(row.element_index)) continue;
+          const token = typeof row.element_token === 'string' && /^[a-zA-Z0-9_-]+:[0-9]+$/.test(row.element_token)
+            ? row.element_token : undefined;
+          const secure = typeof row.subrole === 'string' && /secure|password/i.test(row.subrole);
+          const label = [row.title, row.description, row.placeholder].find(value => typeof value === 'string' && value.trim());
+          const editableText = !secure && token && typeof label === 'string' &&
+            (row.role === 'AXTextField' || row.role === 'AXTextArea')
+            ? { label, reference: token, value: typeof row.value === 'string' ? row.value : '' } : undefined;
           const node: DesktopElement = {
-            role: typeof row.subrole === 'string' && /secure|password/i.test(row.subrole) ? row.subrole
-              : typeof row.role === 'string' ? row.role : undefined,
-            name: typeof row.label === 'string' ? row.label : undefined,
-            pressReference: row.role === 'AXButton' && Array.isArray(row.actions) && row.actions.includes('AXPress') &&
-              typeof row.element_token === 'string' && /^[a-zA-Z0-9_-]+:[0-9]+$/.test(row.element_token)
-              ? row.element_token : undefined,
+            role: secure ? row.subrole : typeof row.role === 'string' ? row.role : undefined,
+            name: !secure && typeof row.label === 'string' ? row.label : undefined,
+            pressReference: row.role === 'AXButton' && Array.isArray(row.actions) && row.actions.includes('AXPress')
+              ? token : undefined,
+            editableText,
             children: [],
           };
           (elements.get(row.parent_index) ?? tree).children.push(node);
@@ -110,6 +116,10 @@ export function cuaDesktop(executable: string, socket?: string): ComputerDriver 
     async click(root, reference, signal, session) {
       if (!session) throw new Error('The CUA click requires a fresh action session.');
       await call(root, 'click', { element_token: reference, action: 'press', delivery_mode: 'background', session }, signal);
+    },
+    async setText(root, reference, value, signal, session) {
+      if (!session) throw new Error('The CUA text edit requires a fresh action session.');
+      await call(root, 'set_value', { element_token: reference, value, session }, signal);
     },
     releaseActionSession,
   };

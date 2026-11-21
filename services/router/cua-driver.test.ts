@@ -36,13 +36,22 @@ if (tool === 'get_window_state' && args.pid === pid && args.window_id === 30) {
     response.elements = [{ element_index: 0, role: 'AXWindow', label: 'Draft' },
       { element_index: 1, parent_index: 0, role: 'AXStaticText', label: fs.existsSync('clicked') ? 'Saved' : 'Project notes' },
       { element_index: 2, parent_index: 0, role: 'AXButton', label: 'Save', actions:['AXPress'],
-        element_token: args.session ? 's00000003:2' : 's00000002:2' }];
+        element_token: args.session ? 's00000003:2' : 's00000002:2' },
+      { element_index: 3, parent_index: 0, role: 'AXTextField', title: 'Title',
+        value: fs.existsSync('edited') ? fs.readFileSync('edited','utf8') : 'Old title',
+        element_token: args.session ? 's00000003:3' : 's00000002:3' },
+      { element_index: 4, parent_index: 0, role: 'AXTextField', subrole: 'AXSecureTextField',
+        title: 'Password', label: 'Password', element_token: 's00000003:4' }];
   }
 }
 if (tool === 'click' && args.session === fs.readFileSync('action-session','utf8') && args.element_token === 's00000003:2' &&
     args.action === 'press' && args.delivery_mode === 'background' && fs.existsSync('approved')) {
   fs.writeFileSync('clicked','yes');
   response = { path: 'ax' };
+}
+if (tool === 'set_value' && args.session === fs.readFileSync('action-session','utf8') && args.element_token === 's00000003:3') {
+  fs.writeFileSync('edited', args.value);
+  response = { success: true };
 }
 if (tool === 'end_session' && args.session === fs.readFileSync('action-session','utf8')) {
   fs.writeFileSync('ended',args.session);
@@ -68,4 +77,17 @@ console.log('Human-readable output');
   }, 'Saved');
   assert.match(pressed, /AXStaticText: Saved/);
   assert.equal(readFileSync(join(root, 'ended'), 'utf8'), readFileSync(join(root, 'action-session'), 'utf8'));
+  const snapshot = await config.driver.snapshot(root, 'bundle:com.example.notes', signal, 'w-30', true);
+  assert(snapshot.actionSession);
+  const children = snapshot.tree.children[0].children;
+  assert.deepEqual(children[2].editableText, { label: 'Title', reference: 's00000003:3', value: 'Old title' });
+  assert.equal(children[3].editableText, undefined);
+  try {
+    await config.driver.setText!(root, 's00000003:3', 'New title', signal, snapshot.actionSession);
+    const updated = await config.driver.snapshot(root, 'bundle:com.example.notes', signal, 'w-30');
+    assert.equal(updated.tree.children[0].children[2].editableText?.value, 'New title');
+  } finally {
+    await config.driver.releaseActionSession!(root, snapshot.actionSession);
+  }
+
 });
