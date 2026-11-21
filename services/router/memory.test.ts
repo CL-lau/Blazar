@@ -5,12 +5,14 @@ import { MemoryStore } from './memory.ts';
 test('recall respects workspace, source account, expiration and revocation', t => {
   const store = new MemoryStore(':memory:');
   t.after(() => store.close());
-  const work = store.connect('owner', 'feishu', 'work account');
+  const work = store.connect('owner', 'feishu', 'work account', 'project');
   const personal = store.connect('owner', 'feishu', 'personal account');
   const source = { connection: work, resource: 'review', revision: '1' };
   const document = store.remember('owner', 'project', '项目评审规范', source);
   assert.ok(document);
   assert.equal(store.remember('other', 'project', '项目评审规范', source), undefined);
+  assert.equal(store.remember('owner', 'other', '项目评审规范', source), undefined);
+  assert.equal(store.importDocument('owner', 'other', '项目评审规范', source), undefined);
   store.remember('owner', 'project', '旧评审规范', source, 1);
   store.remember('owner', 'project', '个人评审规范', { ...source, connection: personal });
   assert.equal(store.recall('owner', 'project', '评审规范', [work])[0]?.id, document);

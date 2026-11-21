@@ -42,9 +42,9 @@ export function Knowledge({ token }) {
   function saveAccount(event) {
     event.preventDefault();
     const form = event.currentTarget;
-    const { app, account } = Object.fromEntries(new FormData(form));
+    const { app, account, workspace } = Object.fromEntries(new FormData(form));
     void perform(async () => {
-      await request('/app-connections', { method: 'POST', body: { app, account } });
+      await request('/app-connections', { method: 'POST', body: { app, account, workspace: workspace.trim() || undefined } });
       form.reset();
       await refreshConnections();
     });
@@ -111,11 +111,12 @@ export function Knowledge({ token }) {
         <form onSubmit={saveAccount}>
           <label>App<input name="app" required maxLength={128} /></label>
           <label>Account<input name="account" required maxLength={256} /></label>
+          <label>Limit to workspace<input name="workspace" maxLength={128} /></label>
           <button>Register source account</button>
         </form>
         <ul>{connections.map(connection => (
           <li key={connection.id}>
-            <span>{accountName(connection)}</span>
+            <span>{accountName(connection)}{connection.workspace && ` · ${connection.workspace}`}</span>
             {connection.active ? <button onClick={() => perform(async () => {
               await request('/app-connections/' + connection.id, { method: 'DELETE' });
               setResults(null);

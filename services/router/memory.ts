@@ -19,7 +19,7 @@ export class MemoryStore {
       PRAGMA busy_timeout=5000;
       CREATE TABLE IF NOT EXISTS app_connection (
         id TEXT PRIMARY KEY, owner TEXT NOT NULL, app TEXT NOT NULL,
-        account TEXT NOT NULL, active INTEGER NOT NULL DEFAULT 1
+        account TEXT NOT NULL, active INTEGER NOT NULL DEFAULT 1, workspace TEXT
       );
       CREATE TABLE IF NOT EXISTS revoked_resource (
         connection TEXT NOT NULL REFERENCES app_connection(id), resource TEXT NOT NULL,
@@ -43,6 +43,9 @@ export class MemoryStore {
     `);
     if (!this.db.prepare("SELECT 1 FROM pragma_table_info('memory_state') WHERE name='disabled'").get()) {
       this.db.exec('ALTER TABLE memory_state ADD COLUMN disabled INTEGER NOT NULL DEFAULT 0');
+    }
+    if (!this.db.prepare("SELECT 1 FROM pragma_table_info('app_connection') WHERE name='workspace'").get()) {
+      this.db.exec('ALTER TABLE app_connection ADD COLUMN workspace TEXT');
     }
     const option = this.db.prepare("SELECT sqlite_compileoption_used('ENABLE_FTS5') AS enabled").get();
     this.fullText = option?.enabled === 1;
@@ -73,28 +76,29 @@ export class MemoryStore {
     this.db.close();
   }
 
-  connect(owner: string, app: string, account: string): string {
+  connect(owner: string, app: string, account: string, workspace?: string): string {
     const id = randomUUID();
-    this.db.prepare('INSERT INTO app_connection(id,owner,app,account) VALUES(?,?,?,?)')
-      .run(id, owner, app, account);
+    this.db.prepare('INSERT INTO app_connection(id,owner,app,account,workspace) VALUES(?,?,?,?,?)')
+      .run(id, owner, app, account, workspace ?? null);
     return id;
   }
 
   connections(owner: string) {
-    return this.db.prepare('SELECT id,app,account,active FROM app_connection WHERE owner=? ORDER BY rowid DESC')
-      .all(owner) as { id: string; app: string; account: string; active: number }[];
+    return this.db.prepare('SELECT id,app,account,active,workspace FROM app_connection WHERE owner=? ORDER BY rowid DESC')
+      .all(owner) as { id: string; app: string; account: string; active: number; workspace: string | null }[];
   }
 
-  connection(owner: string, id: string) {
-    return this.db.prepare('SELECT app,account FROM app_connection WHERE owner=? AND id=? AND active=1')
-      .get(owner, id) as { app: string; account: string } | undefined;
+  connection(owner: string, id: string, workspace?: string) {
+    return this.db.prepare(`SELECT app,account FROM app_connection WHERE owner=? AND id=? AND active=1
+      AND (? IS NULL OR workspace IS NULL OR workspace=?)`)
+      .get(owner, id, workspace ?? null, workspace ?? null) as { app: string; account: string } | undefined;
   }
 
   importDocument(owner: string, workspace: string, body: string, source: ResourceRef): string | undefined {
     this.db.exec('BEGIN IMMEDIATE');
     try {
       let id: string | undefined;
-      if (this.connection(owner, source.connection) && !this.resourceRevoked(source.connection, source.resource)) {
+      if (this.connection(owner, source.connection, workspace) && !this.resourceRevoked(source.connection, source.resource)) {
         const identical = this.db.prepare(`SELECT id FROM memory WHERE owner=? AND workspace=?
           AND connection=? AND resource=? AND revision=? AND expires IS NULL
           AND (body=? OR EXISTS(SELECT 1 FROM memory_revision r WHERE r.id=memory.id AND r.body=?))
@@ -121,10 +125,11 @@ export class MemoryStore {
     const inserted = this.db.prepare(`INSERT INTO memory(id,owner,workspace,body,connection,resource,revision,created,expires)
       SELECT ?,?,?,?,?,?,?,?,? WHERE ? IS NULL OR EXISTS (
         SELECT 1 FROM app_connection a WHERE a.id=? AND a.owner=? AND a.active=1
+        AND (a.workspace IS NULL OR a.workspace=?)
         AND NOT EXISTS(SELECT 1 FROM revoked_resource r WHERE r.connection=a.id AND r.resource=?)
       )`).run(id, owner, workspace, body, source?.connection ?? null, source?.resource ?? null,
       source?.revision ?? null, Date.now(), expires ?? null, source?.connection ?? null,
-      source?.connection ?? null, owner, source?.resource ?? null);
+      source?.connection ?? null, owner, workspace, source?.resource ?? null);
     return inserted.changes === 1 ? id : undefined;
   }
 
@@ -134,7 +139,7 @@ export class MemoryStore {
     const allowed = JSON.stringify(allowedSources);
     const filter = `m.owner=? AND m.workspace=? AND COALESCE(s.disabled,0)=? AND (m.expires IS NULL OR m.expires>?)
       AND (m.connection IS NULL OR EXISTS (
-        SELECT 1 FROM app_connection a WHERE a.id=m.connection AND a.owner=m.owner AND a.active=1
+        SELECT 1 FROM app_connection a WHERE a.id=m.connection AND a.owner=m.owner AND a.active=1 AND (a.workspace IS NULL OR a.workspace=m.workspace)
         AND a.id IN (SELECT value FROM json_each(?))
       ))`;
     const fields = `m.id,m.body,m.connection,m.resource,m.revision,m.created,
@@ -170,7 +175,7 @@ export class MemoryStore {
         FROM memory m LEFT JOIN memory_state s ON s.id=m.id
         WHERE m.id=? AND m.owner=? AND (m.expires IS NULL OR m.expires>?)
         AND (m.connection IS NULL OR EXISTS (
-          SELECT 1 FROM app_connection a WHERE a.id=m.connection AND a.owner=m.owner AND a.active=1
+          SELECT 1 FROM app_connection a WHERE a.id=m.connection AND a.owner=m.owner AND a.active=1 AND (a.workspace IS NULL OR a.workspace=m.workspace)
         ))`).get(id, owner, Date.now());
       let result: { version: number; conflict: boolean } | undefined;
       if (row) {

@@ -111,6 +111,14 @@ test('Router authenticates, deduplicates commands and replays task changes over 
 
   const registered = await post('/v1/app-connections', 'connect', { app: 'feishu', account: 'project account' });
   assert.equal(registered.status, 201);
+  const scoped = await post('/v1/app-connections', 'connect-scoped', {
+    app: 'feishu', account: 'project account', workspace: 'private',
+  });
+  assert.equal(scoped.status, 201);
+  const { id: scopedConnection } = await scoped.json();
+  const scopedImport = '/v1/app-connections/' + scopedConnection + '/import-document';
+  assert.equal((await post(scopedImport, 'wrong-scope', { workspace: 'demo', document: 'doc123' })).status, 404);
+  assert.equal((await post(scopedImport, 'right-scope', { workspace: 'private', document: 'doc123' })).status, 200);
   const { id: connection } = await registered.json();
   const entry = await post('/v1/memory', 'memory', {
     workspace: 'demo', body: 'Approved review template',
@@ -153,7 +161,8 @@ test('Router authenticates, deduplicates commands and replays task changes over 
   const mixed = await (await fetch(url + mixedRecall, { headers })).json();
   assert.deepEqual(new Set(mixed.items.map(item => item.connection)), new Set([connection, github]));
   const configured = await (await fetch(url + '/v1/app-connections', { headers })).json();
-  assert.equal(configured.connections.filter(item => item.canImportDocument).length, 2);
+  assert.equal(configured.connections.filter(item => item.canImportDocument).length, 3);
+  assert.equal(configured.connections.find(item => item.id === scopedConnection)?.workspace, 'private');
   const answerRequest = { workspace: 'demo', query: 'findings', question: 'What did we find?' };
   const updateImported = (expectedVersion: number, disabled: boolean) => fetch(url + '/v1/memory/' + document.id, {
     method: 'PATCH', headers: { ...headers, 'Content-Type': 'application/json' },

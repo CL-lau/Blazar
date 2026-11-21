@@ -105,7 +105,8 @@ async function handleMemory(
       const data = await jsonObject(request);
       const app = requiredText(data.app, 'app', 128);
       const account = requiredText(data.account, 'account', 256);
-      reply(response, 201, { id: store.connect(owner, app, account) });
+      const workspace = data.workspace === undefined ? undefined : requiredText(data.workspace, 'workspace', 128);
+      reply(response, 201, { id: store.connect(owner, app, account, workspace) });
       return true;
     }
   }
@@ -115,7 +116,7 @@ async function handleMemory(
     const data = await jsonObject(request);
     const workspace = requiredText(data.workspace, 'workspace', 128);
     const document = requiredText(data.document, 'document ID', 128);
-    const connection = store.connection(owner, importPath[1]);
+    const connection = store.connection(owner, importPath[1], workspace);
     if (!connection) throw new RequestError(404, 'Active connection not found');
     const reader = readerFor(connection);
     if (!reader) {
