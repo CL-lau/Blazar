@@ -157,7 +157,8 @@ export class TaskStore {
         owner TEXT NOT NULL, workspace TEXT NOT NULL, protocols TEXT NOT NULL, PRIMARY KEY(owner,workspace)
       );
       CREATE TABLE IF NOT EXISTS device_worker (
-        device_id TEXT PRIMARY KEY REFERENCES device(id), label TEXT NOT NULL, protocol TEXT NOT NULL
+        device_id TEXT PRIMARY KEY REFERENCES device(id), label TEXT NOT NULL, protocol TEXT NOT NULL,
+        revision TEXT, adapter_version INTEGER
       );
       CREATE TABLE IF NOT EXISTS channel_attachment_intent (
         owner TEXT NOT NULL, channel TEXT NOT NULL, chat TEXT NOT NULL, sender TEXT NOT NULL,
@@ -299,6 +300,10 @@ export class TaskStore {
         WHERE status IN ('queued','waiting_device','waiting_dependency','waiting_review','running','waiting_user');
       CREATE INDEX IF NOT EXISTS event_task ON event(taskId,seq);
     `);
+    const workerColumns = new Set(this.db.prepare("SELECT name FROM pragma_table_info('device_worker')").all()
+      .map(column => column.name));
+    if (!workerColumns.has('revision')) this.db.exec('ALTER TABLE device_worker ADD COLUMN revision TEXT');
+    if (!workerColumns.has('adapter_version')) this.db.exec('ALTER TABLE device_worker ADD COLUMN adapter_version INTEGER');
     this.transaction(() => {
       if (this.db.prepare('INSERT OR IGNORE INTO event_retention VALUES(1,0)').run().changes) {
         this.db.prepare(`INSERT OR IGNORE INTO progress_event_time
@@ -1280,10 +1285,15 @@ export class TaskStore {
   devices(owner: string, now = Date.now()) {
     return this.db.prepare(`SELECT d.id,d.name,d.workspace,d.revoked,p.last_seen AS lastSeen,
       p.capability,p.platform,w.label AS workerLabel,w.protocol AS workerProtocol,
+      w.revision AS workerRevision,w.adapter_version AS workerAdapterVersion,
+      CASE WHEN p.capability='agent.acp' AND policy.protocols IS NOT NULL
+        THEN NOT EXISTS(SELECT 1 FROM json_each(policy.protocols) WHERE value=w.protocol)
+        ELSE 0 END AS workerPolicyBlocked,
       i.run_id AS interruptedRunId,(pause.device_id IS NOT NULL) AS paused,CASE WHEN d.revoked=0 AND p.last_seen>=? THEN 1 ELSE 0 END AS online
       FROM device d LEFT JOIN device_presence p ON p.device_id=d.id
       LEFT JOIN device_interruption i ON i.device_id=d.id
       LEFT JOIN device_worker w ON w.device_id=d.id
+      LEFT JOIN workspace_worker_policy policy ON policy.owner=d.owner AND policy.workspace=d.workspace
       LEFT JOIN device_pause pause ON pause.device_id=d.id
       WHERE d.owner=? ORDER BY d.rowid DESC`).all(now - 45_000, owner);
   }
@@ -1388,14 +1398,17 @@ export class TaskStore {
       )`).run(id, now, capability ?? null, platform ?? null);
   }
 
-  recordDeviceWorker(id: string, worker?: { label: string; protocol: string }) {
+  recordDeviceWorker(id: string, worker?: WorkerConfiguration) {
     if (!worker) {
       this.db.prepare('DELETE FROM device_worker WHERE device_id=?').run(id);
       return;
     }
-    this.db.prepare(`INSERT INTO device_worker VALUES(?,?,?) ON CONFLICT(device_id)
-      DO UPDATE SET label=excluded.label,protocol=excluded.protocol
-      WHERE label<>excluded.label OR protocol<>excluded.protocol`).run(id, worker.label, worker.protocol);
+    this.db.prepare(`INSERT INTO device_worker(device_id,label,protocol,revision,adapter_version) VALUES(?,?,?,?,?)
+      ON CONFLICT(device_id) DO UPDATE SET label=excluded.label,protocol=excluded.protocol,
+        revision=excluded.revision,adapter_version=excluded.adapter_version
+      WHERE label<>excluded.label OR protocol<>excluded.protocol OR revision IS NOT excluded.revision
+        OR adapter_version IS NOT excluded.adapter_version`)
+      .run(id, worker.label, worker.protocol, worker.revision ?? null, worker.adapterVersion ?? null);
   }
 
   reportInterruption(device: string, runId: string, now: number) {

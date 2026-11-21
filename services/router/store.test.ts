@@ -591,11 +591,13 @@ test('workspace Worker policies filter readiness, fresh assignments, and claim r
   const task = store.create('owner', 'test', 'restricted', 'restricted', 'Review notes');
   store.updateDeviceReadiness(now);
   assert.equal(store.get('owner', task.id)?.status, 'waiting_device');
+  assert.equal(store.devices('owner').find(item => item.id === agent.id)?.workerPolicyBlocked, 1);
   const claim = (worker: typeof acp | undefined, key?: string) =>
     store.claim('owner', 'restricted', agent.id, now, 45_000, '', '/preview ', key, worker);
   assert.equal(claim(acp), undefined);
   assert.equal(claim(undefined), undefined);
   store.recordDeviceWorker(agent.id, codex);
+  assert.equal(store.devices('owner').find(item => item.id === agent.id)?.workerPolicyBlocked, 0);
   store.updateDeviceReadiness(now);
   assert.equal(store.get('owner', task.id)?.status, 'queued');
   const assignment = claim(codex, 'claim')!;

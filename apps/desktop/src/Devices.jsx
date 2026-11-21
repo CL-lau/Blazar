@@ -101,6 +101,9 @@ export function Devices({ token }) {
       {device.workerLabel ? <> · {device.workerLabel} ({device.workerProtocol.toUpperCase()})</> :
         device.capability && <> · {device.capability}</>}
       {device.lastSeen && <> · Last seen {new Date(device.lastSeen).toLocaleString()}</>}
+      {device.workerRevision && <p>Adapter v{device.workerAdapterVersion} · Configuration{' '}
+        <code title={device.workerRevision}>{device.workerRevision.slice(0, 12)}</code></p>}
+      {!device.revoked && device.workerPolicyBlocked === 1 && <p>Workspace policy blocks this Worker from new assignments.</p>}
       {!device.revoked && device.interruptedRunId && <p>Interrupted run <code>{device.interruptedRunId}</code></p>}
       {!device.revoked && <button disabled={pending} onClick={() => void update(async () => {
         await callRouter(token, '/admin/devices/' + device.id, {

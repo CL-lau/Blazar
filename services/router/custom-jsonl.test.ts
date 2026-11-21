@@ -138,8 +138,11 @@ test('a registered JSONL extension executes a real subprocess through Router and
   assert.equal(workerReceipt.protocol, 'jsonl');
   assert.equal(workerReceipt.adapterVersion, 1);
   assert.match(workerReceipt.revision, /^[a-f0-9]{64}$/);
+  assert.equal(presence.workerRevision, workerReceipt.revision);
+  assert.equal(presence.workerAdapterVersion, 1);
   assert(!JSON.stringify(workerReceipt).includes(script));
   store.recordDeviceWorker(device.id, { label: 'Later worker', protocol: 'acp' });
+  assert.equal(store.devices('owner').find(item => item.id === device.id)?.workerRevision, null);
   assert.deepEqual(execution(), workerReceipt);
   const progress = store.events('owner', 0).filter(event => event.type === 'run.progress')
     .map(event => JSON.parse(event.data).message);
