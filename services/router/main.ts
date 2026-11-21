@@ -68,7 +68,10 @@ const larkSender = lark && larkSecret ? createFeishuSender(lark.appId, larkSecre
 const qqMediaHosts = new Set((process.env.BLAZAR_QQ_MEDIA_HOSTS ?? '').split(',')
   .map(host => host.trim().toLowerCase()).filter(Boolean));
 const readQQAttachment = qq && qqMediaHosts.size ? createQQAttachmentReader(qqMediaHosts) : undefined;
-const server = routerServer(store, { feishu, lark, readFeishuAttachment: feishuSender?.readAttachment, readLarkAttachment: larkSender?.readAttachment, qq, readQQAttachment, documents, owner: 'local', token, memory, harness, answerMemory, pushEnabled: Boolean(push) });
+const dingTalk = dingTalkConfig(process.env);
+const wecom = weComConfig(process.env);
+const weixin = weixinConfig(process.env);
+const server = routerServer(store, { feishu, lark, readFeishuAttachment: feishuSender?.readAttachment, readLarkAttachment: larkSender?.readAttachment, qq, readQQAttachment, documents, owner: 'local', token, memory, harness, answerMemory, pushEnabled: Boolean(push), streamChannels: { weixin, wecom, dingtalk: dingTalk } });
 const stopPush = push && startPushDelivery(store, push);
 const documentSyncShutdown = new AbortController();
 let documentSync: Promise<unknown> | undefined;
@@ -133,13 +136,10 @@ const qqDispatcher = setInterval(() => {
 }, 1_000);
 qqDispatcher.unref();
 
-const dingTalk = dingTalkConfig(process.env);
 const stopDingTalk = dingTalk ? startDingTalk(store, 'local', dingTalk, server.flushStopNotifications) : undefined;
 
-const wecom = weComConfig(process.env);
 const stopWeCom = wecom ? startWeCom(store, 'local', wecom, server.flushStopNotifications) : undefined;
 
-const weixin = weixinConfig(process.env);
 const stopWeixin = weixin ? startWeixin(store, 'local', weixin, server.flushStopNotifications) : undefined;
 
 let shuttingDown = false;

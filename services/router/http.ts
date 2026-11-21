@@ -617,7 +617,9 @@ function deviceOperation(store: TaskStore, bearer: string, pathname: string, dat
   return { status: accepted ? 200 : 409, body: { accepted } };
 }
 
-export function routerServer(store: TaskStore, config: { owner: string; token: string; memory?: MemoryStore; harness?: RouterHarness; feishu?: FeishuConfig; lark?: FeishuConfig; readLarkAttachment?: (messageId: string, key: string) => Promise<string | undefined>; readFeishuAttachment?: (messageId: string, key: string) => Promise<string | undefined>; qq?: QQConfig; readQQAttachment?: (url: string, name?: string) => Promise<TaskAttachment | undefined>; documents?: readonly DocumentConnector[]; answerMemory?: MemoryAnswer; pushEnabled?: boolean }) {
+type StreamChannelSettings = Partial<Record<'weixin' | 'wecom' | 'dingtalk', { workspace: string }>>;
+
+export function routerServer(store: TaskStore, config: { owner: string; token: string; memory?: MemoryStore; harness?: RouterHarness; feishu?: FeishuConfig; lark?: FeishuConfig; readLarkAttachment?: (messageId: string, key: string) => Promise<string | undefined>; readFeishuAttachment?: (messageId: string, key: string) => Promise<string | undefined>; qq?: QQConfig; readQQAttachment?: (url: string, name?: string) => Promise<TaskAttachment | undefined>; documents?: readonly DocumentConnector[]; answerMemory?: MemoryAnswer; pushEnabled?: boolean; streamChannels?: StreamChannelSettings }) {
   const metricsByOwner = new Map<string, RouterMetrics>();
   function ownerMetrics(owner: string) {
     let metrics = metricsByOwner.get(owner);
@@ -850,7 +852,20 @@ export function routerServer(store: TaskStore, config: { owner: string; token: s
         return;
       }
       if (url.pathname === '/v1/admin/metrics' && request.method === 'GET') {
-        reply(response, 200, { ...ownerMetrics(owner).snapshot(), ...store.metrics(owner, Date.now()) });
+        const channels = [
+          ['weixin', config.streamChannels?.weixin, true],
+          ['feishu', config.feishu, Boolean(config.readFeishuAttachment)],
+          ['lark', config.lark, Boolean(config.readLarkAttachment)],
+          ['wecom', config.streamChannels?.wecom, true],
+          ['dingtalk', config.streamChannels?.dingtalk, true],
+          ['qq', config.qq, true],
+        ] as const;
+        reply(response, 200, {
+          ...ownerMetrics(owner).snapshot(), ...store.metrics(owner, Date.now()),
+          channels: channels.map(([id, channel, outbound]) => ({
+            id, workspace: channel?.workspace ?? null, inbound: Boolean(channel), outbound: Boolean(channel && outbound),
+          })),
+        });
         return;
       }
       if (url.pathname === '/v1/pairings' && request.method === 'POST') {

@@ -75,6 +75,20 @@ export function RouterStatus({ token }) {
         <h3>Client event streams</h3>
         <p>{data.stream.opened} opened · {data.stream.replayedEvents} events replayed · {data.stream.resnapshotRequired} snapshot refreshes required</p>
       </section>}
+      {data.channels && <section>
+        <h3>IM configuration</h3>
+        <div className="status-table">
+          <table aria-label="IM channel configuration">
+            <thead><tr><th scope="col">Channel</th><th scope="col">Workspace</th><th scope="col">Receive</th><th scope="col">Reply</th></tr></thead>
+            <tbody>{data.channels.map(channel => <tr key={channel.id}>
+              <th scope="row">{deliveryLabels[channel.id] ?? channel.id}</th>
+              <td>{channel.workspace ?? '—'}</td>
+              <td>{channel.inbound ? 'Configured' : 'Disabled'}</td>
+              <td>{channel.outbound ? 'Configured' : 'Disabled'}</td>
+            </tr>)}</tbody>
+          </table>
+        </div>
+      </section>}
       <section>
         <h3>Channel delivery</h3>
         {!data.channelDelivery?.length ? <p>No channel deliveries yet.</p> : <div className="status-table">
