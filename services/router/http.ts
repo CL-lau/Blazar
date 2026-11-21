@@ -580,9 +580,17 @@ export function routerServer(store: TaskStore, config: { owner: string; token: s
     if (target) sendStop(target.device, target.runId);
   }
   function flushStopNotifications() {
-    for (const run of store.activeAppEvidenceRuns()) {
-      if (!config.memory?.resolveAppEvidence(run.owner, run.workspace, run.refs)) {
-        store.requestRunEvidenceStop(run.id, run.device);
+    const checked = new Map<string, boolean>();
+    for (const task of store.pendingAppEvidenceTasks()) {
+      const key = JSON.stringify([task.owner, task.workspace, task.refs]);
+      let allowed = checked.get(key);
+      if (allowed === undefined) {
+        allowed = Boolean(config.memory?.resolveAppEvidence(task.owner, task.workspace, JSON.parse(task.refs)));
+        checked.set(key, allowed);
+      }
+      if (!allowed) {
+        if (task.run) store.requestRunEvidenceStop(task.run.id, task.run.device);
+        else store.suspendTaskForAppEvidence(task.id);
       }
     }
     for (const device of stopSubscribers.keys()) {
@@ -1059,6 +1067,14 @@ export function routerServer(store: TaskStore, config: { owner: string; token: s
         else if (action === 'approve' || action === 'deny') {
           command = { action, approvalId: requiredText(data.approvalId, 'approval ID', 36) };
         } else throw new RequestError(400, 'Invalid action');
+        if (action === 'approve' || action === 'accept_result') {
+          const task = store.get(owner, taskId)!;
+          const refs = store.appEvidence(taskId);
+          if (refs && !config.memory?.resolveAppEvidence(owner, task.workspace, refs)) {
+            flushStopNotifications();
+            throw new RequestError(409, 'Application memory access changed');
+          }
+        }
         const result = store.command(owner, taskId, version, command, key);
         if (result) {
           if (action === 'pause' || action === 'cancel' || action === 'append') notifyStop(owner, taskId);

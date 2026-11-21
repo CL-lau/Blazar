@@ -320,7 +320,13 @@ test('a registered JSONL extension executes a real subprocess through Router and
   assert.equal(workflowArtifacts.length, 2);
   const workflowDownload = (id: string) => fetch(base + '/v1/artifacts/' + id, { headers: { Authorization: 'Bearer local' } });
   for (const artifact of workflowArtifacts) assert.equal(await (await workflowDownload(String(artifact.id))).text(), 'Private review template');
-  assert.equal(memory.disconnect('owner', workflowConnection), true);
+  assert.equal((await fetch(base + '/v1/app-connections/' + workflowConnection, {
+    method: 'DELETE', headers: { Authorization: 'Bearer local' },
+  })).status, 200);
+  assert.equal(store.get('owner', workflowTasks[2])?.status, 'waiting_user');
+  const blockedEvents = store.timeline('owner', workflowTasks[2])?.events;
+  assert.ok(blockedEvents?.some(event => event.type === 'task.memory_access_changed'));
+  assert.ok(!blockedEvents?.some(event => event.type === 'run.started'));
   for (const artifact of workflowArtifacts) assert.equal((await workflowDownload(String(artifact.id))).status, 404);
   assert.equal(await client.runOnce(AbortSignal.timeout(5_000)), false);
   assert.equal(store.get('owner', workflowTasks[2])?.status, 'waiting_user');

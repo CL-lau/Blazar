@@ -751,14 +751,25 @@ export class TaskStore {
     return this.db.prepare('SELECT taskId FROM run WHERE id=? AND device=?').get(runId, device)?.taskId as string | undefined;
   }
 
-  activeAppEvidenceRuns() {
-    return this.db.prepare(`SELECT r.id,r.device,t.owner,t.workspace,e.refs FROM task_app_evidence e
-      JOIN run r ON r.taskId=e.task_id JOIN task t ON t.id=r.taskId
-      WHERE t.status IN ('running','waiting_user') AND NOT EXISTS(SELECT 1 FROM run_evidence_stop s WHERE s.run_id=r.id)`)
+  pendingAppEvidenceTasks() {
+    return this.db.prepare(`SELECT t.id,t.owner,t.workspace,e.refs,r.id AS run_id,r.device FROM task_app_evidence e
+      JOIN task t ON t.id=e.task_id LEFT JOIN run r ON r.taskId=t.id
+      WHERE (r.id IS NULL AND t.status IN ('queued','waiting_device','waiting_dependency','waiting_review'))
+        OR (r.id IS NOT NULL AND t.status IN ('running','waiting_user')
+          AND NOT EXISTS(SELECT 1 FROM run_evidence_stop s WHERE s.run_id=r.id))`)
       .all().map(row => ({
-        id: String(row.id), device: String(row.device), owner: String(row.owner), workspace: String(row.workspace),
-        refs: JSON.parse(String(row.refs)) as { id: string; version: number }[],
+        id: String(row.id), owner: String(row.owner), workspace: String(row.workspace), refs: String(row.refs),
+        run: row.run_id === null ? undefined : { id: String(row.run_id), device: String(row.device) },
       }));
+  }
+
+  suspendTaskForAppEvidence(taskId: string) {
+    return this.transaction(() => {
+      const updated = this.db.prepare(`UPDATE task SET status='waiting_user',result=NULL WHERE id=?
+        AND status IN ('queued','waiting_device','waiting_dependency','waiting_review')
+        AND NOT EXISTS(SELECT 1 FROM run WHERE taskId=task.id)`).run(taskId);
+      if (updated.changes) this.event(taskId, 'task.memory_access_changed', { status: 'waiting_user' });
+    });
   }
 
   requestRunEvidenceStop(runId: string, device: string) {
@@ -868,7 +879,8 @@ export class TaskStore {
         const changed = this.db.prepare(`UPDATE approval SET decision=? WHERE id=? AND taskId=?
           AND version=? AND decision IS NULL AND expires>? AND EXISTS(
             SELECT 1 FROM run WHERE id=approval.runId AND expires>?
-            AND NOT EXISTS(SELECT 1 FROM invalid_workflow_run i WHERE i.id=run.id))`)
+            AND NOT EXISTS(SELECT 1 FROM invalid_workflow_run i WHERE i.id=run.id)
+            AND NOT EXISTS(SELECT 1 FROM run_evidence_stop s WHERE s.run_id=run.id))`)
           .run(decision, command.approvalId, taskId, version, now, now);
         if (!changed.changes) return undefined;
         this.db.prepare("UPDATE task SET status='running' WHERE id=?").run(taskId);
