@@ -1,3 +1,4 @@
+import { IdempotencyConflict } from './domain/idempotency.ts';
 import type { PushKind, PushResult } from '../../packages/notifications/apns.ts';
 import { orderWorkflow, workflowActionGoal } from './domain/workflow.ts';
 import type { ConversationTurn, Decision, RouteRequest } from './harness.ts';
@@ -14,9 +15,7 @@ type ChannelReply = { channel: string; chat: string; thread: string; messageId: 
 
 export type AppEvidence = { query: string; sources: string[]; refs: { id: string; version: number }[] };
 
-export class IdempotencyConflict extends Error {
-  constructor() { super('Idempotency key already used'); }
-}
+export { IdempotencyConflict };
 
 export class TaskStore {
   private db: DatabaseSync;
