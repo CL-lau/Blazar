@@ -114,6 +114,11 @@ test('approved writes preserve their dispatch claim across Router restarts', asy
   memory = new MemoryStore(path);
   assert.deepEqual(await confirm(id), { status: 'outcome_unknown' });
   assert.deepEqual(await confirm(interruptedId), { status: 'dispatching' });
+  const interrupted = memory.appWrites.get('owner', interruptedId);
+  assert.ok(interrupted);
+  assert.equal(memory.appWrites.reconcile('owner', interruptedId, 'not_applied', 'External audit', interrupted.expires), false);
+  assert.equal(memory.appWrites.reconcile('owner', interruptedId, 'not_applied', 'External audit', interrupted.expires + 10_000), true);
+  assert.deepEqual(await confirm(interruptedId), { status: 'dispatching' });
   assert.equal(sent, 1);
 });
 
@@ -127,6 +132,7 @@ test('Router requires explicit confirmation for a configured application write',
   const store = new TaskStore(':memory:');
   const connection = memory.connect('owner', 'mcp', 'Handbook', 'project');
   const calls: string[] = [];
+  let loseToolResponse = false;
   const definitions = configuredApplicationWrites({
     BLAZAR_MCP_ACTIONS: JSON.stringify([{
       app: 'mcp', account: 'Handbook', capability: 'action.document.update',
@@ -142,6 +148,7 @@ test('Router requires explicit confirmation for a configured application write',
     if (method === 'notifications/initialized') return new Response(null, { status: 202 });
     assert.equal(method, 'tools/call');
     assert.deepEqual(params, { name: 'update_document', arguments: { title: 'Approved' } });
+    if (loseToolResponse) return new Response(null, { status: 503 });
     return Response.json({ jsonrpc: '2.0', id, result: { content: [] } });
   });
   const router = routerServer(store, { memory, owner: 'owner', token: 'fixture', applicationWrites: definitions });
@@ -157,9 +164,10 @@ test('Router requires explicit confirmation for a configured application write',
   const request = (path: string, method: string, body?: object, token = 'fixture') =>
     fetch('http://127.0.0.1:' + address.port + path, { method, signal: AbortSignal.timeout(5_000),
       headers: { Authorization: 'Bearer ' + token, 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
-  const created = await request('/v1/app-connections/' + connection + '/write-proposals', 'POST', {
+  const create = () => request('/v1/app-connections/' + connection + '/write-proposals', 'POST', {
     workspace: 'project', capability: 'action.document.update', input: { title: 'Approved' },
   });
+  const created = await create();
   assert.equal(created.status, 201);
   const { id } = await created.json();
   const proposal = '/v1/app-write-proposals/' + id;
@@ -171,4 +179,19 @@ test('Router requires explicit confirmation for a configured application write',
   await Promise.all(confirmations.map(response => response.json()));
   assert.equal((await (await request(proposal, 'GET')).json()).status, 'succeeded');
   assert.deepEqual(calls, ['initialize', 'notifications/initialized', 'tools/call']);
+
+  const evidence = { resolution: 'applied', evidence: 'External revision 42 confirms the title' };
+  assert.equal((await request(proposal + '/reconcile', 'POST', evidence)).status, 409);
+  loseToolResponse = true;
+  const uncertainId = (await (await create()).json()).id;
+  const uncertain = '/v1/app-write-proposals/' + uncertainId;
+  assert.deepEqual(await (await request(uncertain + '/confirm', 'POST')).json(), { status: 'outcome_unknown' });
+  const reconciled = await request(uncertain + '/reconcile', 'POST', evidence);
+  assert.equal(reconciled.status, 200);
+  const record = await reconciled.json();
+  assert.equal(record.evidence, evidence.evidence);
+  assert.deepEqual((await (await request(uncertain, 'GET')).json()).reconciliation, record);
+  assert.equal((await request(uncertain + '/reconcile', 'POST', { ...evidence, resolution: 'not_applied' })).status, 409);
+  assert.deepEqual(await (await request(uncertain + '/confirm', 'POST')).json(), { status: 'outcome_unknown' });
+  assert.equal(calls.filter(method => method === 'tools/call').length, 2);
 });

@@ -171,8 +171,10 @@ export BLAZAR_MCP_ACTIONS='[{"app":"mcp","account":"Handbook","capability":"acti
 With the Router administrator token, POST `workspace`, `capability` and an `input` object to
 `/v1/app-connections/{connection}/write-proposals`. Review the stored input with GET
 `/v1/app-write-proposals/{id}`, then POST to `/v1/app-write-proposals/{id}/confirm` to dispatch it.
-Proposals expire after five minutes. Investigate `dispatching` and `outcome_unknown` in the external
-application before creating a replacement proposal.
+Proposals expire after five minutes. To record an external check for an `outcome_unknown` write,
+POST `resolution` (`applied` or `not_applied`) and `evidence` to
+`/v1/app-write-proposals/{id}/reconcile`. An interrupted `dispatching` write becomes eligible
+after the approval expiry plus the dispatch timeout. Reconciliation records evidence without replaying the write.
 
 
 Register the account in the desktop app with app type `mcp`, then use `review` as the document ID. For a server requiring bearer authentication, set `tokenEnv` to the name of a `BLAZAR_MCP_TOKEN_*` environment variable. The connector reads text resources by alias.

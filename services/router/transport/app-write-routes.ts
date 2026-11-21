@@ -2,6 +2,7 @@ import type { IncomingMessage, ServerResponse } from 'node:http';
 import type { ConfiguredApplicationWrite } from '../../../packages/apps/config.ts';
 import { confirmApplicationWrite } from '../application/app-write.ts';
 import type { MemoryStore } from '../memory.ts';
+import { applicationWriteTimeoutMs } from '../persistence/app-write-repository.ts';
 import { RequestError, requiredText } from '../protocol/request.ts';
 import { jsonObject, reply } from './json.ts';
 
@@ -30,20 +31,34 @@ export async function handleApplicationWrites(
     reply(response, 201, { id, expires, status: 'pending' });
     return true;
   }
-  const proposalPath = /^\/v1\/app-write-proposals\/([a-f0-9-]{36})(\/confirm)?$/.exec(url.pathname);
+  const proposalPath = /^\/v1\/app-write-proposals\/([a-f0-9-]{36})(?:\/(confirm|reconcile))?$/.exec(url.pathname);
   if (!proposalPath) return false;
-  const [, id, confirm] = proposalPath;
-  if (request.method !== (confirm ? 'POST' : 'GET')) return false;
+  const [, id, operation] = proposalPath;
+  if (request.method !== (operation ? 'POST' : 'GET')) return false;
   const proposal = writes.get(owner, id);
   if (!proposal) throw new RequestError(404, 'Application write proposal not found');
-  if (!confirm) {
+  if (!operation) {
     const { definitionRevision, ...view } = proposal;
-    reply(response, 200, view);
+    reply(response, 200, { ...view, reconciliation: writes.reconciliation(owner, id) });
+    return true;
+  }
+  if (operation === 'reconcile') {
+    const { resolution, evidence: rawEvidence } = await jsonObject(request, 4_096);
+    if (resolution !== 'applied' && resolution !== 'not_applied') {
+      throw new RequestError(400, 'Invalid application write resolution');
+    }
+    const evidence = requiredText(rawEvidence, 'external evidence', 1_024);
+    writes.reconcile(owner, id, resolution, evidence);
+    const reconciliation = writes.reconciliation(owner, id);
+    if (reconciliation?.resolution !== resolution || reconciliation.evidence !== evidence) {
+      throw new RequestError(409, 'The application write is ineligible for reconciliation or already reconciled');
+    }
+    reply(response, 200, reconciliation);
     return true;
   }
   const definition = definitionFor(proposal.connection, proposal.workspace, proposal.capability);
   const backends = definition ? [{ ...definition.backend, connectionId: proposal.connection }] : [];
-  const result = await confirmApplicationWrite(writes, owner, id, definition?.revision ?? '', backends, AbortSignal.timeout(10_000));
+  const result = await confirmApplicationWrite(writes, owner, id, definition?.revision ?? '', backends, AbortSignal.timeout(applicationWriteTimeoutMs));
   reply(response, 200, result);
   return true;
 }

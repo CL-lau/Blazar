@@ -17,6 +17,11 @@ export function initializeMemorySchema(db: DatabaseSync): boolean {
       status TEXT NOT NULL CHECK(status IN ('pending','dispatching','succeeded','unavailable','denied','outcome_unknown')),
       backend TEXT
     );
+    CREATE TABLE IF NOT EXISTS app_write_reconciliation (
+      proposal TEXT PRIMARY KEY REFERENCES app_write(id), resolution TEXT NOT NULL
+        CHECK(resolution IN ('applied','not_applied')),
+      evidence TEXT NOT NULL, checked_at INTEGER NOT NULL
+    );
     CREATE TABLE IF NOT EXISTS revoked_resource (
       connection TEXT NOT NULL REFERENCES app_connection(id), resource TEXT NOT NULL,
       PRIMARY KEY(connection,resource)

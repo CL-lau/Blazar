@@ -2,6 +2,8 @@ import { randomUUID } from 'node:crypto';
 import type { DatabaseSync } from 'node:sqlite';
 import type { ApplicationAction } from '../../../packages/apps/actions.ts';
 
+export const applicationWriteTimeoutMs = 10_000;
+
 type WriteStatus = 'pending' | 'dispatching' | 'succeeded' | 'unavailable' | 'denied' | 'outcome_unknown';
 type WriteRow = {
   id: string;
@@ -60,5 +62,20 @@ export class AppWriteRepository {
   finish(owner: string, id: string, status: Exclude<WriteStatus, 'pending' | 'dispatching'>) {
     return this.db.prepare("UPDATE app_write SET status=? WHERE owner=? AND id=? AND status='dispatching'")
       .run(status, owner, id).changes === 1;
+  }
+  reconciliation(owner: string, id: string) {
+    return this.db.prepare(`SELECT r.resolution,r.evidence,r.checked_at AS checkedAt
+      FROM app_write_reconciliation r JOIN app_write w ON w.id=r.proposal
+      WHERE w.owner=? AND w.id=?`).get(owner, id) as {
+        resolution: 'applied' | 'not_applied'; evidence: string; checkedAt: number;
+      } | undefined;
+  }
+
+  reconcile(owner: string, id: string, resolution: 'applied' | 'not_applied', evidence: string, now = Date.now()) {
+    // An interrupted process can leave a claim behind. Wait beyond the latest possible dispatch timeout.
+    return this.db.prepare(`INSERT INTO app_write_reconciliation(proposal,resolution,evidence,checked_at)
+      SELECT id,?,?,? FROM app_write WHERE owner=? AND id=?
+        AND (status='outcome_unknown' OR (status='dispatching' AND expires+?<=?))
+      ON CONFLICT(proposal) DO NOTHING`).run(resolution, evidence, now, owner, id, applicationWriteTimeoutMs, now).changes === 1;
   }
 }
