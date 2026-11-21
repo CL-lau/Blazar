@@ -162,6 +162,19 @@ For MCP document sources, configure an account with a Streamable HTTP endpoint a
 export BLAZAR_MCP_DOCS='[{"account":"Handbook","endpoint":"http://127.0.0.1:4198/mcp","resources":{"review":"docs://handbook/review"}}]'
 ```
 
+Configure MCP write capabilities through `BLAZAR_MCP_ACTIONS`. Each entry binds an application account and capability ID to one tool.
+
+```sh
+export BLAZAR_MCP_ACTIONS='[{"app":"mcp","account":"Handbook","capability":"action.document.update","endpoint":"http://127.0.0.1:4198/mcp","tool":"update_document","tokenEnv":"BLAZAR_MCP_TOKEN_HANDBOOK"}]'
+```
+
+With the Router administrator token, POST `workspace`, `capability` and an `input` object to
+`/v1/app-connections/{connection}/write-proposals`. Review the stored input with GET
+`/v1/app-write-proposals/{id}`, then POST to `/v1/app-write-proposals/{id}/confirm` to dispatch it.
+Proposals expire after five minutes. Investigate `dispatching` and `outcome_unknown` in the external
+application before creating a replacement proposal.
+
+
 Register the account in the desktop app with app type `mcp`, then use `review` as the document ID. For a server requiring bearer authentication, set `tokenEnv` to the name of a `BLAZAR_MCP_TOKEN_*` environment variable. The connector reads text resources by alias.
 
 To give a custom MCP application its own identity in the desktop catalog, add a versioned manifest to the Router environment. The same application ID may have multiple account entries with a shared label.

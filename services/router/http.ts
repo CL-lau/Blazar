@@ -1,3 +1,5 @@
+import { handleApplicationWrites } from './transport/app-write-routes.ts';
+import type { ConfiguredApplicationWrite } from '../../packages/apps/config.ts';
 import { jsonBody, jsonObject, reply } from './transport/json.ts';
 import { handleMemory } from './transport/memory-routes.ts';
 import { StaleRoutingEvidence } from './domain/idempotency.ts';
@@ -29,7 +31,7 @@ import { IdempotencyConflict, TaskStore } from './store.ts';
 
 type StreamChannelSettings = Partial<Record<'weixin' | 'wecom' | 'dingtalk', { workspace: string; health?: () => StreamHealth | undefined }>>;
 
-export function routerServer(store: TaskStore, config: { owner: string; token: string; memory?: MemoryStore; harness?: RouterHarness; feishu?: FeishuConfig; lark?: FeishuConfig; readLarkAttachment?: (messageId: string, key: string) => Promise<string | undefined>; readFeishuAttachment?: (messageId: string, key: string) => Promise<string | undefined>; qq?: QQConfig; readQQAttachment?: (url: string, name?: string) => Promise<TaskAttachment | undefined>; documents?: readonly DocumentConnector[]; answerMemory?: MemoryAnswer; draftMemory?: MemoryDraft; pushEnabled?: boolean; streamChannels?: StreamChannelSettings }) {
+export function routerServer(store: TaskStore, config: { owner: string; token: string; memory?: MemoryStore; harness?: RouterHarness; feishu?: FeishuConfig; lark?: FeishuConfig; readLarkAttachment?: (messageId: string, key: string) => Promise<string | undefined>; readFeishuAttachment?: (messageId: string, key: string) => Promise<string | undefined>; qq?: QQConfig; readQQAttachment?: (url: string, name?: string) => Promise<TaskAttachment | undefined>; documents?: readonly DocumentConnector[]; applicationWrites?: readonly ConfiguredApplicationWrite[]; answerMemory?: MemoryAnswer; draftMemory?: MemoryDraft; pushEnabled?: boolean; streamChannels?: StreamChannelSettings }) {
   const metricsByOwner = new Map<string, RouterMetrics>();
   function ownerMetrics(owner: string) {
     let metrics = metricsByOwner.get(owner);
@@ -278,6 +280,8 @@ export function routerServer(store: TaskStore, config: { owner: string; token: s
         });
         return;
       }
+      if (admin && config.memory && await handleApplicationWrites(request, response, url, owner, config.memory,
+        config.applicationWrites ?? [])) return;
       if (admin && await handleAdmin(request, response, url, owner, store, workerRegistry)) return;
       const shareResult = /^\/v1\/tasks\/([a-f0-9-]{36})\/share-result$/.exec(url.pathname);
       if (shareResult && (request.method === 'GET' || request.method === 'POST')) {

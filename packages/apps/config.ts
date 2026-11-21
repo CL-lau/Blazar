@@ -1,3 +1,5 @@
+import { createHash } from 'node:crypto';
+import { mcpActionBackend } from './mcp-actions.ts';
 import { invokeApplicationAction, type ActionBackend, type ApplicationAction } from './actions.ts';
 import { DocumentBackendUnavailable, DocumentUnavailable, type DocumentConnector, type DocumentReadBackend } from './documents.ts';
 import { feishuDocuments } from './feishu-docs.ts';
@@ -155,3 +157,26 @@ function githubManifestReader(entry: Record<string, unknown>, env: NodeJS.Proces
     },
   };
 }
+
+export function configuredApplicationWrites(env: NodeJS.ProcessEnv, transport = fetch) {
+  const keys = new Set<string>();
+  return entries(env, 'BLAZAR_MCP_ACTIONS').map(entry => {
+    const { app, capability, endpoint, tool } = entry;
+    const account = accountName(entry.account);
+    if (typeof app !== 'string' || !/^(mcp|custom\.[a-z][a-z0-9-]{0,62})$/.test(app) ||
+        typeof capability !== 'string' || !/^action\.[a-z0-9.-]{1,120}$/.test(capability) ||
+        typeof endpoint !== 'string' || typeof tool !== 'string') {
+      throw new Error('Invalid MCP application write configuration');
+    }
+    const key = JSON.stringify([app, account, capability]);
+    if (keys.has(key)) throw new Error('Duplicate MCP application write capability');
+    keys.add(key);
+    const token = entry.tokenEnv === undefined ? undefined
+      : accessToken(env, entry.tokenEnv, /^BLAZAR_MCP_TOKEN_[A-Z0-9_]+$/);
+    const revision = createHash('sha256').update(JSON.stringify([key, endpoint, tool, entry.tokenEnv, token])).digest('hex');
+    const backend = mcpActionBackend({ id: 'mcp', connectionId: '', capability, effect: 'write', endpoint, tool, token }, transport);
+    return { app, account, capability, revision, backend };
+  });
+}
+
+export type ConfiguredApplicationWrite = ReturnType<typeof configuredApplicationWrites>[number];

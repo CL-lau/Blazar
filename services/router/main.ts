@@ -1,5 +1,5 @@
 import { configuredPush, startPushDelivery } from './push.ts';
-import { configuredDocuments } from '../../packages/apps/config.ts';
+import { configuredApplicationWrites, configuredDocuments } from '../../packages/apps/config.ts';
 import { weixinConfig } from '../../packages/channels/weixin.ts';
 import { startWeixin } from './weixin.ts';
 import { startWeCom } from './wecom.ts';
@@ -74,7 +74,7 @@ const dingTalk = dingTalkConfig(process.env);
 const wecom = weComConfig(process.env);
 const weixin = weixinConfig(process.env);
 const server = routerServer(store, {
-  owner: 'local', token, memory, harness, answerMemory, draftMemory, documents, pushEnabled: Boolean(push),
+  owner: 'local', token, memory, harness, answerMemory, draftMemory, documents, applicationWrites: configuredApplicationWrites(process.env), pushEnabled: Boolean(push),
   feishu, lark, qq, readQQAttachment,
   readFeishuAttachment: feishuSender?.readAttachment, readLarkAttachment: larkSender?.readAttachment,
   streamChannels: {

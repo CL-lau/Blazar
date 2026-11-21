@@ -14,12 +14,14 @@ export function mcpActionBackend(config: McpActionConfig, fetcher = fetch): Acti
   const connect = mcpClient(endpoint, token, fetcher);
   return {
     id, connectionId, capability, effect,
-    async invoke(action, signal) {
+    async invoke(action, signal, authorizeDispatch) {
       let dispatched = false;
       try {
         return await connect(signal, async client => {
           signal.throwIfAborted();
           if (!client.getServerCapabilities()?.tools) return { status: 'unavailable-before-dispatch' };
+          if (!await authorizeDispatch()) return { status: 'denied' };
+          signal.throwIfAborted();
           dispatched = true;
           const result = await client.callTool({ name: tool, arguments: { ...action.input } }, undefined, { signal });
           if (result.isError) throw new Error('MCP tool reported a failure');

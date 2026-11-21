@@ -17,7 +17,7 @@ export interface ActionBackend<Output = unknown> {
   readonly connectionId: string;
   readonly capability: string;
   readonly effect: ApplicationAction['effect'];
-  invoke(action: ApplicationAction, signal: AbortSignal): Promise<Exclude<ActionResult<Output>, { status: 'outcome-unknown' }>>;
+  invoke(action: ApplicationAction, signal: AbortSignal, authorizeDispatch: () => Promise<boolean>): Promise<Exclude<ActionResult<Output>, { status: 'outcome-unknown' }>>;
 }
 
 // The caller supplies backends in policy order and authorizes each separately.
@@ -35,7 +35,7 @@ export async function invokeApplicationAction<Output>(
     signal.throwIfAborted();
     let result: Awaited<ReturnType<ActionBackend<Output>['invoke']>>;
     try {
-      result = await backend.invoke(action, signal);
+      result = await backend.invoke(action, signal, () => authorized(backend, action));
     } catch (error) {
       if (action.effect === 'write') return { status: 'outcome-unknown', backendId: backend.id };
       throw error;

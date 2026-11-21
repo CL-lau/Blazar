@@ -116,3 +116,59 @@ test('approved writes preserve their dispatch claim across Router restarts', asy
   assert.deepEqual(await confirm(interruptedId), { status: 'dispatching' });
   assert.equal(sent, 1);
 });
+
+test('Router requires explicit confirmation for a configured application write', async t => {
+  const { once } = await import('node:events');
+  const { routerServer } = await import('./http.ts');
+  const { TaskStore } = await import('./store.ts');
+  const { MemoryStore } = await import('./memory.ts');
+  const { configuredApplicationWrites } = await import('../../packages/apps/config.ts');
+  const memory = new MemoryStore(':memory:');
+  const store = new TaskStore(':memory:');
+  const connection = memory.connect('owner', 'mcp', 'Handbook', 'project');
+  const calls: string[] = [];
+  const definitions = configuredApplicationWrites({
+    BLAZAR_MCP_ACTIONS: JSON.stringify([{
+      app: 'mcp', account: 'Handbook', capability: 'action.document.update',
+      endpoint: 'http://127.0.0.1:4198/mcp', tool: 'update_document',
+    }]),
+  }, async (_url, init) => {
+    const { id, method, params } = JSON.parse(String(init?.body));
+    calls.push(method);
+    if (method === 'initialize') return Response.json({ jsonrpc: '2.0', id, result: {
+      protocolVersion: params.protocolVersion, capabilities: { tools: {} },
+      serverInfo: { name: 'fixture', version: '1' },
+    } });
+    if (method === 'notifications/initialized') return new Response(null, { status: 202 });
+    assert.equal(method, 'tools/call');
+    assert.deepEqual(params, { name: 'update_document', arguments: { title: 'Approved' } });
+    return Response.json({ jsonrpc: '2.0', id, result: { content: [] } });
+  });
+  const router = routerServer(store, { memory, owner: 'owner', token: 'fixture', applicationWrites: definitions });
+  router.listen(0, '127.0.0.1');
+  await once(router, 'listening');
+  t.after(async () => {
+    await new Promise<void>(resolve => router.close(() => resolve()));
+    memory.close();
+    store.close();
+  });
+  const address = router.address();
+  assert(address && typeof address !== 'string');
+  const request = (path: string, method: string, body?: object, token = 'fixture') =>
+    fetch('http://127.0.0.1:' + address.port + path, { method, signal: AbortSignal.timeout(5_000),
+      headers: { Authorization: 'Bearer ' + token, 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+  const created = await request('/v1/app-connections/' + connection + '/write-proposals', 'POST', {
+    workspace: 'project', capability: 'action.document.update', input: { title: 'Approved' },
+  });
+  assert.equal(created.status, 201);
+  const { id } = await created.json();
+  const proposal = '/v1/app-write-proposals/' + id;
+  assert.deepEqual((await (await request(proposal, 'GET')).json()).input, { title: 'Approved' });
+  assert.equal((await request(proposal + '/confirm', 'POST', undefined, 'wrong')).status, 401);
+  assert.deepEqual(calls, []);
+  const confirmations = await Promise.all([request(proposal + '/confirm', 'POST'), request(proposal + '/confirm', 'POST')]);
+  assert.deepEqual(confirmations.map(response => response.status), [200, 200]);
+  await Promise.all(confirmations.map(response => response.json()));
+  assert.equal((await (await request(proposal, 'GET')).json()).status, 'succeeded');
+  assert.deepEqual(calls, ['initialize', 'notifications/initialized', 'tools/call']);
+});
