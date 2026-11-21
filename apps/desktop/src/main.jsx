@@ -329,22 +329,24 @@ function App() {
                     })}>{item.name}</button> · {item.size} bytes
                   </li>)}</ul>
                 </section>}
-                {artifacts.map((item, index) => (
-                  <div key={item.id}>
-                    <button onClick={() => submit(async () => {
+                {artifacts.map(item => {
+                  const latest = artifacts.find(file => file.name === item.name && file.mime === item.mime);
+                  const hasOlderVersion = artifacts.some(file => file.id !== item.id && file.name === item.name && file.mime === item.mime);
+                  return <div key={item.id}>
+                    <button disabled={busy} onClick={() => submit(async () => {
                       if (item.mime === 'image/png') {
                         const { png } = await api('/artifacts/' + item.id + '/image');
                         setPreview({ taskId: item.taskId, artifactIds: [item.id], name: item.name, png, expires: item.expires });
                       } else {
                         setPreview({ taskId: item.taskId, artifactIds: [item.id], name: item.name, text: await api('/artifacts/' + item.id) });
                       }
-                    })}>{item.name}{index === 0 && artifacts.length > 1 ? ' (latest)' : ''}</button>
-                    {index > 0 && !item.mime && !artifacts[0].mime && <button onClick={() => submit(async () => {
-                      const diff = await api('/artifacts/' + artifacts[0].id + '/diff?base=' + item.id);
-                      setPreview({ taskId: item.taskId, artifactIds: [item.id, artifacts[0].id], name: 'Changes from ' + item.name, text: diff.text });
+                    })}>{item.name}{latest?.id === item.id && hasOlderVersion ? ' (latest)' : ''}</button>
+                    {latest && latest.id !== item.id && !item.mime && <button disabled={busy} onClick={() => submit(async () => {
+                      const diff = await api('/artifacts/' + latest.id + '/diff?base=' + item.id);
+                      setPreview({ taskId: item.taskId, artifactIds: [item.id, latest.id], name: 'Changes from ' + item.name, text: diff.text });
                     })}>Compare with latest</button>}
-                  </div>
-                ))}
+                  </div>;
+                })}
                 {preview?.taskId === task.id && (preview.attachmentPosition === undefined
                   ? preview.artifactIds.every(id => artifacts.some(item => item.id === id))
                   : taskAttachments.some(item => item.position === preview.attachmentPosition)) &&

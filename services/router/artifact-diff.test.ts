@@ -34,6 +34,13 @@ test('artifact comparisons expose changes only within an authenticated task', as
   assert.equal((await fetch(url + 'bad', { headers })).status, 400);
   const response = await fetch(url + first, { headers });
   assert.equal(response.status, 200);
+  const phone = store.redeemPairing(store.createPairing('owner', Date.now()).code, 'Phone', Date.now())!;
+  const mobileHeaders = { Authorization: 'Bearer ' + phone.token, 'X-Blazar-Public-Gateway': '1' };
+  const mobileResponse = await fetch(url + first, { headers: mobileHeaders });
+  assert.equal(mobileResponse.status, 200);
+  assert.equal((await fetch(url + unrelated, { headers: mobileHeaders })).status, 404);
+  assert.equal((await fetch(url + first, { headers: { ...headers, 'X-Blazar-Public-Gateway': '1' } })).status, 401);
   const { text } = await response.json();
+  assert.deepEqual(await mobileResponse.json(), { text });
   assert.match(text, / Header\n-Old wording\n\+New wording\n Footer/);
 });
