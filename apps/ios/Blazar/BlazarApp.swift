@@ -109,6 +109,7 @@ private struct TaskScreen: View {
                         }
                     }
                     .disabled(pairing || pairingCode.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                    if pairing { Text("Approve this request in Linked phones on your desktop.") }
                 }
                 #if os(iOS)
                 if let client {

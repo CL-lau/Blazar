@@ -1,6 +1,6 @@
 import { githubDocuments } from '../../packages/apps/github-docs.ts';
 import { feishuDocuments } from '../../packages/apps/feishu-docs.ts';
-import { createHash } from 'node:crypto';
+import { createHash, randomBytes } from 'node:crypto';
 import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { realpath } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
@@ -375,14 +375,32 @@ test('Router authenticates, deduplicates commands and replays task changes over 
   const codeResponse = await fetch(url + '/v1/pairings', { method: 'POST', headers });
   assert.equal(codeResponse.status, 201);
   const { code } = await codeResponse.json();
+  const mobileToken = randomBytes(32).toString('base64url');
+  const mobileHeaders = { Authorization: `Bearer ${mobileToken}` };
   const redeem = () => fetch(url + '/v1/pairings/redeem', {
-    method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ code, name: 'iPhone' }),
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ code, name: 'iPhone', token: mobileToken }),
   });
   const paired = await redeem();
-  assert.equal(paired.status, 201);
+  assert.equal(paired.status, 202);
   const mobile = await paired.json();
+  assert.equal(mobile.token, undefined);
   assert.equal((await redeem()).status, 404);
-  const mobileHeaders = { Authorization: `Bearer ${mobile.token}` };
+  const pendingPath = '/v1/admin/mobile-pairings';
+  const decision = pendingPath + '/' + mobile.id;
+  const pairingStatus = () => fetch(url + '/v1/pairings/status?id=' + mobile.id, { headers: mobileHeaders });
+  assert.equal((await fetch(url + '/v1/state', { headers: mobileHeaders })).status, 401);
+  assert.deepEqual(await (await pairingStatus()).json(), { state: 'pending' });
+  assert.equal((await fetch(url + '/v1/pairings/status?id=' + mobile.id, { headers })).status, 404);
+  assert.equal((await fetch(url + decision, {
+    method: 'POST', headers: { ...headers, 'X-Blazar-Public-Gateway': '1', 'Content-Type': 'application/json' },
+    body: JSON.stringify({ approve: true }),
+  })).status, 401);
+  const pendingRequests = await (await fetch(url + pendingPath, { headers })).json();
+  assert.deepEqual(pendingRequests.requests, [{ id: mobile.id, name: 'iPhone', expires: mobile.expires }]);
+  assert.equal((await post(decision, 'approve', { approve: true })).status, 200);
+  assert.equal((await post(decision, 'approved-twice', { approve: true })).status, 404);
+  assert.deepEqual(await (await pairingStatus()).json(), { state: 'approved' });
   assert.equal((await fetch(url + '/v1/state', { headers: mobileHeaders })).status, 200);
   const pushRegistration = (auth: object, deviceToken: string | null) => fetch(url + '/v1/mobile/push', {
     method: 'POST', headers: { ...auth, 'Content-Type': 'application/json' },
@@ -410,6 +428,17 @@ test('Router authenticates, deduplicates commands and replays task changes over 
   });
   assert.equal((await fetch(url + '/v1/admin/mobile-clients/' + mobile.id, { method: 'DELETE', headers })).status, 200);
   assert.equal((await fetch(url + '/v1/state', { headers: mobileHeaders })).status, 401);
+  assert.deepEqual(await (await pairingStatus()).json(), { state: 'denied' });
+  const rejectedCode = await (await fetch(url + '/v1/pairings', { method: 'POST', headers })).json();
+  const rejectedToken = randomBytes(32).toString('base64url');
+  const rejected = await (await post('/v1/pairings/redeem', 'denial-fixture', {
+    code: rejectedCode.code, name: 'Unknown phone', token: rejectedToken,
+  })).json();
+  assert.equal((await post(pendingPath + '/' + rejected.id, 'deny', { approve: false })).status, 200);
+  const rejectedHeaders = { Authorization: 'Bearer ' + rejectedToken };
+  assert.deepEqual(await (await fetch(url + '/v1/pairings/status?id=' + rejected.id, { headers: rejectedHeaders })).json(),
+    { state: 'denied' });
+  assert.equal((await fetch(url + '/v1/state', { headers: rejectedHeaders })).status, 401);
 
   const question = { workspace: 'demo', text: 'Could you help?' };
   const asked = await post('/v1/conversation', 'ask', question);

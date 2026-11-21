@@ -35,6 +35,7 @@ function App() {
   const [settings, setSettings] = useState('tasks');
   const [pairing, setPairing] = useState(null);
   const [clients, setClients] = useState([]);
+  const [pairingRequests, setPairingRequests] = useState([]);
 
   useEffect(() => {
     if (!preview?.expires) return;
@@ -83,6 +84,24 @@ function App() {
       .then(data => { if (!stop.signal.aborted) setMemoryAccounts(data.connections); })
       .catch(() => {});
     return () => stop.abort();
+  }, [connected, settings]);
+
+  useEffect(() => {
+    if (!connected || settings !== 'phones') return;
+    const stop = new AbortController();
+    let timer;
+    async function refreshPairingRequests() {
+      try {
+        const data = await callRouter(connected, '/admin/mobile-pairings', { signal: stop.signal });
+        if (!stop.signal.aborted) setPairingRequests(data.requests);
+      } catch {
+        // Retry when the Router is reachable.
+      } finally {
+        if (!stop.signal.aborted) timer = setTimeout(refreshPairingRequests, 2_000);
+      }
+    }
+    void refreshPairingRequests();
+    return () => { stop.abort(); clearTimeout(timer); };
   }, [connected, settings]);
 
   async function submit(action) {
@@ -154,6 +173,17 @@ function App() {
             setPairing(await api('/pairings', { method: 'POST' }));
           })}>Create pairing code</button>
           {pairing && <PairingCode key={pairing.code} pairing={pairing} />}
+          {pairingRequests.length > 0 && <section aria-label="Pairing requests">
+            <h3>Pairing requests</h3>
+            <ul>{pairingRequests.map(request => <li key={request.id}>
+              {request.name}{' '}
+              {[true, false].map(approve => <button key={String(approve)} disabled={busy} onClick={() => submit(async () => {
+                await api('/admin/mobile-pairings/' + request.id, { method: 'POST', body: { approve } });
+                setPairingRequests(items => items.filter(item => item.id !== request.id));
+                setClients((await api('/admin/mobile-clients')).clients);
+              })}>{approve ? 'Approve' : 'Deny'}</button>)}
+            </li>)}</ul>
+          </section>}
           <ul>{clients.map(client => <li key={client.id}>
             {client.name} <button disabled={busy} onClick={() => submit(async () => {
               await api('/admin/mobile-clients/' + client.id, { method: 'DELETE' });

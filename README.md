@@ -55,7 +55,7 @@ Run Caddy on the Router host with a public DNS name pointing to that host. Allow
 BLAZAR_PUBLIC_HOST=blazar.example.com caddy run --config deploy/Caddyfile --adapter caddyfile
 ```
 
-In the desktop pairing form, enter `https://blazar.example.com` and scan the QR code from the iOS app. For a remote execution device, set `BLAZAR_ROUTER_URL=https://blazar.example.com` and use its own device token. Caddy proxies the device WebSocket, the iOS API, and the Feishu and QQ callback routes. Create pairing codes, manage devices, and configure app connections on the Router host using the loopback address.
+In the desktop pairing form, enter `https://blazar.example.com` and scan the QR code from the iOS app. Approve the request under **Linked phones** on the desktop. For a remote execution device, set `BLAZAR_ROUTER_URL=https://blazar.example.com` and use its own device token. Caddy proxies the device WebSocket, the iOS API, and the Feishu and QQ callback routes. Create pairing codes, manage devices, and configure app connections on the Router host using the loopback address.
 
 A new execution run has a ten-minute maximum duration, including time spent awaiting approval. The Router caps each renewal at that deadline. If the deadline is reached before the result arrives, the task timeline records the timeout and the task waits for review.
 

@@ -624,9 +624,21 @@ export function routerServer(store: TaskStore, config: { owner: string; token: s
         const data = await jsonObject(request);
         const code = requiredText(data.code, 'code', 32);
         const name = requiredText(data.name, 'name', 128);
-        const registration = store.redeemPairing(code, name, Date.now());
-        if (!registration) throw new RequestError(404, 'Pairing code is invalid or expired');
-        reply(response, 201, registration);
+        const token = requiredText(data.token, 'device credential', 43);
+        if (!/^[A-Za-z0-9_-]{43}$/.test(token)) throw new RequestError(400, 'Invalid device credential');
+        const pending = store.requestMobilePairing(code, name, token, Date.now());
+        if (!pending) throw new RequestError(404, 'Pairing code is invalid or expired');
+        reply(response, 202, pending);
+        return;
+      }
+      if (url.pathname === '/v1/pairings/status' && request.method === 'GET') {
+        const id = url.searchParams.get('id');
+        if (!id || !/^[a-f0-9-]{36}$/.test(id) || !/^Bearer [A-Za-z0-9_-]{43}$/.test(auth)) {
+          throw new RequestError(404, 'Pairing request unavailable');
+        }
+        const state = store.mobilePairingState(id, auth.slice(7), Date.now());
+        if (!state) throw new RequestError(404, 'Pairing request unavailable');
+        reply(response, 200, { state });
         return;
       }
       const supplied = Buffer.from(auth);
@@ -712,6 +724,20 @@ export function routerServer(store: TaskStore, config: { owner: string; token: s
       }
       if (url.pathname === '/v1/pairings' && request.method === 'POST') {
         reply(response, 201, store.createPairing(owner, Date.now()));
+        return;
+      }
+      if (url.pathname === '/v1/admin/mobile-pairings' && request.method === 'GET') {
+        reply(response, 200, { requests: store.pendingMobilePairings(owner, Date.now()) });
+        return;
+      }
+      const pairingDecision = /^\/v1\/admin\/mobile-pairings\/([a-f0-9-]{36})$/.exec(url.pathname);
+      if (pairingDecision && request.method === 'POST') {
+        const { approve } = await jsonObject(request);
+        if (typeof approve !== 'boolean') throw new RequestError(400, 'Invalid pairing decision');
+        if (!store.decideMobilePairing(owner, pairingDecision[1], approve, Date.now())) {
+          throw new RequestError(404, 'Pairing request unavailable');
+        }
+        reply(response, 200, { approved: approve });
         return;
       }
       if (url.pathname === '/v1/admin/mobile-clients' && request.method === 'GET') {

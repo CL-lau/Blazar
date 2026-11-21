@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { randomBytes } from 'node:crypto';
 import { once } from 'node:events';
 import test from 'node:test';
 import { parseWeixin, type WeixinConfig } from '../../packages/channels/weixin.ts';
@@ -64,9 +65,11 @@ test('WeChat intake, paired-phone approval, desktop artifact and Feishu follow-u
 
   const pairing = await post('/v1/pairings', {}, admin);
   assert.equal(pairing.status, 201);
-  const phone = await post('/v1/pairings/redeem', { code: (await pairing.json()).code, name: 'iPhone fixture' });
-  assert.equal(phone.status, 201);
-  const mobile = (await phone.json()).token;
+  const mobile = randomBytes(32).toString('base64url');
+  const phone = await post('/v1/pairings/redeem', { code: (await pairing.json()).code, name: 'iPhone fixture', token: mobile });
+  assert.equal(phone.status, 202);
+  const registration = await phone.json();
+  assert.equal((await post('/v1/admin/mobile-pairings/' + registration.id, { approve: true }, admin)).status, 200);
 
   const { assignment } = await (await socket.request('claim', { capability: 'agent.acp' }, signal)).json();
   const taskId = assignment.task.id;

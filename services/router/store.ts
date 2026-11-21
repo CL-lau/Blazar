@@ -88,6 +88,10 @@ export class TaskStore {
       CREATE TABLE IF NOT EXISTS mobile_pairing (
         code_hash TEXT PRIMARY KEY, owner TEXT NOT NULL, expires INTEGER NOT NULL
       );
+      CREATE TABLE IF NOT EXISTS mobile_pairing_request (
+        id TEXT PRIMARY KEY, owner TEXT NOT NULL, name TEXT NOT NULL, token_hash TEXT UNIQUE NOT NULL,
+        expires INTEGER NOT NULL, state TEXT NOT NULL CHECK(state IN ('pending','approved','denied'))
+      );
       CREATE TABLE IF NOT EXISTS mobile_client (
         id TEXT PRIMARY KEY, owner TEXT NOT NULL, name TEXT NOT NULL, token_hash TEXT UNIQUE NOT NULL
       );
@@ -906,6 +910,47 @@ export class TaskStore {
       this.db.prepare('INSERT INTO mobile_client VALUES(?,?,?,?)').run(id, pairing.owner!, name, tokenHash);
       return { id, token };
     });
+  }
+
+  requestMobilePairing(code: string, name: string, token: string, now: number) {
+    return this.transaction(() => {
+      const hash = createHash('sha256').update(code).digest('hex');
+      const tokenHash = createHash('sha256').update(token).digest('hex');
+      if (this.db.prepare('SELECT 1 FROM mobile_client WHERE token_hash=?').get(tokenHash)) return undefined;
+      const prior = this.db.prepare('SELECT 1 FROM mobile_pairing_request WHERE token_hash=? AND expires>?').get(tokenHash, now);
+      if (prior) return undefined;
+      const pairing = this.db.prepare('DELETE FROM mobile_pairing WHERE code_hash=? AND expires>? RETURNING owner,expires')
+        .get(hash, now);
+      if (!pairing) return undefined;
+      this.db.prepare('DELETE FROM mobile_pairing_request WHERE expires<=?').run(now);
+      const id = randomUUID();
+      this.db.prepare("INSERT INTO mobile_pairing_request VALUES(?,?,?,?,?,'pending')")
+        .run(id, pairing.owner!, name, tokenHash, pairing.expires!);
+      return { id, expires: Number(pairing.expires) };
+    });
+  }
+
+  pendingMobilePairings(owner: string, now: number) {
+    return this.db.prepare("SELECT id,name,expires FROM mobile_pairing_request WHERE owner=? AND expires>? AND state='pending'")
+      .all(owner, now);
+  }
+
+  decideMobilePairing(owner: string, id: string, approve: boolean, now: number) {
+    return this.transaction(() => {
+      const row = this.db.prepare(`UPDATE mobile_pairing_request SET state=?
+        WHERE id=? AND owner=? AND expires>? AND state='pending' RETURNING name,token_hash`)
+        .get(approve ? 'approved' : 'denied', id, owner, now);
+      if (!row) return false;
+      if (approve) this.db.prepare('INSERT INTO mobile_client VALUES(?,?,?,?)').run(id, owner, row.name!, row.token_hash!);
+      return true;
+    });
+  }
+
+  mobilePairingState(id: string, token: string, now: number) {
+    const hash = createHash('sha256').update(token).digest('hex');
+    const row = this.db.prepare('SELECT state FROM mobile_pairing_request WHERE id=? AND token_hash=? AND expires>?')
+      .get(id, hash, now);
+    return row?.state === 'approved' && !this.mobileIdentity(token) ? 'denied' : row?.state;
   }
 
   mobileIdentity(token: string) {

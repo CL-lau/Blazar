@@ -1,4 +1,5 @@
 import Foundation
+import Security
 
 struct RouterSnapshot: Decodable {
     struct DesktopTarget: Decodable {
@@ -84,10 +85,31 @@ struct RouterClient: Equatable {
     let token: String
 
     static func pair(base: URL, code: String, name: String) async throws -> RouterClient {
-        struct Registration: Decodable { let token: String }
-        let pending = RouterClient(base: base, token: "")
-        let bytes = try await pending.request("v1/pairings/redeem", body: ["code": code, "name": name])
-        return RouterClient(base: base, token: try JSONDecoder().decode(Registration.self, from: bytes).token)
+        struct PairingRequest: Decodable { let id: String }
+        struct PairingStatus: Decodable { let state: String }
+        var bytes = [UInt8](repeating: 0, count: 32)
+        guard SecRandomCopyBytes(kSecRandomDefault, bytes.count, &bytes) == errSecSuccess else {
+            throw RouterError(error: "Could not generate a device credential.")
+        }
+        let token = Data(bytes).base64EncodedString()
+            .replacingOccurrences(of: "+", with: "-")
+            .replacingOccurrences(of: "/", with: "_")
+            .replacingOccurrences(of: "=", with: "")
+        let pending = RouterClient(base: base, token: token)
+        let data = try await pending.request("v1/pairings/redeem", body: ["code": code, "name": name, "token": token])
+        let pairing = try JSONDecoder().decode(PairingRequest.self, from: data)
+        let deadline = ContinuousClock.now + .seconds(300)
+        repeat {
+            let data = try await pending.request("v1/pairings/status", query: [.init(name: "id", value: pairing.id)])
+            let status = try JSONDecoder().decode(PairingStatus.self, from: data)
+            switch status.state {
+            case "approved": return pending
+            case "denied": throw RouterError(error: "The desktop denied this pairing.")
+            case "pending": try await Task.sleep(for: .seconds(2))
+            default: throw RouterError(error: "The Router returned an invalid pairing state.")
+            }
+        } while ContinuousClock.now < deadline
+        throw RouterError(error: "This pairing request expired.")
     }
 
     func configurePush(deviceToken: String?) async throws {
