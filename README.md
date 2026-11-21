@@ -182,6 +182,8 @@ Router administrators can invoke a catalog capability with `POST /v1/app-connect
 
 Desktop administrators can also run `/documents CONNECTION_ID SEARCH_TERMS` in a Blazar conversation. Find the connection ID under **View usage** for the account. The command uses the conversation workspace and returns up to five local excerpts with resource IDs and revisions. Each search checks current source access and runs without a model.
 
+To search across apps, specify up to five comma-separated connection IDs in the same command. Results include the connection ID and are interleaved so multiple sources can appear in the same reply.
+
 Use `/document CONNECTION_ID DOCUMENT_REFERENCE` in the same workspace for a fresh source preview. Blazar reads through the configured connector and returns the revision and a text excerpt. The source stays out of model context and the Router's saved conversation turns.
 
 In **Apps and memory**, choose a source account and workspace to refresh previously imported documents. You can also save an automatic refresh interval for that account and workspace.

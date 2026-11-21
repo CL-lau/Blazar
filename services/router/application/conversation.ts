@@ -58,15 +58,29 @@ export function createConversationRouter(store: ConversationTasks, config: Conve
     if (/^\/documents(?:\s|$)/.test(input.text)) {
       if (!admin || !authorized()) throw new ConversationError(403, 'Administrator required for document search');
       if (!config.memory) throw new ConversationError(503, 'Document search is unavailable');
-      const command = /^\/documents ([a-f0-9-]{36}) ([^\r\n]+)$/.exec(input.text);
-      if (!command) throw new ConversationError(400, 'Use /documents CONNECTION_ID SEARCH_TERMS');
-      const result = await invokeDocumentCapability(config.memory, owner, command[1],
-        config.documents ?? [], 'document.search', { workspace: input.workspace, query: command[2] });
+      const command = /^\/documents ([a-f0-9-]{36}(?:,[a-f0-9-]{36}){0,4}) ([^\r\n]+)$/.exec(input.text);
+      if (!command) throw new ConversationError(400, 'Use /documents CONNECTION_ID[,CONNECTION_ID] SEARCH_TERMS');
+      const memory = config.memory;
+      const connections = [...new Set(command[1].split(','))];
+      if (connections.some(connection => !memory.connection(owner, connection, input.workspace))) {
+        throw new ConversationError(404, 'Active connection not found in this workspace');
+      }
+      const results = await Promise.all(connections.map(connection => invokeDocumentCapability(memory, owner, connection,
+        config.documents ?? [], 'document.search', { workspace: input.workspace, query: command[2] })));
       if (!authorized()) throw new ConversationError(401, 'Authentication required');
-      const items = 'items' in result ? result.items ?? [] : [];
-      const text = items.slice(0, 5).map(item => `${item.resource} · ${item.revision}\n${item.excerpt}`).join('\n\n');
+      const groups = results.map(result => 'items' in result ? result.items ?? [] : []);
+      const excerpts: string[] = [];
+      for (let index = 0; index < 5 && excerpts.length < 5; index++) {
+        for (const [sourceIndex, group] of groups.entries()) {
+          if (excerpts.length === 5) break;
+          const item = group[index];
+          if (!item) continue;
+          const source = connections.length > 1 ? connections[sourceIndex] + ' · ' : '';
+          excerpts.push(`${source}${item.resource} · ${item.revision}\n${item.excerpt}`);
+        }
+      }
       metrics.route('deterministic');
-      return { status: 200, body: { kind: 'reply', text: text || 'No matching imported documents.' } };
+      return { status: 200, body: { kind: 'reply', text: excerpts.join('\n\n') || 'No matching imported documents.' } };
     }
     if (/^\/document(?:\s|$)/.test(input.text)) {
       if (!admin || !authorized()) throw new ConversationError(403, 'Administrator required for document preview');

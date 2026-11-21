@@ -251,6 +251,16 @@ test('Router authenticates, deduplicates commands and replays task changes over 
   const mixedRecall = importedRecall + '&source=' + github;
   const mixed = await (await fetch(url + mixedRecall, { headers })).json();
   assert.deepEqual(new Set(mixed.items.map(item => item.connection)), new Set([connection, github]));
+  const multiSearch = await post('/v1/conversation', 'conversation-multiple-documents', {
+    workspace: 'demo', text: '/documents ' + connection + ',' + github + ' findings',
+  });
+  assert.equal(multiSearch.status, 200);
+  const multiSearchText = (await multiSearch.json()).text;
+  assert.ok(multiSearchText.includes(connection + ' · doc123'));
+  assert.ok(multiSearchText.includes(github + ' · docs/review.md'));
+  assert.equal((await post('/v1/conversation', 'conversation-multiple-documents-wrong-scope', {
+    workspace: 'demo', text: '/documents ' + github + ',' + scopedConnection + ' findings',
+  })).status, 404);
   const missingReader = await (await post('/v1/app-connections', 'manual-account', {
     app: 'lark', account: 'not configured',
   })).json();
@@ -635,7 +645,7 @@ test('Router authenticates, deduplicates commands and replays task changes over 
   const metrics = await fetch(url + '/v1/admin/metrics', { headers });
   assert.equal(metrics.status, 200);
   const measurement = await metrics.json();
-  assert.deepEqual(measurement.routing, { deterministic: 3, model: 4, replayed: 1, modelErrors: 0 });
+  assert.deepEqual(measurement.routing, { deterministic: 4, model: 4, replayed: 1, modelErrors: 0 });
   assert.equal(measurement.latencyMs.model.count, 4);
   assert.deepEqual(measurement.modelTokens, {
     samples: 4, input: 40, output: 16, cacheRead: 8, cacheWrite: 0, totalTokens: 64,
