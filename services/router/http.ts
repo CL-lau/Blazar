@@ -9,7 +9,7 @@ import { WebSocket, WebSocketServer } from 'ws';
 import { createQQHandler, qqChannel, type QQConfig } from '../../packages/channels/qq.ts';
 import { feishuChannel, parseFeishu, type FeishuConfig } from '../../packages/channels/feishu.ts';
 import { InvalidWorkflow, workflowSteps } from './workflow.ts';
-import type { MemoryAnswer, RouteRequest, RouterHarness } from './harness.ts';
+import type { Decision, MemoryAnswer, RouteRequest, RouterHarness } from './harness.ts';
 import { timingSafeEqual } from 'node:crypto';
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http';
 import { setTimeout as delay } from 'node:timers/promises';
@@ -627,6 +627,7 @@ export function routerServer(store: TaskStore, config: { owner: string; token: s
     }
     return metrics;
   }
+  const pendingRoutes = new Map<string, { fingerprint: string; decision: Promise<Decision> }>();
   const stopSubscribers = new Map<string, Set<WebSocket>>();
   function sendStop(device: string, runId: string) {
     for (const peer of stopSubscribers.get(device) ?? []) {
@@ -1120,76 +1121,96 @@ export function routerServer(store: TaskStore, config: { owner: string; token: s
         let decision = store.routingDecision(owner, key, input, undefined, caller);
         if (decision) metrics.route('replayed');
         else {
-          if (input.text.startsWith('/preview ') || input.text.startsWith('/observe ') || input.text.startsWith('/click ')) {
-            decision = { kind: 'create_task' };
-            metrics.route('deterministic');
-          }
-          else if (!config.harness) throw new RequestError(503, 'Blazar has no Router model configured');
-          else {
-            const foundVersions = new Map<string, number>();
-            const recall = () => input.usePersonalMemory
-              ? config.memory?.personalContext(owner, input.workspace, input.text) ?? [] : [];
-            const evidence = recall();
-            const modelStarted = performance.now();
-            metrics.route('model');
+          const pendingKey = JSON.stringify([owner, caller, key]);
+          const fingerprint = JSON.stringify(input);
+          const pending = pendingRoutes.get(pendingKey);
+          if (pending) {
+            if (pending.fingerprint !== fingerprint) throw new IdempotencyConflict();
+            decision = await pending.decision;
+            metrics.route('replayed');
+          } else {
+            const route = async () => {
+              let decision: Decision;
+              if (input.text.startsWith('/preview ') || input.text.startsWith('/observe ') || input.text.startsWith('/click ')) {
+                decision = { kind: 'create_task' };
+                metrics.route('deterministic');
+              }
+              else if (!config.harness) throw new RequestError(503, 'Blazar has no Router model configured');
+              else {
+                const foundVersions = new Map<string, number>();
+                const recall = () => input.usePersonalMemory
+                  ? config.memory?.personalContext(owner, input.workspace, input.text) ?? [] : [];
+                const evidence = recall();
+                const modelStarted = performance.now();
+                metrics.route('model');
+                try {
+                  decision = await config.harness({
+                    ...input, recent: store.recentConversation(owner, input.workspace, caller),
+                    findTasks: query => {
+                      const tasks = store.findRouterTasks(owner, input.workspace, query).filter(task => canReadTask(task.id));
+                      for (const task of tasks) foundVersions.set(task.id, task.version);
+                      return tasks;
+                    },
+                    taskEvents: query => {
+                      const exactId = /^[a-f0-9-]{36}$/.test(query);
+                      const matches = exactId ? [store.get(owner, query)].filter(task => task?.workspace === input.workspace)
+                        : store.findRouterTasks(owner, input.workspace, query);
+                      if (matches.length !== 1 || !matches[0] || !canReadTask(matches[0].id)) return undefined;
+                      return store.recentTaskEventTypes(owner, input.workspace, matches[0].id);
+                    },
+                    ...(admin && { workspaceCapabilities: () => ({
+                      devices: store.devices(owner).filter(device => device.workspace === input.workspace && !device.revoked)
+                        .slice(0, 16).map(device => ({
+                          name: String(device.name), capability: String(device.capability ?? 'unreported'),
+                          online: Boolean(device.online),
+                          available: Boolean(device.online && !device.paused && !device.workerPolicyBlocked && !device.interruptedRunId),
+                        })),
+                      apps: (config.memory?.connections(owner) ?? [])
+                        .filter(connection => connection.active && (!connection.workspace || connection.workspace === input.workspace))
+                        .slice(0, 16).map(connection => ({
+                          app: connection.app,
+                          documentRead: Boolean(config.documents?.some(connector =>
+                            connector.app === connection.app && connector.account === connection.account)),
+                        })),
+                    }) }),
+                    ...(evidence.length ? { personalMemory: evidence.map(item => item.body) } : {}),
+                  }, AbortSignal.timeout(15_000), usage => metrics.recordModelUsage(usage));
+                } catch {
+                  metrics.route('modelErrors');
+                  throw new RequestError(503, 'Blazar could not make a routing decision. Please retry.');
+                } finally {
+                  metrics.observe('model', performance.now() - modelStarted);
+                }
+                if (evidence.length) {
+                  const current = recall();
+                  if (evidence.some(item => !current.some(note => note.id === item.id && note.version === item.version))) {
+                    throw new RequestError(409, 'Personal memory changed while routing. Please retry.');
+                  }
+                }
+                if (decision.kind === 'append_task') {
+                  const version = foundVersions.get(decision.taskId);
+                  const task = store.get(owner, decision.taskId);
+                  if (!task || task.workspace !== input.workspace || task.version !== version ||
+                      /^\/(observe|click|preview) /.test(task.goal) ||
+                      ['cancelling', 'cancelled', 'pausing', 'paused'].includes(task.status)) {
+                    throw new RequestError(409, 'The proposed follow-up target changed or is unavailable');
+                  }
+                  decision = { ...decision, expectedVersion: version };
+                }
+              }
+              if (!admin && store.mobileOwner(mobileToken) !== owner) throw new RequestError(401, 'Authentication required');
+              return store.routingDecision(owner, key, input, decision, caller)!;
+            };
+            const routed = route();
+            pendingRoutes.set(pendingKey, { fingerprint, decision: routed });
             try {
-              decision = await config.harness({
-                ...input, recent: store.recentConversation(owner, input.workspace, caller),
-                findTasks: query => {
-                  const tasks = store.findRouterTasks(owner, input.workspace, query).filter(task => canReadTask(task.id));
-                  for (const task of tasks) foundVersions.set(task.id, task.version);
-                  return tasks;
-                },
-                taskEvents: query => {
-                  const exactId = /^[a-f0-9-]{36}$/.test(query);
-                  const matches = exactId ? [store.get(owner, query)].filter(task => task?.workspace === input.workspace)
-                    : store.findRouterTasks(owner, input.workspace, query);
-                  if (matches.length !== 1 || !matches[0] || !canReadTask(matches[0].id)) return undefined;
-                  return store.recentTaskEventTypes(owner, input.workspace, matches[0].id);
-                },
-                ...(admin && { workspaceCapabilities: () => ({
-                  devices: store.devices(owner).filter(device => device.workspace === input.workspace && !device.revoked)
-                    .slice(0, 16).map(device => ({
-                      name: String(device.name), capability: String(device.capability ?? 'unreported'),
-                      online: Boolean(device.online),
-                      available: Boolean(device.online && !device.paused && !device.workerPolicyBlocked && !device.interruptedRunId),
-                    })),
-                  apps: (config.memory?.connections(owner) ?? [])
-                    .filter(connection => connection.active && (!connection.workspace || connection.workspace === input.workspace))
-                    .slice(0, 16).map(connection => ({
-                      app: connection.app,
-                      documentRead: Boolean(config.documents?.some(connector =>
-                        connector.app === connection.app && connector.account === connection.account)),
-                    })),
-                }) }),
-                ...(evidence.length ? { personalMemory: evidence.map(item => item.body) } : {}),
-              }, AbortSignal.timeout(15_000), usage => metrics.recordModelUsage(usage));
-            } catch {
-              metrics.route('modelErrors');
-              throw new RequestError(503, 'Blazar could not make a routing decision. Please retry.');
+              decision = await routed;
             } finally {
-              metrics.observe('model', performance.now() - modelStarted);
-            }
-            if (evidence.length) {
-              const current = recall();
-              if (evidence.some(item => !current.some(note => note.id === item.id && note.version === item.version))) {
-                throw new RequestError(409, 'Personal memory changed while routing. Please retry.');
-              }
-            }
-            if (decision.kind === 'append_task') {
-              const version = foundVersions.get(decision.taskId);
-              const task = store.get(owner, decision.taskId);
-              if (!task || task.workspace !== input.workspace || task.version !== version ||
-                  /^\/(observe|click|preview) /.test(task.goal) ||
-                  ['cancelling', 'cancelled', 'pausing', 'paused'].includes(task.status)) {
-                throw new RequestError(409, 'The proposed follow-up target changed or is unavailable');
-              }
-              decision = { ...decision, expectedVersion: version };
+              pendingRoutes.delete(pendingKey);
             }
           }
-          if (!admin && store.mobileOwner(mobileToken) !== owner) throw new RequestError(401, 'Authentication required');
-          decision = store.routingDecision(owner, key, input, decision, caller)!;
         }
+        if (!admin && store.mobileOwner(mobileToken) !== owner) throw new RequestError(401, 'Authentication required');
         if (decision.kind === 'create_task') {
           const goal = decision.goal ?? input.text;
           if ((goal.startsWith('/observe ') || goal.startsWith('/click ')) && goal !== input.text) {

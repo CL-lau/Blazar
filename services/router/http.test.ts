@@ -728,3 +728,48 @@ test('Router capability tools only expose active connections and devices in the 
     apps: [{ app: 'github', documentRead: false }, { app: 'feishu', documentRead: true }],
   }, undefined, undefined]);
 });
+
+test('concurrent conversation retries share routing and reject in-flight key conflicts', { timeout: 5000 }, async t => {
+  const store = new TaskStore(':memory:');
+  const entered = Promise.withResolvers<void>();
+  const release = Promise.withResolvers<void>();
+  let calls = 0;
+  const server = routerServer(store, {
+    owner: 'owner', token: 'admin',
+    async harness() {
+      calls++;
+      entered.resolve();
+      await release.promise;
+      return { kind: 'create_task' };
+    },
+  });
+  server.listen(0, '127.0.0.1');
+  t.after(async () => {
+    release.resolve();
+    await new Promise<void>(resolve => server.close(() => resolve()));
+    store.close();
+  });
+  await once(server, 'listening');
+  const address = server.address();
+  assert.ok(address && typeof address !== 'string');
+  const ask = (text: string) => fetch('http://127.0.0.1:' + address.port + '/v1/conversation', {
+    method: 'POST', signal: AbortSignal.timeout(3_000),
+    headers: { Authorization: 'Bearer admin', 'Content-Type': 'application/json', 'Idempotency-Key': 'same-key' },
+    body: JSON.stringify({ workspace: 'project', text }),
+  });
+  const first = ask('Review the report');
+  await entered.promise;
+  const replay = ask('Review the report');
+  try {
+    assert.equal((await ask('Review a different report')).status, 409);
+    assert.equal(calls, 1);
+  } finally {
+    release.resolve();
+  }
+  const responses = await Promise.all([first, replay]);
+  assert.deepEqual(responses.map(response => response.status), [202, 202]);
+  const [original, repeated] = await Promise.all(responses.map(response => response.json()));
+  assert.equal(original.task.id, repeated.task.id);
+  assert.equal(calls, 1);
+  assert.equal(store.snapshot('owner').tasks.length, 1);
+});
