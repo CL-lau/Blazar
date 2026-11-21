@@ -35,6 +35,7 @@ test('a configured MCP account reads allowlisted text resources without invoking
     BLAZAR_MCP_TOKEN_HANDBOOK: 'fixture-token',
   }, transport);
   assert.equal(connector.app, 'mcp');
+  assert.deepEqual(connector.documentAliases, ['review']);
   const signal = AbortSignal.timeout(2_000);
   assert.equal(connector.accepts('docs://handbook/review'), false);
   await assert.rejects(connector.read('unlisted', signal), /Unknown MCP resource alias/);

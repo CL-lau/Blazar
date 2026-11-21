@@ -19,7 +19,7 @@ export function mcpDocuments(account: string, rawEndpoint: string, resources: Re
     byAlias.set(alias, uri);
   }
   return {
-    app: 'mcp', account,
+    app: 'mcp', account, documentAliases: [...byAlias.keys()].sort(),
     accepts: alias => byAlias.has(alias),
     async read(alias, signal) {
       const uri = byAlias.get(alias);

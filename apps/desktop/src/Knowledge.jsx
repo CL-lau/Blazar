@@ -7,6 +7,7 @@ export function Knowledge({ token }) {
   const [searchQuery, setSearchQuery] = useState('');
   const [editing, setEditing] = useState(null);
   const [selected, setSelected] = useState('');
+  const [importAccount, setImportAccount] = useState('');
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
   const [notice, setNotice] = useState('');
@@ -34,6 +35,8 @@ export function Knowledge({ token }) {
   }, [token]);
 
   const active = connections.filter(connection => connection.active);
+  const importAccounts = active.filter(connection => connection.canImportDocument);
+  const importSource = importAccounts.find(connection => connection.id === importAccount) ?? importAccounts[0];
   const accountName = connection => `${connection.app} · ${connection.account}`;
 
   async function refreshConnections() {
@@ -157,7 +160,7 @@ export function Knowledge({ token }) {
         </section>}
       </fieldset>
 
-      {active.some(item => item.canImportDocument) && (
+      {importSource && (
         <fieldset disabled={busy}>
           <legend>Import document</legend>
           <form onSubmit={event => {
@@ -179,13 +182,18 @@ export function Knowledge({ token }) {
               setNotice('Document imported into memory.');
             });
           }}>
-            <label>Source account<select name="connection" required>
-              {active.filter(item => item.canImportDocument).map(item => (
+            <label>Source account<select name="connection" value={importSource.id}
+              onChange={event => setImportAccount(event.target.value)} required>
+              {importAccounts.map(item => (
                 <option key={item.id} value={item.id}>{accountName(item)}</option>
               ))}
             </select></label>
-            <label>Workspace<input name="workspace" required maxLength={128} /></label>
-            <label>Document ID or repository path<input name="document" required maxLength={128} /></label>
+            <label>Workspace<input name="workspace" key={importSource.id + (importSource.workspace ?? '')}
+              defaultValue={importSource.workspace ?? ''} readOnly={Boolean(importSource.workspace)} required maxLength={128} /></label>
+            {importSource.documentAliases ? <label>Document<select name="document" key={importSource.id} required>
+              <option value="">Choose a document</option>
+              {importSource.documentAliases.map(alias => <option key={alias} value={alias}>{alias}</option>)}
+            </select></label> : <label>Document ID or repository path<input name="document" required maxLength={128} /></label>}
             <button>Import into memory</button>
             <button type="submit" value="test">Test document access</button>
           </form>

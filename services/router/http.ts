@@ -99,9 +99,10 @@ async function handleMemory(
     documents?.find(connector => connector.app === connection.app && connector.account === connection.account);
   if (pathname === '/v1/app-connections') {
     if (method === 'GET') {
-      reply(response, 200, { connections: store.connections(owner).map(connection => ({
-        ...connection, canImportDocument: Boolean(connection.active && readerFor(connection)),
-      })) });
+      reply(response, 200, { connections: store.connections(owner).map(connection => {
+        const reader = connection.active ? readerFor(connection) : undefined;
+        return { ...connection, canImportDocument: Boolean(reader), documentAliases: reader?.documentAliases };
+      }) });
       return true;
     }
     if (method === 'POST') {

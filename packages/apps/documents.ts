@@ -5,6 +5,7 @@ export class DocumentUnavailable extends Error {}
 export type DocumentConnector = {
   app: string;
   account: string;
+  documentAliases?: readonly string[];
   accepts(document: string): boolean;
   read(document: string, signal: AbortSignal): Promise<{ text: string; revision: string }>;
 };
