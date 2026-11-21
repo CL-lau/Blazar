@@ -10,6 +10,13 @@ export function initializeMemorySchema(db: DatabaseSync): boolean {
       id TEXT PRIMARY KEY, owner TEXT NOT NULL, app TEXT NOT NULL,
       account TEXT NOT NULL, active INTEGER NOT NULL DEFAULT 1, workspace TEXT, scope_version INTEGER NOT NULL DEFAULT 1
     );
+    CREATE TABLE IF NOT EXISTS app_write (
+      id TEXT PRIMARY KEY, owner TEXT NOT NULL, connection TEXT NOT NULL REFERENCES app_connection(id),
+      workspace TEXT NOT NULL, scope_version INTEGER NOT NULL, capability TEXT NOT NULL,
+      definition_revision TEXT NOT NULL, input TEXT NOT NULL, expires INTEGER NOT NULL,
+      status TEXT NOT NULL CHECK(status IN ('pending','dispatching','succeeded','unavailable','denied','outcome_unknown')),
+      backend TEXT
+    );
     CREATE TABLE IF NOT EXISTS revoked_resource (
       connection TEXT NOT NULL REFERENCES app_connection(id), resource TEXT NOT NULL,
       PRIMARY KEY(connection,resource)

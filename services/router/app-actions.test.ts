@@ -69,3 +69,50 @@ test('MCP writes fall back after failed initialization and stop after a failed t
   assert.deepEqual(await run(), { status: 'outcome-unknown', backendId: 'primary' });
   assert.deepEqual(requests, ['/primary:initialize', '/primary:notifications/initialized', '/primary:tools/call']);
 });
+
+test('approved writes preserve their dispatch claim across Router restarts', async t => {
+  const { mkdtemp, rm } = await import('node:fs/promises');
+  const { tmpdir } = await import('node:os');
+  const { join } = await import('node:path');
+  const { MemoryStore } = await import('./memory.ts');
+  const { confirmApplicationWrite } = await import('./application/app-write.ts');
+  const directory = await mkdtemp(join(tmpdir(), 'blazar-app-write-'));
+  const path = join(directory, 'memory.sqlite');
+  let memory = new MemoryStore(path);
+  t.after(async () => {
+    memory.close();
+    await rm(directory, { recursive: true, force: true });
+  });
+  const connectionId = memory.connect('owner', 'mcp', 'handbook', 'project');
+  const propose = () => memory.appWrites.propose('owner', 'project',
+    { ...action, connectionId }, 'revision-one', Date.now() + 30_000);
+  const id = propose();
+  const interruptedId = propose();
+  assert.ok(id && interruptedId);
+  const signal = AbortSignal.timeout(5_000);
+  let sent = 0;
+  const backend: ActionBackend = {
+    ...action, connectionId, id: 'api',
+    async invoke(request) {
+      assert.equal(request.invocationId, id);
+      sent++;
+      throw new Error('Lost response');
+    },
+  };
+  const confirm = (proposal: string, revision = 'revision-one', owner = 'owner') =>
+    confirmApplicationWrite(memory.appWrites, owner, proposal, revision, [backend], signal);
+  await assert.rejects(confirm(id, 'revision-two'), /configuration changed/);
+  await assert.rejects(confirm(id, 'revision-one', 'other'), /not found/);
+  assert.deepEqual(await confirm(id), { status: 'outcome_unknown' });
+  assert.equal(memory.appWrites.get('owner', id)?.backend, 'api');
+  assert.equal(memory.appWrites.claim('owner', interruptedId, 'revision-one'), true);
+  const revokedId = propose();
+  assert.ok(revokedId);
+  assert.equal(memory.disconnect('owner', connectionId), true);
+  await assert.rejects(confirm(revokedId), /access or configuration changed/);
+  memory.close();
+  memory = new MemoryStore(path);
+  assert.deepEqual(await confirm(id), { status: 'outcome_unknown' });
+  assert.deepEqual(await confirm(interruptedId), { status: 'dispatching' });
+  assert.equal(sent, 1);
+});

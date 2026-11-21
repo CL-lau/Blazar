@@ -2,6 +2,7 @@ import { randomUUID } from 'node:crypto';
 import { DatabaseSync } from 'node:sqlite';
 import type { DocumentReadBackend } from '../../packages/apps/documents.ts';
 import { sqliteTransaction } from '../../packages/storage/sqlite.ts';
+import { AppWriteRepository } from './persistence/app-write-repository.ts';
 import { initializeMemorySchema } from './persistence/memory-schema.ts';
 
 export interface ResourceRef {
@@ -38,11 +39,13 @@ type DocumentSyncLease = {
 export class MemoryStore {
   private db: DatabaseSync;
   private fullText: boolean;
+  readonly appWrites: AppWriteRepository;
 
   constructor(path: string) {
     this.db = new DatabaseSync(path);
     try {
       this.fullText = initializeMemorySchema(this.db);
+      this.appWrites = new AppWriteRepository(this.db);
     } catch (error) {
       this.db.close();
       throw error;
