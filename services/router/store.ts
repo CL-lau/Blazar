@@ -510,6 +510,12 @@ export class TaskStore {
     };
   }
 
+  recentTaskEventTypes(owner: string, workspace: string, taskId: string) {
+    return this.db.prepare(`SELECT e.seq,e.type FROM event e JOIN task t ON t.id=e.taskId
+      WHERE t.owner=? AND t.workspace=? AND t.id=? ORDER BY e.seq DESC LIMIT 20`)
+      .all(owner, workspace, taskId).reverse().map(row => ({ seq: Number(row.seq), type: String(row.type) }));
+  }
+
   events(owner: string, after: number, through = Number.MAX_SAFE_INTEGER): TaskEvent[] {
     return this.db.prepare(`SELECT e.* FROM event e JOIN task t ON e.taskId=t.id
       WHERE t.owner=? AND e.seq>? AND e.seq<=? ORDER BY e.seq LIMIT 100`).all(owner, after, through) as unknown as TaskEvent[];

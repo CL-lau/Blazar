@@ -1139,6 +1139,13 @@ export function routerServer(store: TaskStore, config: { owner: string; token: s
                   for (const task of tasks) foundVersions.set(task.id, task.version);
                   return tasks;
                 },
+                taskEvents: query => {
+                  const exactId = /^[a-f0-9-]{36}$/.test(query);
+                  const matches = exactId ? [store.get(owner, query)].filter(task => task?.workspace === input.workspace)
+                    : store.findRouterTasks(owner, input.workspace, query);
+                  if (matches.length !== 1 || !matches[0] || !canReadTask(matches[0].id)) return undefined;
+                  return store.recentTaskEventTypes(owner, input.workspace, matches[0].id);
+                },
                 ...(admin && { workspaceCapabilities: () => ({
                   devices: store.devices(owner).filter(device => device.workspace === input.workspace && !device.revoked)
                     .slice(0, 16).map(device => ({

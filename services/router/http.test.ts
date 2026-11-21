@@ -687,12 +687,19 @@ test('Router capability tools only expose active connections and devices in the 
   memory.connect('other', 'lark', 'other owner account', 'project');
   memory.disconnect('owner', memory.connect('owner', 'lark', 'revoked account', 'project'));
   const phone = store.redeemPairing(store.createPairing('owner', Date.now()).code, 'Phone', Date.now())!;
+  const task = store.create('owner', 'fixture', 'scope-task', 'project', 'Private event payload');
+  const otherTask = store.create('owner', 'fixture', 'other-space', 'other', 'Other workspace');
+  const foreignTask = store.create('other', 'fixture', 'other-owner', 'project', 'Other owner');
   const summaries: unknown[] = [];
   const historyLengths: number[] = [];
   const server = routerServer(store, {
     owner: 'owner', token: 'admin-secret', memory,
     documents: [feishuDocuments('feishu', 'authorized account', 'fixture')],
     async harness(input) {
+      assert.deepEqual(input.taskEvents?.(task.id), [{ seq: 1, type: 'task.created' }]);
+      assert.deepEqual(input.taskEvents?.('Private event'), [{ seq: 1, type: 'task.created' }]);
+      assert.equal(input.taskEvents?.(otherTask.id), undefined);
+      assert.equal(input.taskEvents?.(foreignTask.id), undefined);
       summaries.push(input.workspaceCapabilities?.());
       historyLengths.push(input.recent.length);
       return { kind: 'reply', text: input.workspaceCapabilities ? 'Administrator summary' : 'Mobile summary' };
