@@ -14,7 +14,7 @@ The Router holds an exclusive lock in the database directory. Set `BLAZAR_DB` to
 
 The local administrator can query `GET /v1/admin/metrics` for task counts by status, device availability, routing counts, and latency summaries for direct event submissions, supported webhook intake, and model routing. Latency counters reset after restart. Each reported p95 is a histogram bucket upper bound in milliseconds.
 
-Run `npm run router:benchmark` to test a temporary local SQLite database with 300 submissions, including retries, and 10 concurrent WebSocket preview workers. The run checks local acknowledgement and first-claim p95, task duplication, assignment accuracy, and duplicate outbound notices. It uses fixture documents and does not call a model or send messages to an IM service.
+Run `npm run router:benchmark` to test a temporary local SQLite database with 300 submissions, including retries, and 10 concurrent WebSocket preview workers. The run checks local acknowledgement and first-claim p95, task duplication, and assignment accuracy across desktop and paired mobile HTTP clients. Run `npm run router:benchmark -- --mixed` for simulated model routing, ten isolated Worker fixtures, and mobile approval and cancellation latency.
 
 ## Native desktop build
 

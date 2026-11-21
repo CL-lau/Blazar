@@ -11,7 +11,6 @@ import { preview } from '../device/preview.ts';
 import { DeviceSocket } from '../device/socket.ts';
 import { routerServer } from './http.ts';
 import { TaskStore } from './store.ts';
-import { feishuChannel } from '../../packages/channels/feishu.ts';
 
 const mixed = process.argv.includes('--mixed');
 const jobs = 200;
@@ -24,19 +23,19 @@ const active = AbortSignal.any([timeout, stop.signal]);
 const root = await realpath(await mkdtemp(join(tmpdir(), 'blazar-bench-')));
 const store = new TaskStore(join(root, 'router.sqlite'));
 const token = randomBytes(32).toString('hex');
-const feishu = {
-  token: 'benchmark-verification', appId: 'benchmark-app', tenant: 'benchmark-tenant', workspace,
-  senders: new Set(['benchmark-user']), chats: new Set(['benchmark-chat']),
-};
 const server = routerServer(store, {
-  owner: 'benchmark', token, feishu,
+  owner: 'benchmark', token,
   ...(mixed && { harness: async () => ({ kind: 'create_task' as const }) }),
 });
 const connections: DeviceSocket[] = [];
 const opened = new Map<string, number>();
 const accepted = new Set<string>();
-const intakePaths = ['/v1/events', '/v1/conversation', '/v1/channels/feishu/events'] as const;
-const reception = intakePaths.map(() => ({ first: [] as number[], replay: [] as number[] }));
+const intake = [
+  { client: 'desktop', path: '/v1/events' },
+  { client: 'desktop', path: '/v1/conversation' },
+  { client: 'ios', path: '/v1/events' },
+] as const;
+const reception = intake.map(() => ({ first: [] as number[], replay: [] as number[] }));
 const dispatch: number[] = [];
 const cancellations: number[] = [];
 
@@ -53,6 +52,10 @@ try {
   assert(address && typeof address !== 'string');
   const base = new URL('http://127.0.0.1:' + address.port);
   const headers = { Authorization: 'Bearer ' + token, 'Content-Type': 'application/json' };
+  const pairing = store.createPairing('benchmark', Date.now());
+  const phone = store.redeemPairing(pairing.code, 'Benchmark iPhone', Date.now());
+  assert(phone);
+  const mobileHeaders = { ...headers, Authorization: 'Bearer ' + phone.token };
   for (let index = 0; index < concurrency; index++) {
     const device = store.registerDevice('benchmark', 'Device ' + index, workspace);
     connections.push(new DeviceSocket(base, device.token));
@@ -64,29 +67,19 @@ try {
     const channel = index % 3;
     const started = performance.now();
     if (!opened.has(goal)) opened.set(goal, started);
-    const webhook = {
-      schema: '2.0', header: {
-        token: feishu.token, app_id: feishu.appId, tenant_key: feishu.tenant, event_type: 'im.message.receive_v1',
-      },
-      event: {
-        sender: { sender_id: { open_id: 'benchmark-user' }, sender_type: 'user' },
-        message: { message_id: key, chat_id: 'benchmark-chat', message_type: 'text',
-          content: JSON.stringify({ text: '/blazar ' + goal }) },
-      },
-    };
-    const path = intakePaths[channel];
-    const response = await fetch(new URL(path, base), {
-      method: 'POST', headers: { ...headers, 'Idempotency-Key': key }, signal: active,
-      body: JSON.stringify(channel === 2 ? webhook : { workspace, text: goal }),
+    const route = intake[channel];
+    const response = await fetch(new URL(route.path, base), {
+      method: 'POST', headers: { ...(route.client === 'ios' ? mobileHeaders : headers), 'Idempotency-Key': key }, signal: active,
+      body: JSON.stringify({ workspace, text: goal }),
     });
-    assert.equal(response.status, channel === 2 ? 200 : 202);
+    assert.equal(response.status, 202);
     await response.arrayBuffer();
     reception[channel][replay ? 'replay' : 'first'].push(performance.now() - started);
   }
 
   async function taskCommand(task: Task, key: string, command: { action: 'cancel' } | { action: 'approve'; approvalId: string }) {
     const response = await fetch(new URL('/v1/tasks/' + task.id + '/commands', base), {
-      method: 'POST', headers: { ...headers, 'Idempotency-Key': key }, signal: active,
+      method: 'POST', headers: { ...mobileHeaders, 'Idempotency-Key': key }, signal: active,
       body: JSON.stringify({ expectedVersion: task.version, ...command }),
     });
     assert.equal(response.status, 200);
@@ -184,16 +177,6 @@ try {
   }
   assert.equal(finishes, jobs - expectedCancelled);
   assert.equal(approvals, mixed ? jobs / 10 : 0);
-  const notices = new Set<string>();
-  for (;;) {
-    const notice = store.leaseChannelNotice(feishuChannel(feishu), Date.now());
-    if (!notice) break;
-    assert(!notices.has(notice.messageId), 'Duplicate notification staged for delivery');
-    notices.add(notice.messageId);
-    store.finishChannelNotice(notice.id, true);
-  }
-  assert.equal(notices.size, Math.floor(jobs / 3));
-
   const response = await fetch(new URL('/v1/admin/metrics', base), { headers, signal: active });
   const serverMetrics = await response.json() as { routing: { model: number } };
   assert.equal(serverMetrics.routing.model, mixed ? Math.floor((jobs + 1) / 3) : 0);
@@ -204,17 +187,17 @@ try {
   assert.equal(dispatch.length, jobs);
   const receiptP95Ms = p95([...firstReceipts, ...replayReceipts]);
   const firstReceiptP95Ms = p95(firstReceipts);
-  const receiptByPath = Object.fromEntries(intakePaths.map((path, index) => {
+  const receiptByClient = Object.fromEntries(intake.map(({ client, path }, index) => {
     const { first, replay } = reception[index];
-    return [path, { firstRequests: first.length, firstP95Ms: p95(first), replayRequests: replay.length, replayP95Ms: p95(replay) }];
+    return [client + ' ' + path, { firstRequests: first.length, firstP95Ms: p95(first), replayRequests: replay.length, replayP95Ms: p95(replay) }];
   }));
   const claimP95Ms = p95(dispatch);
   console.log(JSON.stringify({
     workload: mixed ? 'mock-worker-with-approvals-and-cancellations' : 'document-preview',
     approvals, cpu: cpus()[0]?.model, node: process.version, concurrency, submitted: firstReceipts.length + replayReceipts.length,
     completed: finishes, cancelled: cancellations.length,
-    cancelToStopP95Ms: cancellations.length ? p95(cancellations) : null, duplicateTasks: 0, duplicateOutboundNotices: 0, unexpectedAssignments: 0,
-    modelRequests: serverMetrics.routing.model, receiptP95Ms, firstReceiptP95Ms, claimP95Ms, receiptByPath,
+    cancelToStopP95Ms: cancellations.length ? p95(cancellations) : null, duplicateTasks: 0, unexpectedAssignments: 0,
+    modelRequests: serverMetrics.routing.model, receiptP95Ms, firstReceiptP95Ms, claimP95Ms, receiptByClient,
     elapsedMs: Math.round(performance.now() - started),
   }, null, 2));
   assert(firstReceiptP95Ms < 100, 'First local acknowledgement p95 exceeded 100 ms');
