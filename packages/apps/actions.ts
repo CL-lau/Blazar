@@ -6,34 +6,34 @@ export type ApplicationAction = Readonly<{
   input: Readonly<Record<string, unknown>>;
 }>;
 
-export type ActionResult =
-  | { status: 'succeeded'; output: unknown }
+export type ActionResult<Output = unknown> =
+  | { status: 'succeeded'; output: Output }
   | { status: 'unavailable-before-dispatch' }
   | { status: 'denied' }
   | { status: 'outcome-unknown'; backendId: string };
 
-export interface ActionBackend {
+export interface ActionBackend<Output = unknown> {
   readonly id: string;
   readonly connectionId: string;
   readonly capability: string;
   readonly effect: ApplicationAction['effect'];
-  invoke(action: ApplicationAction, signal: AbortSignal): Promise<Exclude<ActionResult, { status: 'outcome-unknown' }>>;
+  invoke(action: ApplicationAction, signal: AbortSignal): Promise<Exclude<ActionResult<Output>, { status: 'outcome-unknown' }>>;
 }
 
 // The caller supplies backends in policy order and authorizes each separately.
-export async function invokeApplicationAction(
+export async function invokeApplicationAction<Output>(
   action: ApplicationAction,
-  backends: readonly ActionBackend[],
-  authorized: (backend: ActionBackend, action: ApplicationAction) => Promise<boolean>,
+  backends: readonly ActionBackend<Output>[],
+  authorized: (backend: ActionBackend<Output>, action: ApplicationAction) => Promise<boolean>,
   signal: AbortSignal,
-): Promise<ActionResult> {
+): Promise<ActionResult<Output>> {
   signal.throwIfAborted();
   for (const backend of backends) {
     if (backend.connectionId !== action.connectionId || backend.capability !== action.capability ||
         backend.effect !== action.effect) continue;
     if (!await authorized(backend, action)) return { status: 'denied' };
     signal.throwIfAborted();
-    let result: Awaited<ReturnType<ActionBackend['invoke']>>;
+    let result: Awaited<ReturnType<ActionBackend<Output>['invoke']>>;
     try {
       result = await backend.invoke(action, signal);
     } catch (error) {

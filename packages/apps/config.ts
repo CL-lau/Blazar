@@ -1,3 +1,4 @@
+import { invokeApplicationAction, type ActionBackend, type ApplicationAction } from './actions.ts';
 import { DocumentBackendUnavailable, DocumentUnavailable, type DocumentConnector, type DocumentReadBackend } from './documents.ts';
 import { feishuDocuments } from './feishu-docs.ts';
 import { mcpDocuments } from './mcp-docs.ts';
@@ -88,26 +89,42 @@ export function configuredDocuments(env: NodeJS.ProcessEnv, transport = fetch): 
       throw new Error('Each fallback must map exactly the configured document aliases');
     }
     const backends = [primary, ...backups];
-    async function tryBackends<T>(signal: AbortSignal, invoke: (backend: typeof primary, index: number) => Promise<T>) {
-      for (const [index, backend] of backends.slice(0, -1).entries()) {
-        signal.throwIfAborted();
-        try {
-          return await invoke(backend, index);
-        } catch (error) {
-          if (!(error instanceof DocumentBackendUnavailable)) throw error;
-        }
-      }
-      signal.throwIfAborted();
-      return invoke(backends[backends.length - 1], backends.length - 1);
+    const connectionId = JSON.stringify([entry.id, primary.account]);
+    async function tryBackends<T>(
+      capability: string,
+      input: ApplicationAction['input'],
+      signal: AbortSignal,
+      invoke: (backend: typeof primary, index: number) => Promise<T>,
+    ) {
+      const action: ApplicationAction = {
+        connectionId, capability, effect: 'read', invocationId: crypto.randomUUID(), input,
+      };
+      const candidates = backends.map((backend, index): ActionBackend<T> => ({
+        id: String(index), connectionId, capability, effect: 'read',
+        async invoke() {
+          try {
+            return { status: 'succeeded', output: await invoke(backend, index) };
+          } catch (error) {
+            if (!(error instanceof DocumentBackendUnavailable) || index === backends.length - 1) throw error;
+            return { status: 'unavailable-before-dispatch' };
+          }
+        },
+      }));
+      const result = await invokeApplicationAction(action, candidates, async () => {
+        // Only backends for this administrator-configured account reach this dispatcher.
+        return true;
+      }, signal);
+      if (result.status === 'succeeded') return result.output;
+      throw new DocumentUnavailable('No configured backend completed the document operation');
     }
     register({
       ...primary, app: entry.id, definition: { label, version: entry.version },
-      read: (alias, signal) => tryBackends(signal, async (reader, index) => {
+      read: (alias, signal) => tryBackends('document.read', { alias }, signal, async (reader, index) => {
         const backend: DocumentReadBackend = { kind: github && index === 0 ? 'github' : 'mcp', fallback: index > 0 };
         return { ...await reader.read(alias, signal), backend };
       }),
-      health: signal => tryBackends(signal, backend => backend.health(signal)),
-      ...(!github && { discover: (signal: AbortSignal) => tryBackends(signal, backend => backend.discover!(signal)) }),
+      health: signal => tryBackends('document.health', {}, signal, backend => backend.health(signal)),
+      ...(!github && { discover: (signal: AbortSignal) => tryBackends('document.discover', {}, signal, backend => backend.discover!(signal)) }),
     });
   }
   return [...readers.values()];
