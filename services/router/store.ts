@@ -1225,6 +1225,7 @@ export class TaskStore {
       } else if (command.action === 'cancel') {
         if (!this.cancelTask(taskId, task.status)) return undefined;
       } else if (command.action === 'append') {
+        if (task.goal.startsWith('/click ')) return undefined;
         if (['cancelling', 'cancelled', 'pausing', 'paused'].includes(task.status)) return undefined;
         this.appendInstruction(taskId, command.text, task.status);
       }
@@ -1942,9 +1943,17 @@ export class TaskStore {
   }
 
   private finishStoppedRun(runId: string, taskId: string, paused: boolean) {
+    const clickMayHaveExecuted = this.db.prepare(`SELECT 1 FROM task t JOIN approval a ON a.taskId=t.id
+      JOIN approval_use u ON u.id=a.id WHERE t.id=? AND a.runId=? AND substr(t.goal,1,7)='/click '`).get(taskId, runId);
     this.db.prepare('DELETE FROM run WHERE id=?').run(runId);
-    this.db.prepare('UPDATE task SET status=? WHERE id=?').run(paused ? 'paused' : 'cancelled', taskId);
-    this.event(taskId, paused ? 'task.paused' : 'task.cancelled', { runId });
+    if (clickMayHaveExecuted) {
+      this.db.prepare('UPDATE task SET status=?,result=? WHERE id=?').run(paused ? 'waiting_user' : 'cancelled',
+        'The click may have been applied. Check the application before retrying.', taskId);
+    } else {
+      this.db.prepare('UPDATE task SET status=? WHERE id=?').run(paused ? 'paused' : 'cancelled', taskId);
+    }
+    this.event(taskId, paused ? (clickMayHaveExecuted ? 'run.finished' : 'task.paused') : 'task.cancelled',
+      { runId, ...(clickMayHaveExecuted && { reconciliationRequired: true }) });
   }
 
   finish(runId: string, device: string, now: number, outcome: RunOutcome) {
@@ -1967,6 +1976,10 @@ export class TaskStore {
         this.finishStoppedRun(runId, taskId, row.status === 'pausing');
         return false;
       }
+      const click = String(row.goal).startsWith('/click ');
+      if ((outcome.status === 'waiting_user' && !click) ||
+          (click && outcome.status !== 'failed' && !this.db.prepare(`SELECT 1 FROM approval_use u
+            JOIN approval a ON a.id=u.id WHERE a.runId=? AND a.version=?`).get(runId, row.runVersion!))) return false;
       const pendingReview = outcome.status === 'succeeded' && !row.staleInputs && row.runVersion === row.version &&
         Boolean(this.db.prepare('SELECT 1 FROM task_review WHERE task_id=?').get(taskId));
       if (pendingReview) {
@@ -2088,6 +2101,8 @@ export class TaskStore {
         });
       }
       const rows = this.db.prepare(`SELECT r.id,r.device,r.taskId,t.status,r.expires=d.deadline AS deadlineReached,
+        substr(t.goal,1,7)='/click ' AND EXISTS(SELECT 1 FROM approval a
+          JOIN approval_use u ON u.id=a.id WHERE a.runId=r.id) AS clickMayHaveExecuted,
         EXISTS(SELECT 1 FROM invalid_workflow_run i WHERE i.id=r.id) AS staleInputs FROM run r
         JOIN task t ON r.taskId=t.id JOIN run_deadline d ON d.run_id=r.id WHERE r.expires<=?`).all(now);
       for (const row of rows) {
@@ -2112,7 +2127,10 @@ export class TaskStore {
         if (inputsChanged) this.db.prepare('UPDATE task SET result=? WHERE id=?')
           .run('An upstream result changed during execution. Review the run before retrying.', taskId);
         const timedOut = status === 'waiting_user' && Boolean(row.deadlineReached);
-        if (timedOut && !inputsChanged) this.db.prepare('UPDATE task SET result=? WHERE id=?')
+        if (status === 'waiting_user' && row.clickMayHaveExecuted && !inputsChanged) {
+          this.db.prepare('UPDATE task SET result=? WHERE id=?')
+            .run('The click may have been applied. Check the application before retrying.', taskId);
+        } else if (timedOut && !inputsChanged) this.db.prepare('UPDATE task SET result=? WHERE id=?')
           .run('The run reached its time limit. Review the device before retrying.', taskId);
         const event = inputsChanged ? 'run.inputs_changed' : timedOut ? 'run.deadline_exceeded' : 'run.lease_expired';
         this.event(taskId, event, { runId: row.id, status });

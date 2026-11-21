@@ -581,7 +581,7 @@ function deviceOperation(store: TaskStore, bearer: string, pathname: string, dat
     if (expires === undefined) return { status: 409, body: { renewed: false } };
     return { status: 200, body: { renewed: true, leaseRemainingMs: Math.max(0, expires - Date.now()) } };
   }
-  if (data.status !== 'succeeded' && data.status !== 'failed') {
+  if (data.status !== 'succeeded' && data.status !== 'failed' && data.status !== 'waiting_user') {
     throw new RequestError(400, 'Invalid outcome status');
   }
   let artifact: RunOutcome['artifact'];

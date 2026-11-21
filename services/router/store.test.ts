@@ -904,3 +904,29 @@ test('an interrupted workflow observation gets one fresh attempt across Router r
   assert.equal(store.get('owner', taskId)?.status, 'waiting_user');
   assert.equal(store.claim('owner', 'project', device.id, 90_002, 45_000, '/observe '), undefined);
 });
+
+test('a click with no confirmed result holds dependent steps for reconciliation', t => {
+  const db = new TaskStore(':memory:');
+  t.after(() => db.close());
+  const device = db.registerDevice('owner', 'Desktop', 'project');
+  const workflow = db.createWorkflow('owner', 'click-flow', 'project', [
+    { key: 'click', goal: 'Add an item', needs: [], action: {
+      kind: 'desktop.click', alias: 'notes', deviceId: device.id,
+      windowId: 'w-10', windowIdentity: 'a'.repeat(64), button: 'Add',
+    } },
+    { key: 'review', goal: 'Review the result', needs: ['click'] },
+  ]);
+  const now = Date.now();
+  const { task, run } = db.claim('owner', 'project', device.id, now, 45_000, '/observe ')!;
+  assert.equal(db.command('owner', task.id, task.version, { action: 'append', text: 'Click again' }), undefined);
+  assert.equal(db.finish(run.id, device.id, now, { status: 'succeeded', result: 'Unapproved action' }), false);
+  const approval = db.requestApproval(run.id, device.id, 'Add an item', now)!;
+  assert.ok(db.command('owner', task.id, task.version, { action: 'approve', approvalId: String(approval.id) }));
+  assert.equal(db.consumeApproval(run.id, device.id, String(approval.id), now), true);
+  const outcome = { status: 'waiting_user', result: 'Check the application before retrying.' } as const;
+  assert.equal(db.finish(run.id, device.id, now, outcome), true);
+  assert.equal(db.finish(run.id, device.id, now, outcome), true);
+  assert.equal(db.get('owner', task.id)?.status, 'waiting_user');
+  assert.equal(db.get('owner', String(workflow.steps[1].taskId))?.status, 'waiting_dependency');
+  assert.equal(db.claim('owner', 'project', device.id, now, 45_000, '/observe '), undefined);
+});

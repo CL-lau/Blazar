@@ -37,7 +37,7 @@ export interface TaskEvent {
 export const windowImageLifetimeMs = 5 * 60_000;
 
 export interface RunOutcome {
-  status: 'succeeded' | 'failed';
+  status: 'succeeded' | 'failed' | 'waiting_user';
   result: string;
   artifact?: { name: string; text: string; mime?: 'image/png' };
 }

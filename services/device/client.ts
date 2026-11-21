@@ -1,5 +1,5 @@
 import { WorkerCleanupError } from '../../packages/workers/process.ts';
-import { captureWindow, clickApp, observeApp, probeComputer, type ObservationConfig } from '../../packages/computer-use/observe.ts';
+import { captureWindow, clickApp, DesktopResultUnverified, observeApp, probeComputer, type ObservationConfig } from '../../packages/computer-use/observe.ts';
 import { DeviceSocket } from './socket.ts';
 import { runAider } from '../../packages/workers/aider.ts';
 import { runCustomJsonl } from '../../packages/workers/custom-jsonl.ts';
@@ -327,7 +327,7 @@ export class DeviceClient {
           this.ledger.clearExecution(this.workspaceIdentity, assignment.run.id);
           active.throwIfAborted();
         }
-        outcome = { status: 'failed', result: error instanceof Error ? error.message : 'Preview failed' };
+        outcome = { status: error instanceof DesktopResultUnverified ? 'waiting_user' : 'failed', result: error instanceof Error ? error.message : 'Preview failed' };
       }
       this.ledger.complete(this.workspaceIdentity, this.scope, assignment.run.id, outcome, checkpoint);
       await this.deliver(assignment.run.id, outcome, active);

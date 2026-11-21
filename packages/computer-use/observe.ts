@@ -237,6 +237,10 @@ function buttonIn(tree: unknown, label: string) {
   return matches[0];
 }
 
+export class DesktopResultUnverified extends Error {
+  constructor() { super('The click may have been applied. Check the application before retrying.'); }
+}
+
 export async function clickApp(config: ObservationConfig, root: string, goal: string, signal: AbortSignal,
                                authorize: (summary: string, signal: AbortSignal) => Promise<(() => Promise<boolean>) | undefined>) {
   const match = /^\/click ([a-z0-9_-]{1,32})(?: --window (w-[0-9]{1,20})(?: --instance ([a-f0-9]{64}))?)? (.{1,120})$/.exec(goal);
@@ -269,8 +273,15 @@ export async function clickApp(config: ObservationConfig, root: string, goal: st
     signal.throwIfAborted();
     if (!await consume()) throw new Error('Desktop approval is no longer valid.');
     signal.throwIfAborted();
-    await runDriver(config, root, ['click', latest.ref], signal);
-    const refreshed = await readSnapshot(config, root, app, signal, windowId).catch(() => undefined);
-    return refreshed ? describeTree(refreshed.tree) : 'Click completed; the application could not be observed afterward.';
+    try {
+      await runDriver(config, root, ['click', latest.ref], signal);
+      const refreshed = await readSnapshot(config, root, app, signal, windowId);
+      if (initial.window_id !== refreshed.window_id || initial.pid !== refreshed.pid) throw new DesktopResultUnverified();
+      const result = describeTree(refreshed.tree);
+      if (!result || result === summary) throw new DesktopResultUnverified();
+      return result;
+    } catch {
+      throw new DesktopResultUnverified();
+    }
   });
 }
