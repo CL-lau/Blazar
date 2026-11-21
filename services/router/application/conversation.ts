@@ -7,6 +7,7 @@ import type { RouterMetrics } from '../metrics.ts';
 import { IdempotencyConflict } from '../domain/idempotency.ts';
 import type { TaskStore } from '../store.ts';
 import { invokeDocumentCapability } from './document-sync.ts';
+import { ModelAdmission } from './model-admission.ts';
 
 export class ConversationError extends Error {
   readonly status: number;
@@ -38,8 +39,7 @@ interface ConversationRequest {
 }
 
 export function createConversationRouter(store: ConversationTasks, config: ConversationDependencies) {
-  const modelRoutesByCaller = new Map<string, number>();
-  let modelRoutes = 0;
+  const admission = new ModelAdmission();
   const pendingRoutes = new Map<string, { fingerprint: string; decision: Promise<Decision> }>();
 
   return async function routeConversation({ owner, caller, admin, key, input, metrics, authorized, canReadTask }: ConversationRequest) {
@@ -97,17 +97,17 @@ export function createConversationRouter(store: ConversationTasks, config: Conve
             const foundVersions = new Map<string, number>();
             const recall = () => input.usePersonalMemory
               ? config.memory?.personalContext(owner, input.workspace, input.text) ?? [] : [];
-            const evidence = recall();
-            const modelStarted = performance.now();
-            const modelScope = JSON.stringify([owner, caller]);
-            const callerRoutes = modelRoutesByCaller.get(modelScope) ?? 0;
-            if (modelRoutes >= 16 || callerRoutes >= 4) {
-              throw new ConversationError(429, 'Blazar routing is busy. Please retry.');
+            const release = await admission.acquire(JSON.stringify([owner, caller]));
+            if (!release) throw new ConversationError(429, 'Blazar routing is busy. Please retry.');
+            if (!authorized()) {
+              release();
+              throw new ConversationError(401, 'Authentication required');
             }
-            modelRoutes++;
-            modelRoutesByCaller.set(modelScope, callerRoutes + 1);
+            const modelStarted = performance.now();
+            let evidence: ReturnType<typeof recall> = [];
             metrics.route('model');
             try {
+              evidence = recall();
               const recent = store.recentConversation(owner, input.workspace, caller).map(({ taskEvidence, ...turn }) => {
                 for (const [taskId, version] of taskEvidence ?? []) evidenceVersions.set(taskId, version);
                 return turn;
@@ -158,10 +158,7 @@ export function createConversationRouter(store: ConversationTasks, config: Conve
               metrics.route('modelErrors');
               throw new ConversationError(503, 'Blazar could not make a routing decision. Please retry.');
             } finally {
-              modelRoutes--;
-              const remaining = (modelRoutesByCaller.get(modelScope) ?? 1) - 1;
-              if (remaining) modelRoutesByCaller.set(modelScope, remaining);
-              else modelRoutesByCaller.delete(modelScope);
+              release();
               metrics.observe('model', performance.now() - modelStarted);
             }
             if (evidence.length) {
