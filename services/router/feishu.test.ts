@@ -99,13 +99,26 @@ test('Feishu callbacks verify the source and link authorized thread replies', as
   await post(makeEvent('unauthorized-cancel', '/blazar /cancel', { root: 'pausable-root', sender: 'unlisted' }));
   await post(makeEvent('wrong-thread-cancel', '/blazar /cancel', { root: 'unknown' }));
   assert.equal(store.get('owner', queued.id)?.status, 'queued');
+  const firstRun = store.claim('owner', 'workspace', 'device', Date.now(), 45_000)!;
+  const pause = makeEvent('pause', '/blazar /暂停', { root: 'pausable-root' });
+  await post(pause);
+  await post(pause);
+  assert.equal(store.get('owner', queued.id)?.status, 'pausing');
+  assert.equal(store.get('owner', queued.id)?.version, 2);
+  assert.deepEqual(store.deviceStopTargets('device').map(row => row.id), [firstRun.run.id]);
+  await post(makeEvent('early-resume', '/blazar /resume', { root: 'pausable-root' }));
+  assert.equal(store.get('owner', queued.id)?.status, 'pausing');
+  assert.equal(store.acknowledgeStop(firstRun.run.id, 'device', Date.now()), true);
+  await post(makeEvent('resume', '/blazar /继续', { root: 'pausable-root' }));
+  assert.equal(store.get('owner', queued.id)?.status, 'queued');
+  assert.equal(store.get('owner', queued.id)?.version, 3);
   const current = store.claim('owner', 'workspace', 'device', Date.now(), 45_000)!;
   const cancel = makeEvent('cancel', '/blazar /cancel', { root: 'pausable-root' });
   await post(cancel);
   await post(cancel);
   assert.equal(store.get('owner', queued.id)?.status, 'cancelling');
   assert.deepEqual(store.deviceStopTargets('device').map(row => row.id), [current.run.id]);
-  assert.equal(store.get('owner', queued.id)?.version, 2);
+  assert.equal(store.get('owner', queued.id)?.version, 4);
   assert.equal(store.acknowledgeStop(current.run.id, 'device', Date.now()), true);
   assert.equal(store.get('owner', queued.id)?.status, 'cancelled');
 

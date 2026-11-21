@@ -526,7 +526,9 @@ export class TaskStore {
       }
       const key = [owner, channel, message.chat, message.thread] as const;
       const statusQuery = message.text === '/status' || message.text === '/状态';
-      if ((message.text === '/cancel' || statusQuery) && message.root) return;
+      const pause = message.text === '/pause' || message.text === '/暂停';
+      const resume = message.text === '/resume' || message.text === '/继续';
+      if ((message.text === '/cancel' || statusQuery || pause || resume) && message.root) return;
       const linking = message.text === '/link' || message.text.startsWith('/link ');
       if (linking || message.root) {
         let taskId: string;
@@ -560,7 +562,12 @@ export class TaskStore {
         : this.db.prepare(`SELECT t.id,t.status,c.thread FROM channel_thread c JOIN task t ON t.id=c.task_id
             WHERE c.owner=? AND c.channel=? AND c.chat=? AND c.thread=? AND t.workspace=?`).get(...key, workspace);
       if (!link) return;
-      if (statusQuery) {
+      if (statusQuery || pause || resume) {
+        const taskId = String(link.id);
+        const previous = String(link.status);
+        if (pause) this.pauseTask(taskId, previous, { channel });
+        if (resume) this.requeueTask(taskId, previous, 'resume', { channel });
+        const status = this.get(owner, taskId)!.status;
         const now = Date.now();
         const thread = String(link.thread);
         const replyId = message.replyExpires === undefined ? thread : message.id;
@@ -570,8 +577,8 @@ export class TaskStore {
             .run(channel, message.chat, replyId, message.replyExpires);
         }
         const notice = randomUUID();
-        const chinese = message.text === '/状态';
-        const state = displayTaskStatus(String(link.status), chinese);
+        const chinese = ['/状态', '/暂停', '/继续'].includes(message.text);
+        const state = displayTaskStatus(status, chinese);
         const text = chinese ? `Blazar 任务${state}。任务 ID ${link.id}` : `Blazar task status: ${state}. Task: ${link.id}`;
         this.db.prepare('INSERT INTO channel_outbox VALUES(?,?,?,?,?,?,?,0)')
           .run(notice, channel, message.chat, replyId, text, now, now);
@@ -589,6 +596,27 @@ export class TaskStore {
       const taskId = String(link.id);
       this.appendInstruction(taskId, message.text, String(link.status), { channel });
     });
+  }
+
+  private pauseTask(taskId: string, previousStatus: string, metadata: Record<string, string> = {}) {
+    if (!['queued', 'running', 'waiting_user', 'waiting_dependency', 'waiting_device'].includes(previousStatus)) return false;
+    const live = this.db.prepare('SELECT 1 FROM run WHERE taskId=?').get(taskId);
+    const status = live ? 'pausing' : 'paused';
+    this.db.prepare('UPDATE task SET status=?,version=version+1 WHERE id=?').run(status, taskId);
+    this.event(taskId, 'task.pause_requested', { status, ...metadata });
+    return true;
+  }
+
+  private requeueTask(taskId: string, previousStatus: string, action: 'resume' | 'retry', metadata: Record<string, string> = {}) {
+    const allowed = action === 'resume' ? previousStatus === 'paused'
+      : previousStatus === 'failed' || previousStatus === 'waiting_user';
+    if (!allowed || this.db.prepare('SELECT 1 FROM run WHERE taskId=?').get(taskId)) return false;
+    this.db.prepare("UPDATE task SET status='queued',version=version+1,result=NULL WHERE id=?").run(taskId);
+    this.event(taskId, action === 'resume' ? 'task.resumed' : 'task.retry_requested', {
+      status: 'queued', previousStatus, ...metadata,
+    });
+    this.updateWorkflowReadiness(taskId);
+    return true;
   }
 
   private cancelTask(taskId: string, priorStatus: string, metadata: Record<string, string> = {}) {
@@ -717,18 +745,9 @@ export class TaskStore {
         this.db.prepare('DELETE FROM review_input WHERE task_id=?').run(taskId);
         this.event(taskId, accepted ? 'task.result_accepted' : 'task.result_rejected', { status });
       } else if (command.action === 'pause') {
-        if (!['queued', 'running', 'waiting_user', 'waiting_dependency', 'waiting_device'].includes(task.status)) return undefined;
-        const status = liveRun ? 'pausing' : 'paused';
-        this.db.prepare('UPDATE task SET status=?,version=version+1 WHERE id=?').run(status, taskId);
-        this.event(taskId, 'task.pause_requested', { status });
+        if (!this.pauseTask(taskId, task.status)) return undefined;
       } else if (command.action === 'resume' || command.action === 'retry') {
-        const allowed = command.action === 'resume' ? task.status === 'paused'
-          : task.status === 'failed' || task.status === 'waiting_user';
-        if (!allowed || liveRun) return undefined;
-        this.db.prepare("UPDATE task SET status='queued',version=version+1,result=NULL WHERE id=?").run(taskId);
-        const type = command.action === 'resume' ? 'task.resumed' : 'task.retry_requested';
-        this.event(taskId, type, { status: 'queued', previousStatus: task.status });
-        this.updateWorkflowReadiness(taskId);
+        if (!this.requeueTask(taskId, task.status, command.action)) return undefined;
       } else if (command.action === 'cancel') {
         if (!this.cancelTask(taskId, task.status)) return undefined;
       } else if (command.action === 'append') {
