@@ -1,7 +1,7 @@
 import type { ModelTokens } from './harness.ts';
 
 const bounds = [1, 2, 5, 10, 25, 50, 100, 250, 500, 1000, 5000, 15000];
-type Timing = 'event' | 'feishu' | 'qq' | 'model';
+type Timing = 'event' | 'feishu' | 'lark' | 'qq' | 'model';
 
 export class RouterMetrics {
   private timings = new Map<Timing, { count: number; totalMs: number; buckets: number[] }>();

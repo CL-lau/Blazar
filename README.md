@@ -166,6 +166,8 @@ Linked conversations also accept `/status`, `/pause`, `/resume`, and `/retry` as
 
 To continue an existing task in another supported IM conversation, open the task on desktop and create a one-time link command. Send the command as a new message in an authorized conversation for the same workspace. Reply in the linked Feishu or Lark thread, or use `/blazar follow TASK_ID your instruction` on channels that require an explicit task reference.
 
+Configure Feishu with `BLAZAR_FEISHU_*` and the `/v1/channels/feishu/events` callback. A Router can also run an independent Lark bot using `BLAZAR_LARK_VERIFY_TOKEN`, `BLAZAR_LARK_APP_ID`, `BLAZAR_LARK_TENANT`, `BLAZAR_LARK_WORKSPACE`, `BLAZAR_LARK_SENDERS`, `BLAZAR_LARK_CHATS`, and `BLAZAR_LARK_APP_SECRET`, with callback `/v1/channels/lark/events`. Existing `BLAZAR_FEISHU_REGION=lark` deployments can keep their original callback and task links.
+
 Feishu and Lark can attach UTF-8 `.txt`, `.md`, `.csv`, `.json`, and `.log` files to a Worker task. Send the file as a reply in its linked thread. Configure the bot app secret and [message resource access](https://open.feishu.cn/document/uAjLw4CM/ukTMukTMukTM/reference/im-v1). The Router accepts up to 8 KiB per file and 16 KiB per task.
 
 For QQ attachments, set `BLAZAR_QQ_MEDIA_HOSTS` to the exact QQ media hostnames your bot receives. Send a single UTF-8 file with `/blazar follow TASK_ID /attach` in the linked chat. The same size limits apply. Downloads are restricted to configured HTTPS hosts under `qq.com` or `qpic.cn`.

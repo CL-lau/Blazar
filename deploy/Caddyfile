@@ -15,7 +15,7 @@
 	}
 	@public_write {
 		method POST
-		path /v1/pairings/redeem /v1/mobile/push /v1/conversation /v1/events /v1/workflows /v1/channels/feishu/events /v1/channels/qq/events
+		path /v1/pairings/redeem /v1/mobile/push /v1/conversation /v1/events /v1/workflows /v1/channels/feishu/events /v1/channels/lark/events /v1/channels/qq/events
 	}
 	@task_command {
 		method POST

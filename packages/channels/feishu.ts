@@ -76,8 +76,8 @@ export function parseFeishu(body: EventRecord, config: FeishuConfig):
   return { kind: 'message', id, chat, thread: root ? id : rootId, root, text: goal };
 }
 
-export function feishuChannel(config: FeishuConfig): string {
-  return JSON.stringify(['feishu', config.tenant, config.appId]);
+export function feishuChannel(config: FeishuConfig, region: 'feishu' | 'lark' = 'feishu'): string {
+  return JSON.stringify([region, config.tenant, config.appId]);
 }
 
 export function createFeishuSender(appId: string, appSecret: string, region: 'feishu' | 'lark', transport = fetch) {

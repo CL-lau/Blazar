@@ -1,8 +1,8 @@
 import React, { useEffect, useState } from 'react';
 import { callRouter } from './router.js';
 
-const timingLabels = { event: 'Task intake', feishu: 'Feishu / Lark intake', qq: 'QQ intake', model: 'Model routing' };
-const deliveryLabels = { weixin: 'WeChat', feishu: 'Feishu / Lark', wecom: 'WeCom', dingtalk: 'DingTalk', qq: 'QQ' };
+const timingLabels = { event: 'Task intake', feishu: 'Feishu intake', lark: 'Lark intake', qq: 'QQ intake', model: 'Model routing' };
+const deliveryLabels = { weixin: 'WeChat', feishu: 'Feishu', lark: 'Lark', wecom: 'WeCom', dingtalk: 'DingTalk', qq: 'QQ' };
 const deliveryColumns = [
   ['pending', 'Pending'], ['sent', 'Sent'], ['failed', 'Failed'], ['unknown', 'Unknown'], ['expired', 'Expired'],
 ];

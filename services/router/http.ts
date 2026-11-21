@@ -617,7 +617,7 @@ function deviceOperation(store: TaskStore, bearer: string, pathname: string, dat
   return { status: accepted ? 200 : 409, body: { accepted } };
 }
 
-export function routerServer(store: TaskStore, config: { owner: string; token: string; memory?: MemoryStore; harness?: RouterHarness; feishu?: FeishuConfig; readFeishuAttachment?: (messageId: string, key: string) => Promise<string | undefined>; qq?: QQConfig; readQQAttachment?: (url: string, name?: string) => Promise<TaskAttachment | undefined>; documents?: readonly DocumentConnector[]; answerMemory?: MemoryAnswer; pushEnabled?: boolean }) {
+export function routerServer(store: TaskStore, config: { owner: string; token: string; memory?: MemoryStore; harness?: RouterHarness; feishu?: FeishuConfig; lark?: FeishuConfig; readLarkAttachment?: (messageId: string, key: string) => Promise<string | undefined>; readFeishuAttachment?: (messageId: string, key: string) => Promise<string | undefined>; qq?: QQConfig; readQQAttachment?: (url: string, name?: string) => Promise<TaskAttachment | undefined>; documents?: readonly DocumentConnector[]; answerMemory?: MemoryAnswer; pushEnabled?: boolean }) {
   const metricsByOwner = new Map<string, RouterMetrics>();
   function ownerMetrics(owner: string) {
     let metrics = metricsByOwner.get(owner);
@@ -711,23 +711,25 @@ export function routerServer(store: TaskStore, config: { owner: string; token: s
         }
         return;
       }
-      if (request.method === 'POST' && url.pathname === '/v1/channels/feishu/events' && config.feishu) {
-        const event = parseFeishu(await jsonObject(request), config.feishu);
+      const larkCallback = url.pathname === '/v1/channels/lark/events';
+      const collaboration = larkCallback ? config.lark : url.pathname === '/v1/channels/feishu/events' ? config.feishu : undefined;
+      if (request.method === 'POST' && collaboration) {
+        const channel = feishuChannel(collaboration, larkCallback ? 'lark' : 'feishu');
+        const readAttachment = larkCallback ? config.readLarkAttachment : config.readFeishuAttachment;
+        const event = parseFeishu(await jsonObject(request), collaboration);
         if (event.kind === 'unauthorized') throw new RequestError(401, 'Channel authentication required');
         if (event.kind === 'challenge') {
           reply(response, 200, { challenge: event.value });
           return;
         }
         if (event.kind === 'message') {
-          const channel = feishuChannel(config.feishu);
-          store.receiveChannelMessage(config.owner, channel, config.feishu.workspace, event);
+          store.receiveChannelMessage(config.owner, channel, collaboration.workspace, event);
           flushStopNotifications();
-          ownerMetrics(config.owner).observe('feishu', performance.now() - started);
+          ownerMetrics(config.owner).observe(larkCallback ? 'lark' : 'feishu', performance.now() - started);
         }
-        if (event.kind === 'attachment' && config.readFeishuAttachment) {
-          const read = config.readFeishuAttachment;
-          await attachFromChannel(feishuChannel(config.feishu), config.feishu.workspace, event, async () => {
-            const text = await read(event.id, event.key);
+        if (event.kind === 'attachment' && readAttachment) {
+          await attachFromChannel(channel, collaboration.workspace, event, async () => {
+            const text = await readAttachment(event.id, event.key);
             return text === undefined ? undefined : { name: event.name, text };
           });
         }

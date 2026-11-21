@@ -27,18 +27,22 @@ const model = process.env.BLAZAR_MODEL;
 if (Boolean(provider) !== Boolean(model)) throw new Error('Set BLAZAR_MODEL_PROVIDER and BLAZAR_MODEL together');
 const harness = provider && model ? piHarness(provider, model) : undefined;
 const answerMemory = provider && model ? piMemoryAnswer(provider, model) : undefined;
-const feishuToken = process.env.BLAZAR_FEISHU_VERIFY_TOKEN;
-const feishu = feishuToken ? {
-  token: feishuToken,
-  appId: process.env.BLAZAR_FEISHU_APP_ID ?? '',
-  tenant: process.env.BLAZAR_FEISHU_TENANT ?? '',
-  workspace: process.env.BLAZAR_FEISHU_WORKSPACE ?? '',
-  senders: new Set((process.env.BLAZAR_FEISHU_SENDERS ?? '').split(',').map(value => value.trim()).filter(Boolean)),
-  chats: new Set((process.env.BLAZAR_FEISHU_CHATS ?? '').split(',').map(value => value.trim()).filter(Boolean)),
-} : undefined;
-if (feishu && (!feishu.appId || !feishu.tenant || !feishu.workspace || !feishu.senders.size || !feishu.chats.size)) {
-  throw new Error('Set all Blazar Feishu configuration values before enabling the callback');
+function collaborationConfig(prefix: 'BLAZAR_FEISHU' | 'BLAZAR_LARK') {
+  const token = process.env[prefix + '_VERIFY_TOKEN'];
+  if (!token) return undefined;
+  const values = (suffix: string) => new Set((process.env[prefix + suffix] ?? '').split(',')
+    .map(value => value.trim()).filter(Boolean));
+  const config = {
+    token, appId: process.env[prefix + '_APP_ID'] ?? '', tenant: process.env[prefix + '_TENANT'] ?? '',
+    workspace: process.env[prefix + '_WORKSPACE'] ?? '', senders: values('_SENDERS'), chats: values('_CHATS'),
+  };
+  if (!config.appId || !config.tenant || !config.workspace || !config.senders.size || !config.chats.size) {
+    throw new Error('Set all ' + prefix + ' configuration values before enabling the callback');
+  }
+  return config;
 }
+const feishu = collaborationConfig('BLAZAR_FEISHU');
+const lark = collaborationConfig('BLAZAR_LARK');
 const qqSecret = process.env.BLAZAR_QQ_SECRET;
 const qq = qqSecret ? {
   secret: qqSecret, appId: process.env.BLAZAR_QQ_APP_ID ?? '',
@@ -59,10 +63,12 @@ const feishuSecret = process.env.BLAZAR_FEISHU_APP_SECRET;
 const feishuSender = feishu && feishuSecret
   ? createFeishuSender(feishu.appId, feishuSecret, process.env.BLAZAR_FEISHU_REGION === 'lark' ? 'lark' : 'feishu')
   : undefined;
+const larkSecret = process.env.BLAZAR_LARK_APP_SECRET;
+const larkSender = lark && larkSecret ? createFeishuSender(lark.appId, larkSecret, 'lark') : undefined;
 const qqMediaHosts = new Set((process.env.BLAZAR_QQ_MEDIA_HOSTS ?? '').split(',')
   .map(host => host.trim().toLowerCase()).filter(Boolean));
 const readQQAttachment = qq && qqMediaHosts.size ? createQQAttachmentReader(qqMediaHosts) : undefined;
-const server = routerServer(store, { feishu, readFeishuAttachment: feishuSender?.readAttachment, qq, readQQAttachment, documents, owner: 'local', token, memory, harness, answerMemory, pushEnabled: Boolean(push) });
+const server = routerServer(store, { feishu, lark, readFeishuAttachment: feishuSender?.readAttachment, readLarkAttachment: larkSender?.readAttachment, qq, readQQAttachment, documents, owner: 'local', token, memory, harness, answerMemory, pushEnabled: Boolean(push) });
 const stopPush = push && startPushDelivery(store, push);
 const documentSyncShutdown = new AbortController();
 let documentSync: Promise<unknown> | undefined;
@@ -92,19 +98,25 @@ const watchdog = setInterval(() => {
   }
 }, 1_000);
 
-let delivery: Promise<void> | undefined;
+const collaborationChannels = [
+  { identity: 'feishu' as const, config: feishu, sender: feishuSender, delivery: undefined as Promise<void> | undefined },
+  { identity: 'lark' as const, config: lark, sender: larkSender, delivery: undefined as Promise<void> | undefined },
+];
 const channelDispatcher = setInterval(() => {
-  if (!feishu || !feishuSender || delivery) return;
-  const item = store.leaseChannelNotice(feishuChannel(feishu), Date.now());
-  if (!item) return;
-  if (!feishu.chats.has(item.chat)) {
-    store.finishChannelNotice(item.id, false);
-    return;
+  for (const channel of collaborationChannels) {
+    const { config, sender, identity } = channel;
+    if (!config || !sender || channel.delivery) continue;
+    const item = store.leaseChannelNotice(feishuChannel(config, identity), Date.now());
+    if (!item) continue;
+    if (!config.chats.has(item.chat)) {
+      store.finishChannelNotice(item.id, false);
+      continue;
+    }
+    channel.delivery = sender(item.messageId, item.text, item.id)
+      .then(() => store.finishChannelNotice(item.id, true))
+      .catch(() => console.error(identity + ' notification failed and will be retried'))
+      .finally(() => { channel.delivery = undefined; });
   }
-  delivery = feishuSender(item.messageId, item.text, item.id)
-    .then(() => store.finishChannelNotice(item.id, true))
-    .catch(() => console.error('Feishu notification failed and will be retried'))
-    .finally(() => { delivery = undefined; });
 }, 1_000);
 channelDispatcher.unref();
 
@@ -144,7 +156,7 @@ function shutdown() {
   clearInterval(qqDispatcher);
   server.closeDeviceSockets();
   server.close(async () => {
-    await Promise.all([delivery, qqDelivery, documentSync, stopPush?.()]);
+    await Promise.all([...collaborationChannels.map(channel => channel.delivery), qqDelivery, documentSync, stopPush?.()]);
     memory.close();
     store.close();
     instance.release();

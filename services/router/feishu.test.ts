@@ -167,3 +167,48 @@ test('Feishu callbacks verify the source and link authorized thread replies', as
   assert.doesNotMatch(JSON.stringify(store.timeline('owner', target.id)), /Approved fixture document/);
 
 });
+
+test('Feishu and Lark isolate callback identity and outbound notices in one Router', async t => {
+  const store = new TaskStore(':memory:');
+  const common = { appId: 'app', tenant: 'tenant', senders: new Set(['person']), chats: new Set(['chat']) };
+  const feishu = { ...common, token: 'feishu-verification', workspace: 'cn' };
+  const lark = { ...common, token: 'lark-verification', workspace: 'global' };
+  const server = routerServer(store, { owner: 'owner', token: 'admin', feishu, lark });
+  server.listen(0, '127.0.0.1');
+  t.after(async () => {
+    await new Promise<void>(resolve => server.close(() => resolve()));
+    store.close();
+  });
+  await once(server, 'listening');
+  const address = server.address();
+  assert.ok(address && typeof address !== 'string');
+  const callback = (region: string, token: string) => fetch(
+    'http://127.0.0.1:' + address.port + '/v1/channels/' + region + '/events', {
+      method: 'POST', headers: { 'Content-Type': 'application/json', 'X-Blazar-Public-Gateway': '1' },
+      body: JSON.stringify({
+        schema: '2.0', header: { token, app_id: common.appId, tenant_key: common.tenant, event_type: 'im.message.receive_v1' },
+        event: {
+          sender: { sender_type: 'user', sender_id: { open_id: 'person' } },
+          message: { message_id: 'shared-id', chat_id: 'chat', message_type: 'text',
+            content: JSON.stringify({ text: '/blazar Review notes' }) },
+        },
+      }),
+    },
+  );
+  assert.equal((await callback('feishu', lark.token)).status, 401);
+  assert.equal((await callback('lark', feishu.token)).status, 401);
+  for (const [region, config] of [['feishu', feishu], ['lark', lark]] as const) {
+    assert.equal((await callback(region, config.token)).status, 200);
+    assert.equal((await callback(region, config.token)).status, 200);
+    const now = Date.now();
+    const { run } = store.claim('owner', config.workspace, region, now, 45_000)!;
+    assert.equal(store.finish(run.id, region, now, { status: 'succeeded', result: 'Private fixture' }), true);
+    const notice = store.leaseChannelNotice(feishuChannel(config, region), now + 10);
+    assert.equal(notice?.messageId, 'shared-id');
+    assert.doesNotMatch(notice?.text ?? '', /Private fixture/);
+    store.finishChannelNotice(notice!.id, true);
+  }
+  assert.equal(store.snapshot('owner').tasks.length, 2);
+  assert.deepEqual(store.metrics('owner', Date.now()).channelDelivery.map(row => [row.channel, row.sent]),
+    [['feishu', 1], ['lark', 1]]);
+});
