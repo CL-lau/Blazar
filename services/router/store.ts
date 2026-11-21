@@ -1937,10 +1937,10 @@ export class TaskStore {
       this.db.prepare('DELETE FROM artifact WHERE id IN (SELECT artifact_id FROM artifact_image WHERE expires<=?)').run(now);
       const approvals = this.db.prepare(`SELECT a.id,a.runId,a.taskId,a.expires FROM approval a
         JOIN run r ON r.id=a.runId JOIN task t ON t.id=a.taskId
-        WHERE a.decision IS NULL AND a.expires<=? AND r.expires>?
+        WHERE a.decision IS NULL AND a.expires<=? AND a.expires<r.expires
         AND t.status='waiting_user' AND a.version=r.version AND r.version=t.version
         AND NOT EXISTS(SELECT 1 FROM invalid_workflow_run i WHERE i.id=r.id)
-        AND NOT EXISTS(SELECT 1 FROM run_evidence_stop s WHERE s.run_id=r.id)`).all(now, now);
+        AND NOT EXISTS(SELECT 1 FROM run_evidence_stop s WHERE s.run_id=r.id)`).all(now);
       for (const approval of approvals) {
         const taskId = String(approval.taskId);
         this.db.prepare('DELETE FROM run WHERE id=?').run(approval.runId!);

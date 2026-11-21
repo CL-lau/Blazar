@@ -281,6 +281,28 @@ test('watchdog records a pending approval timeout and fences the expired run', t
   assert.equal(JSON.parse(events[0].data).approvalId, approval.id);
 });
 
+test('a delayed watchdog preserves whichever of the approval or execution lease expired first', t => {
+  const db = new TaskStore(':memory:');
+  t.after(() => db.close());
+  const now = Date.now();
+  const approvalFirst = db.create('owner', 'desktop', 'approval-first', 'approval-workspace', 'Prepare notes');
+  const leaseFirst = db.create('owner', 'desktop', 'lease-first', 'lease-workspace', 'Prepare a draft');
+  const first = db.claim('owner', 'approval-workspace', 'device-one', now, 400_000)!.run;
+  const second = db.claim('owner', 'lease-workspace', 'device-two', now, 45_000)!.run;
+  assert.ok(db.requestApproval(first.id, first.device, 'Approve notes', now));
+  assert.ok(db.requestApproval(second.id, second.device, 'Approve draft', now));
+  const cursor = db.eventCursor();
+
+  assert.equal(db.expire(now + 450_000), 2);
+  assert.equal(db.expire(now + 450_000), 0);
+  assert.equal(db.get('owner', approvalFirst.id)?.status, 'failed');
+  assert.equal(db.get('owner', leaseFirst.id)?.status, 'waiting_user');
+  assert.deepEqual(db.events('owner', cursor).map(({ taskId, type }) => ({ taskId, type })), [
+    { taskId: approvalFirst.id, type: 'approval.expired' },
+    { taskId: leaseFirst.id, type: 'run.lease_expired' },
+  ]);
+});
+
 test('failed workflow predecessors keep dependent steps waiting until a retry succeeds', t => {
   const db = new TaskStore(':memory:');
   t.after(() => db.close());
