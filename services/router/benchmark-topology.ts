@@ -30,7 +30,8 @@ async function run(topology: Topology) {
   const available = new Map<string, number>();
   const first = new Map<number, Promise<void>>();
   const receipts: number[] = [];
-  const boundReceipts: number[] = [];
+  const boundRunnable: number[] = [];
+  const boundAcknowledgements: number[] = [];
   const boundClaims: number[] = [];
   const claims: number[] = [];
   const accepted = new Set<string>();
@@ -74,14 +75,14 @@ async function run(topology: Topology) {
       available.set(task.id, received);
       if (event.bound) {
         assert.equal(task.status, 'queued');
-        const elapsed = performance.now() - received;
-        boundReceipts.push(elapsed);
+        boundRunnable.push(performance.now() - received);
       }
     }
     for (const workspace of workspaces) subscriptions.on(workspace, persist);
     async function receive(event: typeof arrivals[number]) {
       const received = performance.now();
       let pending = first.get(event.id);
+      const firstAttempt = !pending;
       if (!pending) {
         const route = async () => {
           signal.throwIfAborted();
@@ -96,14 +97,16 @@ async function run(topology: Topology) {
           persist(event, received);
         };
         pending = topology === 'single-session' ? singleSession.then(route) : route();
-          if (topology === 'single-session') {
-            singleSession = pending.then(async () => { assert(await execute(deviceIds[0])); });
-            void singleSession.catch(() => {});
-          }
+        if (topology === 'single-session') {
+          singleSession = pending.then(async () => { assert(await execute(deviceIds[0])); });
+          void singleSession.catch(() => {});
+        }
         first.set(event.id, pending);
       }
       await pending;
-      receipts.push(performance.now() - received);
+      const acknowledgement = performance.now() - received;
+      receipts.push(acknowledgement);
+      if (firstAttempt && event.bound) boundAcknowledgements.push(acknowledgement);
     }
     const ingress = (async () => {
       const requests = [];
@@ -129,10 +132,15 @@ async function run(topology: Topology) {
     assert.equal(accepted.size, 200);
     assert.equal(delivered, 200);
     assert.equal(store.snapshot(owner).tasks.length, 200);
+    const boundCount = [...fixtures.values()].filter(event => event.bound).length;
+    assert.equal(boundRunnable.length, boundCount);
+    assert.equal(boundAcknowledgements.length, boundCount);
+    assert.equal(boundClaims.length, boundCount);
+    assert.equal(modelRequests, topology === 'single-session' ? fixtures.size : fixtures.size - boundCount);
     return { topology, executionConcurrency: topology === 'single-session' ? 1 : workerCount,
       requests: receipts.length, duplicateRequests: receipts.length - first.size, delivered, modelRequests,
-      acknowledgementP95Ms: p95(receipts), claimP95Ms: p95(claims), boundAcknowledgementP95Ms: p95(boundReceipts),
-      boundRunnableP95Ms: p95(boundReceipts), boundClaimP95Ms: p95(boundClaims), elapsedMs: Math.round(performance.now() - started) };
+      acknowledgementP95Ms: p95(receipts), claimP95Ms: p95(claims), boundAcknowledgementP95Ms: p95(boundAcknowledgements),
+      boundRunnableP95Ms: p95(boundRunnable), boundClaimP95Ms: p95(boundClaims), elapsedMs: Math.round(performance.now() - started) };
   } finally {
     store.close();
     await rm(directory, { recursive: true, force: true });
