@@ -175,6 +175,26 @@ test('a registered JSONL extension executes a real subprocess through Router and
   const pairing = store.createPairing('owner', Date.now());
   const phone = store.redeemPairing(pairing.code, 'Phone', Date.now())!;
   assert.equal((await download(phone.token)).status, 404);
+  const sharePath = base + '/v1/tasks/' + protectedTask.id + '/share-result';
+  const setShare = (enabled: boolean, version = 1, token = 'local') => fetch(sharePath, {
+    method: 'POST', headers: { Authorization: 'Bearer ' + token, 'Content-Type': 'application/json' },
+    body: JSON.stringify({ clientId: phone.id, expectedVersion: version, enabled }),
+  });
+  assert.equal((await setShare(true, 2)).status, 409);
+  assert.equal((await setShare(true, 1, phone.token)).status, 403);
+  assert.equal((await setShare(true)).status, 200);
+  assert.equal(await (await download(phone.token)).text(), 'Private review template');
+  const otherPairing = store.createPairing('owner', Date.now());
+  const otherPhone = store.redeemPairing(otherPairing.code, 'Other phone', Date.now())!;
+  assert.equal((await download(otherPhone.token)).status, 404);
+  const phoneState = await (await fetch(base + '/v1/state', { headers: { Authorization: 'Bearer ' + phone.token } })).json();
+  assert.equal(phoneState.tasks.find((item: { id: string }) => item.id === protectedTask.id)?.result, 'Private review template');
+  assert.equal((await fetch(base + '/v1/tasks/' + protectedTask.id + '/timeline', {
+    headers: { Authorization: 'Bearer ' + phone.token },
+  })).status, 404);
+  assert.equal((await setShare(false)).status, 200);
+  assert.equal((await download(phone.token)).status, 404);
+  assert.equal((await setShare(true)).status, 200);
   const activeResponse = await createWithEvidence('active-app-evidence');
   const activeTask = await activeResponse.json();
   const devicePost = (path: string, body: object) => fetch(base + '/v1/device/' + path, {
@@ -195,6 +215,7 @@ test('a registered JSONL extension executes a real subprocess through Router and
   assert.equal(await client.runOnce(AbortSignal.timeout(5_000)), false);
   assert.equal(store.get('owner', pending.id)?.status, 'waiting_user');
   assert.equal((await download('local')).status, 404);
+  assert.equal((await download(phone.token)).status, 404);
   const hidden = await (await fetch(base + '/v1/state', { headers: { Authorization: 'Bearer local' } })).json();
   assert.equal(hidden.tasks.find((item: { id: string }) => item.id === protectedTask.id)?.result, null);
 });

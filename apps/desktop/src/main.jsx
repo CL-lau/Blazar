@@ -20,6 +20,7 @@ function App() {
   const [usePersonalMemory, setUsePersonalMemory] = useState(false);
   const [answer, setAnswer] = useState('');
   const [savedResult, setSavedResult] = useState(null);
+  const [phoneGrants, setPhoneGrants] = useState(null);
   const [memoryAnswer, setMemoryAnswer] = useState(null);
   const [memoryQuery, setMemoryQuery] = useState('');
   const [memoryAccounts, setMemoryAccounts] = useState([]);
@@ -191,6 +192,31 @@ function App() {
                 </section>}
                 {progress && <p role="status">{progress.message}</p>}
                 {task.result && <pre>{task.result}</pre>}
+                {task.usesAppMemory && <section aria-label="Paired phone result access">
+                  <button disabled={busy} onClick={() => submit(async () => {
+                    const data = await api('/tasks/' + task.id + '/share-result');
+                    setPhoneGrants({ taskId: task.id, clients: data.clients });
+                  })}>Manage phone access</button>
+                  {phoneGrants?.taskId === task.id && phoneGrants.clients.length === 0 && <p>No paired phones.</p>}
+                  {phoneGrants?.taskId === task.id && phoneGrants.clients.map(phone => (
+                    <div key={phone.id}>
+                      <span>{phone.name}</span>
+                      {phone.version !== task.version && <button disabled={busy || !task.result || task.status !== 'succeeded'}
+                        onClick={() => submit(async () => {
+                          const data = await api('/tasks/' + task.id + '/share-result', {
+                            method: 'POST', body: { clientId: phone.id, expectedVersion: task.version, enabled: true },
+                          });
+                          setPhoneGrants({ taskId: task.id, clients: data.clients });
+                        })}>Share this version</button>}
+                      {phone.version != null && <button disabled={busy} onClick={() => submit(async () => {
+                        const data = await api('/tasks/' + task.id + '/share-result', {
+                          method: 'POST', body: { clientId: phone.id, enabled: false },
+                        });
+                        setPhoneGrants({ taskId: task.id, clients: data.clients });
+                      })}>Revoke access</button>}
+                    </div>
+                  ))}
+                </section>}
                 {task.status === 'succeeded' && task.result && !task.usesAppMemory && !/^\/(observe|click) /.test(task.goal) && (
                   <button disabled={busy || (savedResult?.id === task.id && savedResult?.version === task.version)}
                     onClick={() => submit(async () => {

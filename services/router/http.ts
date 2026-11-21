@@ -625,13 +625,16 @@ export function routerServer(store: TaskStore, config: { owner: string; token: s
       const publicGateway = request.headers['x-blazar-public-gateway'] === '1';
       const admin = !publicGateway && supplied.length === expected.length && timingSafeEqual(supplied, expected);
       const mobileToken = auth.startsWith('Bearer ') ? auth.slice(7) : '';
-      const owner = admin ? config.owner : store.mobileOwner(mobileToken);
+      const mobile = admin ? undefined : store.mobileIdentity(mobileToken);
+      const owner = admin ? config.owner : mobile?.owner;
       if (!owner) throw new RequestError(401, 'Authentication required');
-      const canReadTask = (taskId: string) => {
+      const canReadTask = (taskId: string, resultVersion?: number) => {
         const refs = store.appEvidence(taskId);
         if (!refs) return true;
-        if (!admin) return false;
         const task = store.get(owner, taskId);
+        if (!admin && (!mobile || !task || task.status !== 'succeeded' ||
+            resultVersion === undefined || resultVersion !== task.version ||
+            !store.canReadSharedResult(mobile.id, taskId, resultVersion))) return false;
         return Boolean(task && config.memory?.resolveAppEvidence(owner, task.workspace, refs));
       };
       if (!admin && (url.pathname.startsWith('/v1/admin/') || url.pathname === '/v1/pairings' ||
@@ -718,6 +721,26 @@ export function routerServer(store: TaskStore, config: { owner: string; token: s
         reply(response, 200, { revoked: true });
         return;
       }
+      const shareResult = /^\/v1\/tasks\/([a-f0-9-]{36})\/share-result$/.exec(url.pathname);
+      if (shareResult && (request.method === 'GET' || request.method === 'POST')) {
+        if (!admin) throw new RequestError(403, 'Administrator required');
+        const task = store.get(owner, shareResult[1]);
+        if (!task || !store.appEvidence(task.id)) throw new RequestError(404, 'Application-backed task not found');
+        if (request.method === 'POST') {
+          const data = await jsonObject(request);
+          const current = store.get(owner, task.id)!;
+          const clientId = requiredText(data.clientId, 'mobile client ID', 36);
+          if (typeof data.enabled !== 'boolean') throw new RequestError(400, 'Invalid result sharing option');
+          if (data.enabled && (data.expectedVersion !== current.version || current.status !== 'succeeded' || !canReadTask(task.id))) {
+            throw new RequestError(409, 'The current task version is not available for sharing');
+          }
+          if (!store.shareTaskResult(owner, task.id, current.version, clientId, data.enabled)) {
+            throw new RequestError(404, 'Paired mobile client not found');
+          }
+        }
+        reply(response, 200, { clients: store.resultGrants(owner, task.id) });
+        return;
+      }
       const saveTaskMemory = /^\/v1\/tasks\/([a-f0-9-]{36})\/remember-result$/.exec(url.pathname);
       if (saveTaskMemory && request.method === 'POST') {
         if (!admin) throw new RequestError(403, 'Administrator required');
@@ -751,7 +774,8 @@ export function routerServer(store: TaskStore, config: { owner: string; token: s
         if (!base || !/^[a-f0-9-]{36}$/.test(base)) throw new RequestError(400, 'Invalid base artifact ID');
         const previous = store.artifact(owner, base);
         const current = store.artifact(owner, diff[1]);
-        if (!previous || !current || previous.mime || current.mime || previous.taskId !== current.taskId || !canReadTask(current.taskId)) {
+        if (!previous || !current || previous.mime || current.mime || previous.taskId !== current.taskId ||
+            !canReadTask(current.taskId, current.version ?? undefined) || !canReadTask(previous.taskId, previous.version ?? undefined)) {
           throw new RequestError(404, 'Comparable artifacts not found');
         }
         const decode = (bytes: Uint8Array) => Buffer.from(bytes).toString('utf8');
@@ -761,7 +785,7 @@ export function routerServer(store: TaskStore, config: { owner: string; token: s
       const artifactPath = /^\/v1\/artifacts\/([a-f0-9-]{36})(\/image)?$/.exec(url.pathname);
       if (request.method === 'GET' && artifactPath) {
         const file = store.artifact(owner, artifactPath[1]);
-        if (!file || !canReadTask(file.taskId)) throw new RequestError(404, 'Artifact not found');
+        if (!file || !canReadTask(file.taskId, file.version ?? undefined)) throw new RequestError(404, 'Artifact not found');
         if (artifactPath[2]) {
           if (file.mime !== 'image/png') throw new RequestError(404, 'Window image not found');
           reply(response, 200, { png: Buffer.from(file.content).toString('base64') });
@@ -785,8 +809,9 @@ export function routerServer(store: TaskStore, config: { owner: string; token: s
         const restricted = new Set([...protectedTasks].filter(taskId => !canReadTask(taskId)));
         reply(response, 200, { ...snapshot,
           tasks: snapshot.tasks.map(task => protectedTasks.has(task.id)
-            ? { ...task, usesAppMemory: true, ...(restricted.has(task.id) && { result: null }) } : task),
-          artifacts: snapshot.artifacts.filter(item => !restricted.has(String(item.taskId))),
+            ? { ...task, usesAppMemory: true, ...(restricted.has(task.id) && !canReadTask(task.id, task.version) && { result: null }) } : task),
+          artifacts: snapshot.artifacts.filter(item => !restricted.has(String(item.taskId)) ||
+            canReadTask(String(item.taskId), typeof item.version === 'number' ? item.version : undefined)),
           progress: snapshot.progress.filter(item => !restricted.has(String(item.taskId))),
           approvals: snapshot.approvals.filter(item => !restricted.has(String(item.taskId))),
           desktopTargets: store.desktopTargets(owner),

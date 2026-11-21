@@ -73,8 +73,8 @@ fn allowed(method: &Method, path: &str) -> bool {
         ("PATCH", ["", "admin", "devices", id]) => identifier(id),
         ("POST", ["", "memory", "answer"]) => true,
         ("GET", ["", "artifacts", id] | ["", "artifacts", id, "diff" | "image"]) => identifier(id),
-        ("GET", ["", "tasks", id, "timeline"]) => identifier(id),
-        ("POST", ["", "tasks", id, "commands" | "remember-result"]) => identifier(id),
+        ("GET", ["", "tasks", id, "timeline" | "share-result"]) => identifier(id),
+        ("POST", ["", "tasks", id, "commands" | "remember-result" | "share-result"]) => identifier(id),
         ("DELETE", ["", "admin", "mobile-clients" | "devices", id]) => identifier(id),
         _ => false,
     }

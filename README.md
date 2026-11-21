@@ -142,7 +142,7 @@ Register the account in the desktop app with app type `mcp`, then use `review` a
 
 In **Apps and memory**, choose a source account and workspace to refresh previously imported documents. You can also save an automatic refresh interval for that account and workspace.
 
-In the desktop task view, **Create task with selected apps** lets a Worker use matching knowledge from source accounts you select. Access is rechecked when the task is assigned and when the Worker submits a result. Results and artifacts from these tasks are available through desktop administrator access while each referenced version remains authorized.
+In the desktop task view, **Create task with selected apps** lets a Worker use matching knowledge from source accounts you select. Access is rechecked when the task is assigned and when the Worker submits a result. Administrators can share a completed result version with an individual paired phone while each referenced version remains authorized.
 
 Register a `github` source account with the matching label in Apps and memory. Import a Markdown or text path relative to the repository root. The reader uses the repository's default branch. Select the GitHub and Feishu sources together to search across both, with each result retaining its connection and content revision.
 

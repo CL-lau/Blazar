@@ -91,6 +91,11 @@ export class TaskStore {
       CREATE TABLE IF NOT EXISTS mobile_client (
         id TEXT PRIMARY KEY, owner TEXT NOT NULL, name TEXT NOT NULL, token_hash TEXT UNIQUE NOT NULL
       );
+      CREATE TABLE IF NOT EXISTS mobile_result_grant (
+        client_id TEXT NOT NULL REFERENCES mobile_client(id) ON DELETE CASCADE,
+        task_id TEXT NOT NULL REFERENCES task(id), task_version INTEGER NOT NULL,
+        PRIMARY KEY(client_id,task_id)
+      );
       CREATE TABLE IF NOT EXISTS mobile_push (
         client_id TEXT PRIMARY KEY REFERENCES mobile_client(id) ON DELETE CASCADE,
         token TEXT NOT NULL UNIQUE
@@ -317,8 +322,9 @@ export class TaskStore {
       const tasks = this.db.prepare('SELECT * FROM task WHERE owner=? ORDER BY rowid DESC').all(owner) as unknown as Task[];
       const cursor = this.eventCursor();
       const artifacts = this.db.prepare(`SELECT a.id,a.taskId,a.runId,a.name,a.sha256,a.size,
-        CASE WHEN i.artifact_id IS NOT NULL THEN 'image/png' END AS mime,i.expires
+        CASE WHEN i.artifact_id IS NOT NULL THEN 'image/png' END AS mime,i.expires,v.task_version AS version
         FROM artifact a JOIN task t ON t.id=a.taskId LEFT JOIN artifact_image i ON i.artifact_id=a.id
+        LEFT JOIN artifact_version v ON v.artifact_id=a.id
         WHERE t.owner=? AND (i.expires IS NULL OR i.expires>?) ORDER BY a.rowid DESC`).all(owner, Date.now());
       const approvals = this.db.prepare(`SELECT a.id,a.taskId,a.version,a.summary,a.expires
         FROM approval a JOIN task t ON t.id=a.taskId JOIN run r ON r.id=a.runId
@@ -340,11 +346,12 @@ export class TaskStore {
   }
 
   artifact(owner: string, id: string, now = Date.now()) {
-    return this.db.prepare(`SELECT a.taskId,a.name,a.sha256,a.content,
+    return this.db.prepare(`SELECT a.taskId,a.name,a.sha256,a.content,v.task_version AS version,
       CASE WHEN i.artifact_id IS NOT NULL THEN 'image/png' END AS mime FROM artifact a
       JOIN task t ON t.id=a.taskId LEFT JOIN artifact_image i ON i.artifact_id=a.id
+      LEFT JOIN artifact_version v ON v.artifact_id=a.id
       WHERE t.owner=? AND a.id=? AND (i.expires IS NULL OR i.expires>?)`).get(owner, id, now) as
-      { taskId: string; name: string; sha256: string; content: Uint8Array; mime: 'image/png' | null } | undefined;
+      { taskId: string; name: string; sha256: string; content: Uint8Array; mime: 'image/png' | null; version: number | null } | undefined;
   }
 
   timeline(owner: string, taskId: string, before?: number) {
@@ -825,11 +832,37 @@ export class TaskStore {
     });
   }
 
-  mobileOwner(token: string) {
+  mobileIdentity(token: string) {
     if (!/^[A-Za-z0-9_-]{43}$/.test(token)) return undefined;
     const hash = createHash('sha256').update(token).digest('hex');
-    const row = this.db.prepare('SELECT owner FROM mobile_client WHERE token_hash=?').get(hash);
-    return row ? String(row.owner) : undefined;
+    return this.db.prepare('SELECT id,owner FROM mobile_client WHERE token_hash=?').get(hash) as
+      { id: string; owner: string } | undefined;
+  }
+
+  mobileOwner(token: string) {
+    return this.mobileIdentity(token)?.owner;
+  }
+
+  resultGrants(owner: string, taskId: string) {
+    return this.db.prepare(`SELECT c.id,c.name,g.task_version AS version FROM mobile_client c
+      LEFT JOIN mobile_result_grant g ON g.client_id=c.id AND g.task_id=?
+      WHERE c.owner=? ORDER BY c.name,c.id`).all(taskId, owner);
+  }
+
+  shareTaskResult(owner: string, taskId: string, version: number, client: string, enabled: boolean) {
+    if (!this.db.prepare('SELECT 1 FROM mobile_client WHERE id=? AND owner=?').get(client, owner)) return false;
+    if (enabled) {
+      this.db.prepare(`INSERT INTO mobile_result_grant VALUES(?,?,?)
+        ON CONFLICT(client_id,task_id) DO UPDATE SET task_version=excluded.task_version`).run(client, taskId, version);
+    } else {
+      this.db.prepare('DELETE FROM mobile_result_grant WHERE client_id=? AND task_id=?').run(client, taskId);
+    }
+    return true;
+  }
+
+  canReadSharedResult(client: string, taskId: string, version: number) {
+    return Boolean(this.db.prepare('SELECT 1 FROM mobile_result_grant WHERE client_id=? AND task_id=? AND task_version=?')
+      .get(client, taskId, version));
   }
 
   registerPush(mobileToken: string, token: string | null) {

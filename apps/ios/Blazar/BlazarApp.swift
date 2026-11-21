@@ -341,6 +341,7 @@ private struct TaskDetails: View {
     @State private var instruction = ""
     @State private var error: String?
     @State private var preview: String?
+    @State private var previewArtifacts: [String] = []
     @State private var imagePreview: Data?
     @State private var imageExpiry: Int?
     @State private var working = false
@@ -393,19 +394,25 @@ private struct TaskDetails: View {
                                         imagePreview = nil
                                         preview = try await client.artifact(artifact)
                                     }
+                                    previewArtifacts = [artifact.id]
                                 } catch { self.error = error.localizedDescription }
                             }
                         }
                         if let latest = artifacts.first, latest.id != artifact.id, latest.mime == nil, artifact.mime == nil {
                             Button("Compare with latest") {
                                 Task {
-                                    do { preview = try await client.compareArtifacts(latest, base: artifact) }
+                                    do {
+                                        preview = try await client.compareArtifacts(latest, base: artifact)
+                                        previewArtifacts = [latest.id, artifact.id]
+                                    }
                                     catch { self.error = error.localizedDescription }
                                 }
                             }
                         }
                     }
-                    if let preview { Text(preview).textSelection(.enabled) }
+                    if let preview, previewArtifacts.allSatisfy({ id in artifacts.contains { $0.id == id } }) {
+                        Text(preview).textSelection(.enabled)
+                    }
                     #if os(iOS)
                     if let imagePreview, let image = UIImage(data: imagePreview) {
                         Image(uiImage: image).resizable().scaledToFit().accessibilityLabel("Captured window")
