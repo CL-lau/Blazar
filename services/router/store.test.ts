@@ -568,12 +568,13 @@ test('claims rotate incoming channels within each owner and workspace while pres
   const first = take('device-a', 'first');
   assert.equal(first.task.goal, 'wx-1');
   assert.equal(take('device-a', 'first').run.id, first.run.id);
+  assert.equal(take('device-a', 'different-request'), undefined);
   assert.equal(take('device-b', 'second').task.goal, 'feishu-1');
-  assert.equal(take('device-a', 'third').task.id, desktop.id);
+  assert.equal(take('device-e', 'third').task.id, desktop.id);
   receive('feishu', 'feishu-2');
-  assert.equal(take('device-b', 'fourth').task.goal, 'wx-2');
-  assert.equal(take('device-a', 'fifth').task.goal, 'feishu-2');
-  assert.equal(take('device-b', 'sixth').task.goal, 'wx-3');
+  assert.equal(take('device-f', 'fourth').task.goal, 'wx-2');
+  assert.equal(take('device-g', 'fifth').task.goal, 'feishu-2');
+  assert.equal(take('device-h', 'sixth').task.goal, 'wx-3');
   assert.equal(take('device-c', 'other', 'other-project').task.goal, 'feishu-other-project');
   assert.equal(take('device-d', 'other', 'project', 'other-owner').task.goal, 'feishu-other-owner');
 });

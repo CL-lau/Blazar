@@ -120,8 +120,8 @@ test('dispatcher sends a pending approval via HTTP/2 and skips a decided approva
   const decided = store.requestApproval(oldRun.run.id, 'device', 'Already reviewed', now)!;
   assert.ok(store.command('owner', old.id, 1, { action: 'approve', approvalId: String(decided.id) }));
   store.create('owner', 'desktop', 'new', 'project', 'Current draft');
-  const newRun = store.claim('owner', 'project', 'device', now + 10, 45_000)!;
-  store.requestApproval(newRun.run.id, 'device', 'Private review details', now + 10);
+  const newRun = store.claim('owner', 'project', 'another-device', now + 10, 45_000)!;
+  store.requestApproval(newRun.run.id, 'another-device', 'Private review details', now + 10);
   let count = 0;
   const arrived = Promise.withResolvers<string>();
   server.on('stream', (stream, headers) => {

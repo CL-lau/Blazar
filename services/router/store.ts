@@ -1499,6 +1499,7 @@ export class TaskStore {
         }
       }
       if (this.db.prepare('SELECT 1 FROM device_pause WHERE device_id=?').get(device)) return undefined;
+      if (this.db.prepare('SELECT 1 FROM run WHERE device=? AND expires>? LIMIT 1').get(device, now)) return undefined;
       let workerHasCapacity = true;
       if (policy?.max_concurrent != null && goalPrefix !== '/preview ' && goalPrefix !== '/observe ') {
         const active = this.db.prepare(`SELECT COUNT(*) AS count FROM run r JOIN task t ON t.id=r.taskId
