@@ -306,3 +306,20 @@ test('manual document refresh discards page results when the source scope change
   assert.deepEqual(await refresh(), { refreshed: 1, unavailable: 0, after: null });
   assert.equal(store.recall('owner', 'project', 'review', [connection])[0]?.revision, 'v2');
 });
+
+test('a delayed document preview cannot return text after a newer source denial', async t => {
+  const { invokeDocumentCapability } = await import('./application/document-sync.ts');
+  const { DocumentAccessDenied } = await import('../../packages/apps/documents.ts');
+  const store = new MemoryStore(':memory:');
+  t.after(() => store.close());
+  const connection = store.connect('owner', 'github', 'handbook', 'project');
+  const pending = Promise.withResolvers<{ text: string; revision: string }>();
+  const input = { workspace: 'project', document: 'review.md' };
+  const reader = { app: 'github', account: 'handbook', accepts: () => true, read: () => pending.promise };
+  const preview = invokeDocumentCapability(store, 'owner', connection, [reader], 'document.read', input);
+  const denied = { ...reader, async read() { throw new DocumentAccessDenied('Access revoked'); } };
+  await assert.rejects(invokeDocumentCapability(store, 'owner', connection, [denied], 'document.test', input), /Access revoked/);
+  pending.resolve({ text: 'Private review', revision: 'v1' });
+  await assert.rejects(preview, /Source access changed during the document read/);
+  assert.deepEqual(store.recall('owner', 'project', 'review', [connection]), []);
+});

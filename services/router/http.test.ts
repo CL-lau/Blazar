@@ -226,6 +226,14 @@ test('Router authenticates, deduplicates commands and replays task changes over 
   const githubRegistration = await post('/v1/app-connections', 'github', { app: 'github', account: 'engineering' });
   const { id: github } = await githubRegistration.json();
   const repoImport = '/v1/app-connections/' + github + '/import-document';
+  const repoPreview = '/v1/app-connections/' + github + '/capabilities/document.read';
+  const previewed = await (await post(repoPreview, 'github-preview', { workspace: 'demo', document: 'docs/review.md' })).json();
+  assert.equal(previewed.text, githubBody);
+  assert.equal(previewed.resource, 'docs/review.md');
+  assert.equal(previewed.connection, github);
+  assert.match(previewed.revision, /^sha256:/);
+  assert.equal(previewed.truncated, false);
+  assert.deepEqual(memory.recall('test', 'demo', 'findings', [github]), []);
   const repoHealth = '/v1/app-connections/' + github + '/capabilities/connection.health';
   assert.deepEqual(await (await post(repoHealth, 'github-health', { workspace: 'demo' })).json(), { status: 'succeeded' });
   assert.equal((await post(repoImport, 'bad-path', { workspace: 'demo', document: '../review.md' })).status, 400);
@@ -250,10 +258,11 @@ test('Router authenticates, deduplicates commands and replays task changes over 
   const feishuDefinition = configured.definitions.find(item => item.id === 'feishu');
   assert.deepEqual(feishuDefinition.accounts, ['project account']);
   assert.deepEqual(feishuDefinition.capabilities.map(item => [item.id, item.effect]),
-    [['document.test', 'read'], ['document.import', 'local_write'], ['document.search', 'read'], ['document.refresh', 'local_write']]);
+    [['document.test', 'read'], ['document.read', 'read'], ['document.import', 'local_write'], ['document.search', 'read'],
+      ['document.refresh', 'local_write']]);
   assert.ok(configured.connections.find(item => item.id === scopedConnection).capabilities.every(item => item.state === 'configured'));
   const unconfigured = configured.connections.find(item => item.id === missingReader.id);
-  assert.equal(unconfigured.capabilities.length, 4);
+  assert.equal(unconfigured.capabilities.length, 5);
   assert.ok(unconfigured.capabilities.every(item => item.state === 'configuration_required'));
   assert.doesNotMatch(JSON.stringify(configured.definitions), /other-fixture|"token"|"secret"/);
   const scopedRecall = '/v1/memory?workspace=private&q=findings&source=' + scopedConnection;

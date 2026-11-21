@@ -22,6 +22,7 @@ const documentApps = new Map([
 const appCapabilities = [
   { id: 'connection.health', label: 'Check connection', input: ['workspace'], effect: 'read' },
   { id: 'document.test', label: 'Test document access', input: ['workspace', 'document'], effect: 'read' },
+  { id: 'document.read', label: 'Preview document', input: ['workspace', 'document'], effect: 'read' },
   { id: 'document.import', label: 'Import document', input: ['workspace', 'document'], effect: 'local_write' },
   { id: 'document.discover', label: 'Discover available documents', input: ['workspace'], effect: 'read' },
   { id: 'document.search', label: 'Search imported documents', input: ['workspace', 'query'], effect: 'read' },

@@ -9,6 +9,7 @@ export function Knowledge({ token }) {
   const [results, setResults] = useState(null);
   const [searchQuery, setSearchQuery] = useState('');
   const [documentMatches, setDocumentMatches] = useState(null);
+  const [documentPreview, setDocumentPreview] = useState(null);
   const [discovered, setDiscovered] = useState(null);
   const [deriving, setDeriving] = useState(null);
   const [editing, setEditing] = useState(null);
@@ -29,6 +30,7 @@ export function Knowledge({ token }) {
     setAnswer(null);
     setHistory(null);
     setDocumentMatches(null);
+    setDocumentPreview(null);
     setDiscovered(null);
     setBusy(true);
     try { await action(); }
@@ -222,7 +224,7 @@ export function Knowledge({ token }) {
           <p>Connection ID <code>{usage.id}</code></p>
           {usage.items.length === 0 ? <p>No connection activity yet.</p> : <ul>{usage.items.map(item => (
             <li key={item.id}>
-              {{ import: 'Document import', test: 'Access test', health: 'Connection check', refresh: 'Document refresh', search: 'Document search', discover: 'Document discovery', worker_memory: 'Worker memory access' }[item.operation]} · {item.workspace} ·{' '}
+              {{ import: 'Document import', test: 'Access test', health: 'Connection check', read: 'Document preview', refresh: 'Document refresh', search: 'Document search', discover: 'Document discovery', worker_memory: 'Worker memory access' }[item.operation]} · {item.workspace} ·{' '}
               {item.taskId && <><code>{item.taskId}</code> · </>}
               {item.status.replaceAll('_', ' ')} · {new Date(item.started).toLocaleString()}
             </li>
@@ -233,13 +235,20 @@ export function Knowledge({ token }) {
       {importSource && (
         <fieldset disabled={busy}>
           <legend>Documents</legend>
-          <form onSubmit={event => {
+          <form onChange={() => setDocumentPreview(null)} onSubmit={event => {
             event.preventDefault();
             const form = event.currentTarget;
             const { connection, workspace, document } = Object.fromEntries(new FormData(form));
             const testAccess = event.nativeEvent.submitter?.value === 'test';
+            const preview = event.nativeEvent.submitter?.value === 'preview';
             void perform(async () => {
               setUsage(null);
+              if (preview) {
+                setDocumentPreview(await request('/app-connections/' + connection + '/capabilities/document.read', {
+                  method: 'POST', body: { workspace, document },
+                }));
+                return;
+              }
               try {
                 await request('/app-connections/' + connection + (testAccess ? '/capabilities/document.test' : '/capabilities/document.import'), {
                   method: 'POST', body: { workspace, document },
@@ -290,6 +299,7 @@ export function Knowledge({ token }) {
               {documentAliases.map(alias => <option key={alias} value={alias}>{alias}</option>)}
             </select></label> : <label>Document ID or repository path<input name="document" required maxLength={128} /></label>}
             <button>Import into memory</button>
+            <button type="submit" value="preview">Preview document</button>
             <button type="submit" value="test">Test document access</button>
             <button type="button" onClick={event => {
               const form = event.currentTarget.form;
@@ -333,6 +343,12 @@ export function Knowledge({ token }) {
               });
             }}>Save refresh schedule</button>
           </form>
+          {documentPreview && <section aria-label="Document preview">
+            <h3>{documentPreview.resource}</h3>
+            <p>Revision <code>{documentPreview.revision}</code></p>
+            <pre>{documentPreview.text}</pre>
+            {documentPreview.truncated && <p>Preview truncated.</p>}
+          </section>}
           <form key={importSource.id + (importSource.workspace ?? '')} onSubmit={event => {
             event.preventDefault();
             const { workspace, query } = Object.fromEntries(new FormData(event.currentTarget));

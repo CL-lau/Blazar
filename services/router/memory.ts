@@ -89,7 +89,7 @@ export class MemoryStore {
       .get(owner, id, workspace ?? null, workspace ?? null) as { app: string; account: string; scopeVersion: number } | undefined;
   }
 
-  startAppUsage(connection: string, workspace: string, operation: 'import' | 'test' | 'refresh' | 'search' | 'discover' | 'health') {
+  startAppUsage(connection: string, workspace: string, operation: 'import' | 'test' | 'refresh' | 'search' | 'discover' | 'health' | 'read') {
     return this.db.prepare(`INSERT INTO app_usage(connection,workspace,operation,status,started,scope_version)
       VALUES(?,?,?,'started',?,(SELECT scope_version FROM app_connection WHERE id=?))`)
       .run(connection, workspace, operation, Date.now(), connection).lastInsertRowid;
@@ -167,6 +167,11 @@ export class MemoryStore {
     this.db.prepare(`INSERT INTO document_access VALUES(?,?,?,?) ON CONFLICT(connection,resource) DO UPDATE
       SET allowed=excluded.allowed,request_id=excluded.request_id WHERE excluded.request_id>=document_access.request_id`)
       .run(connection, resource, Number(allowed), requestId);
+  }
+
+  hasNewerDocumentDenial(connection: string, resource: string, requestId: number | bigint) {
+    return Boolean(this.db.prepare(`SELECT 1 FROM document_access
+      WHERE connection=? AND resource=? AND allowed=0 AND request_id>?`).get(connection, resource, requestId));
   }
 
   importDocument(owner: string, workspace: string, body: string, source: ResourceRef,

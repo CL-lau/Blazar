@@ -4,10 +4,10 @@ import { RequestError, requiredText } from '../protocol/request.ts';
 
 type DocumentMemory = Pick<MemoryStore, 'connection' | 'documentSyncActive' | 'documentsToRefresh' |
   'finishAppUsage' | 'finishDocumentSync' | 'importDocument' | 'leaseDocumentSync' |
-  'recall' | 'recordDocumentAccess' | 'resourceRevoked' | 'startAppUsage'>;
+  'recall' | 'recordDocumentAccess' | 'resourceRevoked' | 'startAppUsage' | 'hasNewerDocumentDenial'>;
 
 export async function accessDocument(store: DocumentMemory, owner: string, workspace: string, connection: string,
-                              reader: DocumentConnector, document: string, operation: 'test' | 'import' | 'refresh',
+                              reader: DocumentConnector, document: string, operation: 'test' | 'import' | 'refresh' | 'read',
                               signal?: AbortSignal, permitted = () => true) {
   const source = store.connection(owner, connection, workspace);
   if (!source || !permitted()) throw new RequestError(409, 'Source access changed before the document read');
@@ -37,6 +37,15 @@ export async function accessDocument(store: DocumentMemory, owner: string, works
   if (operation === 'test') {
     store.finishAppUsage(usageId, 'succeeded');
     return { readable: true };
+  }
+  if (operation === 'read') {
+    if (store.hasNewerDocumentDenial(connection, document, usageId)) {
+      store.finishAppUsage(usageId, 'access_changed');
+      throw new RequestError(409, 'Source access changed during the document read');
+    }
+    store.finishAppUsage(usageId, 'succeeded');
+    return { connection, resource: document, revision: content.revision,
+      text: content.text.slice(0, 4_000).toWellFormed(), truncated: content.text.length > 4_000 };
   }
   const id = store.importDocument(owner, workspace, content.text, {
     connection, resource: document, revision: content.revision,
@@ -125,7 +134,8 @@ export async function invokeDocumentCapability(store: DocumentMemory, owner: str
     return result;
   }
   const document = requiredText(input.document, 'document ID', 128);
-  return accessDocument(store, owner, workspace, connectionId, reader, document, capability === 'document.test' ? 'test' : 'import');
+  const operation = capability === 'document.test' ? 'test' : capability === 'document.read' ? 'read' : 'import';
+  return accessDocument(store, owner, workspace, connectionId, reader, document, operation);
 }
 
 export async function runDueDocumentSync(store: DocumentMemory, readers: readonly DocumentConnector[],
