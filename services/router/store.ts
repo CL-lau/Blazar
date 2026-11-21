@@ -1149,7 +1149,9 @@ export class TaskStore {
       FROM workflow_dependency d JOIN task p ON p.id=d.predecessor
       LEFT JOIN artifact a ON a.rowid=(
         SELECT a.rowid FROM artifact a JOIN artifact_version v ON v.artifact_id=a.id
-        WHERE a.taskId=p.id AND v.task_version=p.version ORDER BY a.rowid DESC LIMIT 1
+        WHERE a.taskId=p.id AND v.task_version=p.version
+          AND NOT EXISTS(SELECT 1 FROM artifact_image image WHERE image.artifact_id=a.id)
+          ORDER BY a.rowid DESC LIMIT 1
       )
       WHERE d.task_id=? ORDER BY p.rowid`).all(taskId);
     let budget = 16_000;
@@ -1197,7 +1199,8 @@ export class TaskStore {
     return this.db.prepare(`SELECT a.id,a.name,a.sha256,a.content FROM run r JOIN task t ON t.id=r.taskId
       JOIN run_dependency d ON d.run_id=r.id JOIN artifact a ON a.taskId=d.predecessor
       JOIN artifact_version v ON v.artifact_id=a.id AND v.task_version=d.version
-      WHERE a.id=? AND r.id=? AND r.device=? AND r.expires>? AND t.status='running' AND r.version=t.version
+      WHERE a.id=? AND NOT EXISTS(SELECT 1 FROM artifact_image image WHERE image.artifact_id=a.id)
+      AND r.id=? AND r.device=? AND r.expires>? AND t.status='running' AND r.version=t.version
       AND NOT EXISTS(SELECT 1 FROM invalid_workflow_run i WHERE i.id=r.id)`)
       .get(artifactId, runId, device, now) as
       { id: string; name: string; sha256: string; content: Uint8Array } | undefined;
@@ -1412,8 +1415,11 @@ export class TaskStore {
         FROM run r JOIN task t ON r.taskId=t.id WHERE r.id=? AND r.device=? AND r.expires>?`)
         .get(runId, device, now);
       if (!row || (row.status === 'waiting_user' && !row.staleInputs)) return false;
-      if (outcome.artifact?.mime && !/^\/observe [a-z0-9_-]{1,32} --window w-[0-9]{1,20} --instance [a-f0-9]{64} --visual$/.test(String(row.goal))) return false;
       const taskId = String(row.taskId);
+      const observing = String(row.goal).startsWith('/observe ');
+      const observation = observing ? this.workflowDesktopAction(taskId) : undefined;
+      const visual = observation?.kind === 'desktop.observe' && observation.mode === 'visual';
+      if (outcome.artifact?.mime && !visual && !/^\/observe [a-z0-9_-]{1,32} --window w-[0-9]{1,20} --instance [a-f0-9]{64} --visual$/.test(String(row.goal))) return false;
       if (row.status === 'cancelling' || row.status === 'pausing') {
         this.finishStoppedRun(runId, taskId, row.status === 'pausing');
         return false;
@@ -1422,8 +1428,11 @@ export class TaskStore {
       if ((outcome.status === 'waiting_user' && !click) ||
           (click && outcome.status !== 'failed' && !this.db.prepare(`SELECT 1 FROM approval_use u
             JOIN approval a ON a.id=u.id WHERE a.runId=? AND a.version=?`).get(runId, row.runVersion!))) return false;
-      if (outcome.status === 'succeeded' && String(row.goal).startsWith('/observe ')) {
-        const action = this.workflowDesktopAction(taskId);
+      if (outcome.status === 'succeeded' && visual && outcome.artifact?.mime !== 'image/png') {
+        outcome = { status: 'failed', result: 'The window screenshot was unavailable.' };
+      }
+      if (outcome.status === 'succeeded' && observing) {
+        const action = observation;
         if (action?.kind === 'desktop.observe' && action.mode === 'window' && action.expectedText &&
             !outcome.artifact?.text.includes(action.expectedText)) {
           outcome = { status: 'failed', result: 'The target window observation did not verify the expected visible text.' };

@@ -70,6 +70,9 @@ function workflowAction(value: unknown): WorkflowAction {
     throw new InvalidWorkflow('Invalid expected desktop text');
   }
   const expectation = expectedText ? { expectedText: expectedText.trim() } : {};
+  if (kind === 'desktop.observe' && mode === 'visual' && reference && expectedText === undefined) {
+    return { kind, alias, deviceId, mode, windowFrom: reference };
+  }
   if (kind === 'desktop.observe' && mode === 'window' && reference) {
     return { kind, alias, deviceId, mode, windowFrom: reference, ...expectation };
   }
@@ -90,8 +93,8 @@ function workflowAction(value: unknown): WorkflowAction {
 
 export function workflowActionGoal(action: WorkflowAction, observed?: DesktopWindowReference): string {
   if (action.kind === 'desktop.observe') {
-    if (action.mode === 'window') return observed
-      ? `/observe ${action.alias} --window ${observed.windowId} --instance ${observed.windowIdentity}`
+    if (action.mode === 'window' || action.mode === 'visual') return observed
+      ? `/observe ${action.alias} --window ${observed.windowId} --instance ${observed.windowIdentity}${action.mode === 'visual' ? ' --visual' : ''}`
       : `/observe ${action.alias} [resolve workflow window]`;
     return '/observe ' + action.alias + (action.mode === 'windows' ? ' --windows-json' : '');
   }

@@ -224,7 +224,7 @@ private struct TaskScreen: View {
                                             Text("Click \(button) in \(action.alias), window \(window)").font(.caption)
                                             if let expected = action.expectedText { Text("Expected text: \(expected)").font(.caption) }
                                         } else if let title = action.windowFrom?.title {
-                                            Text("Observe \(action.alias), window \(title) on device \(action.deviceId)").font(.caption)
+                                            Text("\(action.mode == "visual" ? "Capture screenshot of" : "Observe") \(action.alias), window \(title) on device \(action.deviceId)").font(.caption)
                                             if let expected = action.expectedText { Text("Expected text: \(expected)").font(.caption) }
                                         } else {
                                             Text(action.mode == "windows" ? "List windows for \(action.alias)" : "Observe \(action.alias) on device \(action.deviceId)").font(.caption)

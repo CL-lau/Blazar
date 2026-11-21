@@ -479,7 +479,9 @@ export function routerServer(store: TaskStore, config: { owner: string; token: s
           const targets = store.desktopTargets(owner);
           if (desktopSteps.some(action => !targets.some(target => target.workspace === workspace &&
               target.deviceId === action.deviceId && target.alias === action.alias &&
-              (action.kind === 'desktop.observe' || target.controls?.buttons.includes(action.button))))) {
+              (action.kind === 'desktop.observe'
+                ? action.mode !== 'visual' || target.controls?.visual === true
+                : target.controls?.buttons.includes(action.button))))) {
             throw new RequestError(404, 'Workflow desktop target unavailable');
           }
           if (data.appMemory !== undefined) throw new RequestError(400, 'Desktop workflow steps cannot use application memory');

@@ -527,7 +527,7 @@ function App() {
                     <strong>{step.key}</strong> · {step.goal}
                     {step.action && <p>{step.action.kind === 'desktop.click'
                       ? `Click ${step.action.button} in ${step.action.alias}, window ${step.action.windowFrom?.title ?? step.action.windowId}`
-                      : `${step.action.mode === 'windows' ? 'List windows for' : 'Observe'} ${step.action.alias}${step.action.windowFrom ? `, window ${step.action.windowFrom.title}` : ''}`} on device {step.action.deviceId}</p>}
+                      : `${step.action.mode === 'windows' ? 'List windows for' : step.action.mode === 'visual' ? 'Capture screenshot of' : 'Observe'} ${step.action.alias}${step.action.windowFrom ? `, window ${step.action.windowFrom.title}` : ''}`} on device {step.action.deviceId}</p>}
                     {step.runLimitSeconds && <p>Time limit: {step.runLimitSeconds} seconds</p>}
                     {step.workerCapability && <p>Requires {({ steer: 'live instructions', 'full-input-artifacts': 'full input artifacts', 'git-worktree': 'an isolated Git checkout', 'read-only': 'a read-only Worker' })[step.workerCapability] ?? step.workerCapability}</p>}
                     {step.workerProtocols?.length > 0 && <p>Worker protocols: {step.workerProtocols.join(', ')}</p>}

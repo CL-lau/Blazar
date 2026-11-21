@@ -124,6 +124,29 @@ console.log(JSON.stringify({ok:true,command:'snapshot',data:{tree:{role:'window'
   const jsonImage = await (await fetch(jsonPicture, { headers: { Authorization: 'Bearer admin' } })).json();
   assert.equal(Buffer.from(jsonImage.png, 'base64').subarray(0, 8).toString('hex'), '89504e470d0a1a0a');
   assert.equal(store.artifact('owner', String(image.id), Number(image.expires)), undefined);
+  const submitVisualWorkflow = (deviceId: string, key: string) => fetch(new URL('/v1/workflows', picture), {
+    method: 'POST', headers: { Authorization: 'Bearer admin', 'Content-Type': 'application/json', 'Idempotency-Key': key },
+    body: JSON.stringify({ workspace: 'work', steps: [
+      { key: 'inventory', goal: 'List calculator windows', needs: [],
+        action: { kind: 'desktop.observe', alias: 'calculator', deviceId, mode: 'windows' } },
+      { key: 'capture', goal: 'Capture calculator screenshot', needs: ['inventory'],
+        action: { kind: 'desktop.observe', alias: 'calculator', deviceId, mode: 'visual',
+          windowFrom: { step: 'inventory', title: 'Scientific · Calculator' } } },
+      { key: 'next', goal: 'Acknowledge completion', needs: ['capture'] },
+    ] }),
+  });
+  assert.equal((await submitVisualWorkflow(second.id, 'unapproved-visual')).status, 404);
+  const submitted = await submitVisualWorkflow(computer, 'approved-visual');
+  assert.equal(submitted.status, 202);
+  const { steps } = await submitted.json();
+  assert.equal(await client.runOnce(AbortSignal.timeout(8_000)), true);
+  assert.equal(await client.runOnce(AbortSignal.timeout(8_000)), true);
+  const captured = store.snapshot('owner').artifacts.find(item => item.taskId === steps[1].taskId)!;
+  assert.equal(captured.mime, 'image/png');
+  const downstream = store.claim('owner', 'work', 'reviewer', Date.now(), 45_000, '', '/preview ')!;
+  assert.equal(downstream.task.id, steps[2].taskId);
+  assert.equal(downstream.predecessors[0].artifact, undefined);
+  assert.equal(store.runInputArtifact(downstream.run.id, 'reviewer', String(captured.id), Date.now()), undefined);
   store.updateDeviceReadiness(Date.now());
   assert.equal(store.get('owner', denied.id)?.status, 'waiting_device');
   assert.equal(store.get('owner', preview.id)?.status, 'waiting_device');
