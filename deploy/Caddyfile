@@ -7,11 +7,11 @@
 {$BLAZAR_PUBLIC_HOST} {
 	@public_read {
 		method GET
-		path /v1/state /v1/stream /v1/pairings/status /v1/devices/connect
+		path /v1/state /v1/stream /v1/pairings/status /v1/devices/connect /v1/app-write-proposals
 	}
 	@public_resource {
 		method GET
-		path_regexp ^/v1/(tasks/[a-f0-9-]{36}/(timeline|attachments/[0-3])|artifacts/[a-f0-9-]{36}(/diff)?)$
+		path_regexp ^/v1/(tasks/[a-f0-9-]{36}/(timeline|attachments/[0-3])|artifacts/[a-f0-9-]{36}(/diff)?|app-write-proposals/[a-f0-9-]{36})$
 	}
 	@public_write {
 		method POST
@@ -19,7 +19,7 @@
 	}
 	@task_command {
 		method POST
-		path_regexp ^/v1/tasks/[a-f0-9-]{36}/commands$
+		path_regexp ^/v1/(tasks/[a-f0-9-]{36}/commands|app-write-proposals/[a-f0-9-]{36}/confirm)$
 	}
 
 	handle @public_read {

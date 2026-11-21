@@ -125,6 +125,9 @@ private struct TaskScreen: View {
                 #if os(iOS)
                 if let client {
                     PushSettings(client: client)
+                    NavigationLink("Application writes") {
+                        ApplicationWrites(client: client)
+                    }
                 }
                 #endif
                 if let client, let snapshot {

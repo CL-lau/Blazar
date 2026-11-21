@@ -124,6 +124,29 @@ struct TaskTextAttachment {
     }
 }
 
+struct ApplicationWriteSummary: Decodable, Identifiable {
+    let id: UUID
+    let capability: String
+    let workspace: String
+    let status: String
+    let expires: Double
+}
+
+struct ApplicationWriteDetail: Decodable {
+    let id: UUID
+    let capability: String
+    let workspace: String
+    let app: String
+    let account: String
+    let inputPreview: String
+    let status: String
+    let expires: Double
+
+    var canConfirm: Bool {
+        status == "pending" && expires > Date().timeIntervalSince1970 * 1_000
+    }
+}
+
 struct RouterClient: Equatable {
     let base: URL
     let token: String
@@ -176,6 +199,20 @@ struct RouterClient: Equatable {
     func configurePush(deviceToken: String?) async throws {
         let value: Any = deviceToken.map { $0 as Any } ?? NSNull()
         _ = try await request("v1/mobile/push", body: ["deviceToken": value])
+    }
+
+    func applicationWriteProposals() async throws -> [ApplicationWriteSummary] {
+        struct Proposals: Decodable { let proposals: [ApplicationWriteSummary] }
+        return try JSONDecoder().decode(Proposals.self, from: await request("v1/app-write-proposals")).proposals
+    }
+
+    func applicationWriteProposal(_ id: UUID) async throws -> ApplicationWriteDetail {
+        try JSONDecoder().decode(ApplicationWriteDetail.self,
+                                 from: await request("v1/app-write-proposals/" + id.uuidString.lowercased()))
+    }
+
+    func confirmApplicationWrite(_ id: UUID) async throws {
+        _ = try await request("v1/app-write-proposals/" + id.uuidString.lowercased() + "/confirm", body: [:])
     }
 
     func snapshot() async throws -> RouterSnapshot {

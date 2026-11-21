@@ -197,6 +197,8 @@ test('Router requires explicit confirmation for a configured application write',
   const shared = await (await request(uncertain, 'GET', undefined, iphone.token)).json();
   assert.deepEqual(shared.input, { title: 'Approved' });
   assert.equal(shared.connection, undefined);
+  assert.equal(shared.account, 'Handbook');
+  assert.deepEqual(JSON.parse(shared.inputPreview), shared.input);
   assert.equal((await request(uncertain + '/reconcile', 'POST', evidence, iphone.token)).status, 404);
   assert.equal((await request(uncertain + '/share', 'POST', { client: null })).status, 200);
   assert.equal((await request(uncertain + '/confirm', 'POST', undefined, iphone.token)).status, 404);

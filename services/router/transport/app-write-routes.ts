@@ -50,7 +50,9 @@ export async function handleApplicationWrites(
     const { definitionRevision, ...view } = proposal;
     if (access.kind === 'mobile') {
       const { connection, backend, ...sharedView } = view;
-      reply(response, 200, sharedView);
+      const destination = memory.connection(owner, connection, proposal.workspace);
+      reply(response, 200, { ...sharedView, app: destination?.app, account: destination?.account,
+        inputPreview: JSON.stringify(view.input, null, 2) });
       return true;
     }
     reply(response, 200, { ...view, reconciliation: writes.reconciliation(owner, id) });

@@ -11,6 +11,7 @@ import { join } from 'node:path';
 import test from 'node:test';
 import { setTimeout as delay } from 'node:timers/promises';
 import { routerServer } from './http.ts';
+import { MemoryStore } from './memory.ts';
 import { TaskStore } from './store.ts';
 
 test('the public gateway carries a paired phone screenshot task and WSS Worker result end to end', {
@@ -24,12 +25,14 @@ test('the public gateway carries a paired phone screenshot task and WSS Worker r
     await rm(directory, { force: true, recursive: true });
   });
   const store = new TaskStore(':memory:');
-  const router = routerServer(store, { owner: 'owner', token: 'local-admin' });
+  const memory = new MemoryStore(':memory:');
+  const router = routerServer(store, { memory, owner: 'owner', token: 'local-admin' });
   router.listen(0, '127.0.0.1');
   await once(router, 'listening');
   t.after(async () => {
     await new Promise<void>(resolve => router.close(() => resolve()));
     store.close();
+    memory.close();
   });
   const upstream = router.address();
   assert(upstream && typeof upstream !== 'string');
@@ -95,6 +98,14 @@ test('the public gateway carries a paired phone screenshot task and WSS Worker r
   const now = Date.now();
   const phone = store.redeemPairing(store.createPairing('owner', now).code, 'Paired phone', now)!;
   const otherPhone = store.redeemPairing(store.createPairing('other', now).code, 'Other phone', now)!;
+  const writes = '/v1/app-write-proposals';
+  const proposalPath = writes + '/' + randomUUID();
+  assert.deepEqual(JSON.parse((await send(writes, ca, phone.token)).body.toString()), { proposals: [] });
+  assert.equal((await send(writes, ca, 'local-admin')).status, 401);
+  assert.equal((await send(proposalPath + '/confirm', ca, phone.token, {})).status, 404);
+  assert.equal((await send(proposalPath + '/confirm', ca, 'local-admin', {})).status, 401);
+  assert.equal((await send(proposalPath + '/share', ca, phone.token, {})).status, 404);
+  assert.equal((await send(proposalPath + '/reconcile', ca, phone.token, {})).status, 404);
   const device = store.registerDevice('owner', 'Computer', 'project');
   const socket = new WebSocket(base.replace(/^https:/, 'wss:') + '/v1/devices/connect', {
     ca, handshakeTimeout: 3_000, headers: { Authorization: 'Bearer ' + device.token },
