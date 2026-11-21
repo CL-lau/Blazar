@@ -22,7 +22,8 @@
     "ios:project": "cd apps/ios && xcodegen generate",
     "ios:build": "npm run ios:project && cd apps/ios && xcodebuild -project Blazar.xcodeproj -scheme Blazar -destination 'generic/platform=iOS Simulator' -derivedDataPath build CODE_SIGNING_ALLOWED=NO build",
     "ios:test": "npm run ios:project && node apps/ios/scripts/test-simulator.mjs",
-    "typecheck": "tsc --project tsconfig.json"
+    "typecheck": "tsc --project tsconfig.json",
+    "macos:setup-router": "node deploy/macos/setup-router.mjs"
   },
   "dependencies": {
     "@agentclientprotocol/sdk": "2.8.0",

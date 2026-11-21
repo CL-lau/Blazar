@@ -28,6 +28,10 @@ To enable task notifications, turn on Push Notifications for the signed iOS App 
 
 ## Run in the background on macOS
 
+Run `npm run macos:setup-router -- --start` from the checkout to generate a private Router configuration, create its LaunchAgent, and start the background service. Run it without `--start` to prepare the files only. The setup keeps an existing Router token. Use the token in `~/.config/blazar/router.env` to connect the desktop client.
+
+For manual setup or a Worker device, follow the steps below.
+
 Create a private configuration directory and a mode-600 environment file. For the Router, set `BLAZAR_ROUTER_TOKEN` in the file. Its default SQLite database lives alongside the file. For an execution device, set `BLAZAR_DEVICE_TOKEN` and `BLAZAR_WORKSPACE_PATH`, plus any Worker or computer driver settings. Use separate configuration files for the Router and device.
 
 ```sh
