@@ -243,6 +243,13 @@ test('memory drafting discards output if the connection is revoked during genera
   const id = store.remember('owner', 'project', 'Review decisions', {
     connection, resource: 'docs/review.md', revision: 'first',
   })!;
+  await assert.rejects(requestMemoryDraft(store, async () => {
+    assert.equal(store.setConnectionWorkspace('owner', connection, 'other'), true);
+    assert.equal(store.setConnectionWorkspace('owner', connection, 'project'), true);
+    return 'A proposed memory.';
+  }, 'owner', 'project', { id, version: 1 }), /Source memory changed while drafting/);
+  assert.deepEqual(await requestMemoryDraft(store, async () => 'A fresh draft.', 'owner', 'project', { id, version: 1 }),
+    { body: 'A fresh draft.' });
   await assert.rejects(requestMemoryDraft(store, async evidence => {
     assert.equal(evidence, 'Review decisions');
     store.disconnect('owner', connection);

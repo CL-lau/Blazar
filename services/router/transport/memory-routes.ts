@@ -139,6 +139,9 @@ export async function handleMemory(
       return true;
     }
     if (!answerMemory) throw new RequestError(503, 'Blazar has no Router model configured');
+    const connections = new Set(sources.flatMap(row => typeof row.connection === 'string' ? [row.connection] : []));
+    const scopeVersion = (id: string) => store.connection(owner, id, workspace)?.scopeVersion;
+    const sourceScopes = [...connections].map(id => [id, scopeVersion(id)] as const);
     const evidence = sources.map(row => ({
       id: String(row.id), body: String(row.body).slice(0, 2_000).toWellFormed(),
       resource: row.resource === null ? null : String(row.resource),
@@ -152,7 +155,8 @@ export async function handleMemory(
       throw new RequestError(503, 'Blazar could not answer from memory. Please retry.');
     }
     const current = recall();
-    if (sources.some(row => !current.some(item => item.id === row.id && item.version === row.version))) {
+    if (sourceScopes.some(([id, version]) => scopeVersion(id) !== version) ||
+        sources.some(row => !current.some(item => item.id === row.id && item.version === row.version))) {
       throw new RequestError(409, 'Memory sources changed while answering. Run the search again.');
     }
     reply(response, 200, { answer, sources: sources.map(({ id, connection, resource, revision }) => ({

@@ -45,6 +45,10 @@ test('Router authenticates, deduplicates commands and replays task changes over 
       memoryAnswers++;
       assert.equal(evidence[0].resource, 'doc123');
       assert.equal(evidence[0].body, 'Design review findings');
+      if (question === 'Move now' && revokeDuringAnswer) {
+        memory.setConnectionWorkspace('test', revokeDuringAnswer, 'other');
+        memory.setConnectionWorkspace('test', revokeDuringAnswer, 'demo');
+      }
       if (question === 'Revoke now' && revokeDuringAnswer) memory.disconnect('test', revokeDuringAnswer);
       return 'The document contains design review findings.';
     },
@@ -293,6 +297,11 @@ test('Router authenticates, deduplicates commands and replays task changes over 
     connection: raceConnection, resource: 'doc123', revision: 'race',
   });
   revokeDuringAnswer = raceConnection;
+  const movedAnswer = await post('/v1/memory/answer', 'move-answer', {
+    ...answerRequest, question: 'Move now', sources: [raceConnection],
+  });
+  assert.equal(movedAnswer.status, 409);
+  assert.doesNotMatch(await movedAnswer.text(), /design review findings/i);
   const revokedAnswer = await post('/v1/memory/answer', 'race-answer', {
     ...answerRequest, question: 'Revoke now', sources: [raceConnection],
   });
