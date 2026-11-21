@@ -3,7 +3,6 @@ type Release = () => void;
 type Waiter = {
   scope: string;
   admit: (release: Release) => void;
-  timer: ReturnType<typeof setTimeout>;
 };
 
 export class ModelAdmission {
@@ -26,27 +25,34 @@ export class ModelAdmission {
       const next = this.waiting.findIndex(waiter => this.available(waiter.scope));
       if (next === -1) return;
       const [waiter] = this.waiting.splice(next, 1);
-      clearTimeout(waiter.timer);
       waiter.admit(this.reserve(waiter.scope));
     };
   }
 
-  acquire(scope: string): Promise<Release | undefined> {
+  acquire(scope: string, signal?: AbortSignal): Promise<Release | undefined> {
+    if (signal?.aborted) return Promise.resolve(undefined);
     if (this.available(scope)) return Promise.resolve(this.reserve(scope));
     if (this.waiting.length >= 16 || this.waiting.filter(waiter => waiter.scope === scope).length >= 4) {
       return Promise.resolve(undefined);
     }
     return new Promise(resolve => {
+      const finish = (release?: Release) => {
+        clearTimeout(timer);
+        signal?.removeEventListener('abort', abort);
+        resolve(release);
+      };
+      const abort = () => {
+        const index = this.waiting.indexOf(waiter);
+        if (index !== -1) this.waiting.splice(index, 1);
+        finish();
+      };
       const waiter = {
         scope,
-        admit: resolve,
-        timer: setTimeout(() => {
-          const index = this.waiting.indexOf(waiter);
-          if (index !== -1) this.waiting.splice(index, 1);
-          resolve(undefined);
-        }, 200),
+        admit: finish,
       };
+      const timer = setTimeout(abort, 200);
       this.waiting.push(waiter);
+      signal?.addEventListener('abort', abort, { once: true });
     });
   }
 }

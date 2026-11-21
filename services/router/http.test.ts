@@ -1111,3 +1111,55 @@ test('Router decisions can consume versioned text results without crossing works
   assert.equal(store.finish(active.id, active.device, now + 2, { status: 'succeeded', result: 'Stale result' }), false);
   assert.deepEqual(store.recentConversation('owner', 'project'), []);
 });
+
+test('memory answers and desktop conversation routing share model admission', async t => {
+  const store = new TaskStore(':memory:');
+  const memory = new MemoryStore(':memory:');
+  memory.remember('owner', 'work', 'Review the project draft');
+  const loaded = Promise.withResolvers<void>();
+  const finish = Promise.withResolvers<string>();
+  let calls = 0;
+  const server = routerServer(store, {
+    owner: 'owner', token: 'admin', memory,
+    async answerMemory() {
+      if (++calls === 4) loaded.resolve();
+      return finish.promise;
+    },
+    async harness() { return { kind: 'reply', text: 'Router response' }; },
+  });
+  server.listen(0, '127.0.0.1');
+  await once(server, 'listening');
+  t.after(async () => {
+    finish.resolve('Review answer');
+    server.closeAllConnections();
+    await new Promise<void>(resolve => server.close(() => resolve()));
+    memory.close();
+    store.close();
+  });
+  const address = server.address();
+  assert(address && typeof address !== 'string');
+  const base = 'http://127.0.0.1:' + address.port;
+  const signal = AbortSignal.timeout(5_000);
+  const post = (path: string, body: object, key: string) => fetch(base + path, {
+    method: 'POST', signal,
+    headers: { Authorization: 'Bearer admin', 'Content-Type': 'application/json', 'Idempotency-Key': key },
+    body: JSON.stringify(body),
+  });
+  const answers = Promise.all(Array.from({ length: 4 }, (_, index) => post('/v1/memory/answer', {
+    workspace: 'work', query: 'review', question: 'What should I review?', sources: [],
+  }, 'answer-' + index)));
+  void answers.catch(() => {});
+  await Promise.race([loaded.promise, new Promise<never>((_, reject) =>
+    signal.addEventListener('abort', () => reject(signal.reason), { once: true }))]);
+  const busy = await post('/v1/conversation', { workspace: 'work', text: 'Tell me about the project' }, 'chat-1');
+  assert.equal(busy.status, 429);
+  await busy.arrayBuffer();
+  finish.resolve('Review answer');
+  for (const answer of await answers) {
+    assert.equal(answer.status, 200);
+    await answer.arrayBuffer();
+  }
+  const admitted = await post('/v1/conversation', { workspace: 'work', text: 'Tell me about the project' }, 'chat-1');
+  assert.equal(admitted.status, 200);
+  await admitted.arrayBuffer();
+});

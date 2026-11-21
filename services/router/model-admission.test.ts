@@ -29,3 +29,21 @@ test('model admission queues a busy caller while a different caller can proceed'
     release();
   }
 });
+
+test('cancelling a queued model call frees its place immediately', async () => {
+  const admission = new ModelAdmission();
+  const running = await Promise.all(Array.from({ length: 4 }, () => admission.acquire('owner')));
+  const controller = new AbortController();
+  const cancelled = admission.acquire('owner', controller.signal);
+  const waiting = Array.from({ length: 3 }, () => admission.acquire('owner'));
+
+  assert.equal(await admission.acquire('owner'), undefined);
+  controller.abort();
+  assert.equal(await cancelled, undefined);
+  const replacement = admission.acquire('owner');
+  for (const release of running) release!();
+  for (const release of await Promise.all([...waiting, replacement])) {
+    assert(release);
+    release();
+  }
+});

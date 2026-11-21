@@ -38,8 +38,7 @@ interface ConversationRequest {
   canReadTask: (taskId: string) => boolean;
 }
 
-export function createConversationRouter(store: ConversationTasks, config: ConversationDependencies) {
-  const admission = new ModelAdmission();
+export function createConversationRouter(store: ConversationTasks, config: ConversationDependencies, admission = new ModelAdmission()) {
   const pendingRoutes = new Map<string, { fingerprint: string; decision: Promise<Decision> }>();
 
   return async function routeConversation({ owner, caller, admin, key, input, metrics, authorized, canReadTask }: ConversationRequest) {

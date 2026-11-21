@@ -10,6 +10,7 @@ import { workerMemoryAvailable } from './application/task-memory.ts';
 import { RequestError, requiredText } from './protocol/request.ts';
 import type { Task, TaskAttachment } from '../../packages/protocol/task.ts';
 import { ConversationError, createConversationRouter } from './application/conversation.ts';
+import { ModelAdmission } from './application/model-admission.ts';
 import { artifactDiff } from './artifact-diff.ts';
 import { createWorkerRegistry } from './application/worker-registry.ts';
 import { handleAdmin } from './transport/admin-routes.ts';
@@ -39,7 +40,8 @@ export function routerServer(store: TaskStore, config: { owner: string; token: s
     return metrics;
   }
   const workerRegistry = createWorkerRegistry();
-  const routeConversation = createConversationRouter(store, config);
+  const admission = new ModelAdmission();
+  const routeConversation = createConversationRouter(store, config, admission);
   const devices = createDeviceSocketTransport(store);
   const expireRuns = (now: number) => store.expire(now, devices.sendStop);
   function notifyStop(owner: string, taskId: string) {
@@ -482,7 +484,8 @@ export function routerServer(store: TaskStore, config: { owner: string; token: s
         }
         return;
       }
-      if (config.memory && await handleMemory(request, response, url, owner, config.memory, config.documents, config.answerMemory, config.draftMemory)) {
+      if (config.memory && await handleMemory(request, response, url, owner, config.memory, admission,
+        config.documents, config.answerMemory, config.draftMemory)) {
         if (request.method !== 'GET') flushStopNotifications();
         return;
       }

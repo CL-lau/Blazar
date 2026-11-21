@@ -2,6 +2,7 @@ import type { IncomingMessage, ServerResponse } from 'node:http';
 import { documentAppCatalog, documentCapabilityState, isDocumentCapability, type DocumentConnector } from '../../../packages/apps/documents.ts';
 import { invokeDocumentCapability } from '../application/document-sync.ts';
 import { answerFromDocuments } from '../application/document-answer.ts';
+import type { ModelAdmission } from '../application/model-admission.ts';
 import { requestMemoryDraft } from '../application/memory-draft.ts';
 import type { MemoryAnswer, MemoryDraft } from '../harness.ts';
 import type { MemoryStore, ResourceRef } from '../memory.ts';
@@ -15,10 +16,20 @@ const legacyDocumentCapabilities = new Map([
 ]);
 
 export async function handleMemory(
-  request: IncomingMessage, response: ServerResponse, url: URL, owner: string, store: MemoryStore, documents?: readonly DocumentConnector[], answerMemory?: MemoryAnswer, draftMemory?: MemoryDraft,
+  request: IncomingMessage, response: ServerResponse, url: URL, owner: string, store: MemoryStore, admission: ModelAdmission,
+  documents?: readonly DocumentConnector[], answerMemory?: MemoryAnswer, draftMemory?: MemoryDraft,
 ): Promise<boolean> {
   const { pathname, searchParams } = url;
   const method = request.method;
+  const reserve = async (signal?: AbortSignal) => {
+    const release = await admission.acquire(JSON.stringify([owner, 'admin']), signal);
+    if (signal?.aborted) {
+      release?.();
+      signal.throwIfAborted();
+    }
+    if (!release) throw new RequestError(429, 'Blazar model is busy. Please retry.');
+    return release;
+  };
   const readerFor = (connection: { app: string; account: string }) =>
     documents?.find(connector => connector.app === connection.app && connector.account === connection.account);
   if (pathname === '/v1/app-connections') {
@@ -131,7 +142,7 @@ export async function handleMemory(
       if (response.destroyed) disconnect();
       try {
         const result = await answerFromDocuments(store, documents ?? [], answerMemory, owner, workspace,
-          question, data.documents, controller.signal);
+          question, data.documents, controller.signal, reserve);
         if (!controller.signal.aborted) reply(response, 200, result);
       } catch (error) {
         if (!controller.signal.aborted) throw error;
@@ -164,18 +175,26 @@ export async function handleMemory(
       resource: row.resource === null ? null : String(row.resource),
       revision: row.revision === null ? null : String(row.revision),
     }));
+    const checkSources = () => {
+      const current = recall();
+      if (sourceScopes.some(([id, version]) => scopeVersion(id) !== version) ||
+          sources.some(row => !current.some(item => item.id === row.id && item.version === row.version))) {
+        throw new RequestError(409, 'Memory sources changed while answering. Run the search again.');
+      }
+    };
+    const release = await reserve();
     let answer: string;
     try {
+      checkSources();
       answer = (await answerMemory(question, evidence, AbortSignal.timeout(15_000))).trim();
       if (!answer || answer.length > 8_000) throw new Error('Invalid model response');
     } catch {
+      checkSources();
       throw new RequestError(503, 'Blazar could not answer from memory. Please retry.');
+    } finally {
+      release();
     }
-    const current = recall();
-    if (sourceScopes.some(([id, version]) => scopeVersion(id) !== version) ||
-        sources.some(row => !current.some(item => item.id === row.id && item.version === row.version))) {
-      throw new RequestError(409, 'Memory sources changed while answering. Run the search again.');
-    }
+    checkSources();
     reply(response, 200, { answer, sources: sources.map(({ id, connection, resource, revision }) => ({
       id, connection, resource, revision,
     })) });

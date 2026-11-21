@@ -6,7 +6,8 @@ import { accessDocument } from './document-sync.ts';
 
 export async function answerFromDocuments(store: MemoryStore, readers: readonly DocumentConnector[],
                                           generate: MemoryAnswer | undefined, owner: string, workspace: string,
-                                          question: string, input: unknown, signal?: AbortSignal) {
+                                          question: string, input: unknown, signal?: AbortSignal,
+                                          reserve?: (signal?: AbortSignal) => Promise<() => void>) {
   signal?.throwIfAborted();
   if (!Array.isArray(input) || input.length < 1 || input.length > 4) {
     throw new RequestError(400, 'Choose one to four source documents');
@@ -53,9 +54,10 @@ export async function answerFromDocuments(store: MemoryStore, readers: readonly 
       throw new RequestError(409, 'Document access changed while preparing the answer');
     }
   };
-  checkSources();
+  const release = await reserve?.(signal);
   let answer: string;
   try {
+    checkSources();
     const timeout = AbortSignal.timeout(15_000);
     answer = (await generate(question, sources.map(({ id, body, resource, revision }) => ({ id, body, resource, revision })),
       signal ? AbortSignal.any([timeout, signal]) : timeout)).trim();
@@ -63,6 +65,8 @@ export async function answerFromDocuments(store: MemoryStore, readers: readonly 
   } catch {
     checkSources();
     throw new RequestError(503, 'Blazar could not answer from the selected documents. Please retry.');
+  } finally {
+    release?.();
   }
   checkSources();
   return { answer, sources: sources.map(({ id, connection, resource, revision }) => ({ id, connection, resource, revision })) };
