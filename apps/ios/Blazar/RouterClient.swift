@@ -272,6 +272,8 @@ struct RouterClient: Equatable {
             let windowId: String?
             let windowIdentity: String?
             let button: String?
+            let field: String?
+            let value: String?
             let expectedText: String?
             let waitSeconds: Int?
         }

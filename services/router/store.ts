@@ -1,6 +1,6 @@
 import { sqliteTransaction } from '../../packages/storage/sqlite.ts';
 import { RunInputRepository } from './persistence/run-input-repository.ts';
-import { DispatchRepository } from './persistence/dispatch-repository.ts';
+import { DispatchRepository, desktopTextEntitlement } from './persistence/dispatch-repository.ts';
 import { DeviceRepository } from './persistence/device-repository.ts';
 import { TaskReadRepository } from './persistence/task-read-repository.ts';
 import { initializeTaskSchema } from './persistence/task-schema.ts';
@@ -400,7 +400,7 @@ export class TaskStore {
       WHERE c.owner=? AND c.channel=? AND c.chat=? AND t.workspace=?
       AND (CASE WHEN ? IS NULL THEN c.thread=? ELSE t.id=? END)
       AND t.status NOT IN ('cancelled','cancelling','paused','pausing')
-      AND substr(t.goal,1,9) NOT IN ('/observe ','/preview ') AND substr(t.goal,1,7)<>'/click '
+      AND substr(t.goal,1,9) NOT IN ('/observe ','/preview ') AND substr(t.goal,1,7) NOT IN ('/click ','/write ')
       AND NOT EXISTS(SELECT 1 FROM channel_message m WHERE m.owner=c.owner AND m.channel=c.channel AND m.message=?)`)
       .get(owner, channel, message.chat, workspace, message.taskId ?? null, message.thread, message.taskId ?? null, message.id);
   }
@@ -481,7 +481,7 @@ export class TaskStore {
 
   receiveChannelMessage(owner: string, channel: string, workspace: string,
                         message: { id: string; chat: string; thread: string; root: boolean; text: string; taskId?: string; replyExpires?: number }, weixinContext?: string, sealedDingTalkReply?: string) {
-    if (message.text.startsWith('/observe ') || message.text.startsWith('/click ')) return;
+    if (message.text.startsWith('/observe ') || /^\/(click|write) /.test(message.text)) return;
     return this.transaction(() => {
       const existing = this.db.prepare('INSERT OR IGNORE INTO channel_message VALUES(?,?,?)')
         .run(owner, channel, message.id);
@@ -916,7 +916,7 @@ export class TaskStore {
         if (!this.cancelTask(taskId, task.status)) return undefined;
       } else if (command.action === 'append') {
         if (this.db.prepare('SELECT 1 FROM stale_workflow_step WHERE task_id=?').get(taskId)) return undefined;
-        if (task.goal.startsWith('/click ')) return undefined;
+        if (/^\/(click|write) /.test(task.goal)) return undefined;
         if (['cancelling', 'cancelled', 'pausing', 'paused'].includes(task.status)) return undefined;
         this.appendInstruction(taskId, command.text, task.status);
       }
@@ -1147,7 +1147,7 @@ export class TaskStore {
         if (requestId) this.dispatch.saveReceipt(device, requestId, fingerprint, null, now);
         return undefined;
       }
-      const workerTask = !/^\/(observe|click|preview) /.test(task.goal);
+      const workerTask = !/^\/(observe|click|write|preview) /.test(task.goal);
       const workspaceLimitMs = workerTask && workerLimitSeconds !== undefined ? workerLimitSeconds * 1_000 : runLimitMs;
       const stepLimit = this.db.prepare('SELECT seconds FROM task_run_budget WHERE task_id=?').get(task.id);
       const limitMs = stepLimit ? Math.min(workspaceLimitMs, Number(stepLimit.seconds) * 1_000) : workspaceLimitMs;
@@ -1353,7 +1353,7 @@ export class TaskStore {
 
   private clickMayHaveExecuted(taskId: string, runId: string) {
     return Boolean(this.db.prepare(`SELECT 1 FROM task t JOIN approval a ON a.taskId=t.id
-      JOIN approval_use u ON u.id=a.id WHERE t.id=? AND a.runId=? AND substr(t.goal,1,7)='/click '`).get(taskId, runId));
+      JOIN approval_use u ON u.id=a.id WHERE t.id=? AND a.runId=? AND substr(t.goal,1,7) IN ('/click ','/write ')`).get(taskId, runId));
   }
 
   private finishInvalidInputs(runId: string, taskId: string) {
@@ -1409,7 +1409,7 @@ export class TaskStore {
         this.finishStoppedRun(runId, taskId, row.status === 'pausing');
         return false;
       }
-      const click = String(row.goal).startsWith('/click ');
+      const click = /^\/(click|write) /.test(String(row.goal));
       const patchInputWait = outcome.status === 'waiting_user' && outcome.waitingReason === 'git_patch_inputs' &&
         Boolean(this.db.prepare("SELECT 1 FROM task_worker_capability WHERE task_id=? AND capability='git-patch-inputs'").get(taskId));
       const questionWorker = outcome.status === 'waiting_user' && outcome.waitingReason === 'worker_question'
@@ -1436,6 +1436,11 @@ export class TaskStore {
       }
       if (outcome.status === 'succeeded' && click) {
         const action = this.runInputs.desktopAction({ id: taskId, goal: String(row.goal) });
+        if (action?.kind === 'desktop.write' &&
+            (outcome.artifact?.name !== 'application-observation.txt' || outcome.artifact.mime ||
+              outcome.artifact.text !== `Verified text in "${action.field}".`)) {
+          outcome = { status: 'waiting_user', result: 'The text edit may have been applied. The device did not verify the field.' };
+        }
         if (action?.kind === 'desktop.click' && action.expectedText &&
             (outcome.artifact?.name !== 'application-observation.txt' || outcome.artifact.mime ||
               !outcome.artifact.text.includes(action.expectedText))) {
@@ -1514,12 +1519,12 @@ export class TaskStore {
           AND NOT EXISTS(SELECT 1 FROM device_interruption i WHERE i.device_id=d.id)
           AND (p.capability IS NULL OR p.capability=CASE
             WHEN substr(t.goal,1,9)='/preview ' THEN 'document.preview'
-            WHEN substr(t.goal,1,9)='/observe ' OR substr(t.goal,1,7)='/click ' THEN 'computer.observe'
+            WHEN substr(t.goal,1,9)='/observe ' OR substr(t.goal,1,7) IN ('/click ','/write ') THEN 'computer.observe'
             ELSE 'agent.acp' END)
-          AND (policy.protocols IS NULL OR substr(t.goal,1,9) IN ('/observe ','/preview ') OR substr(t.goal,1,7)='/click '
+          AND (policy.protocols IS NULL OR substr(t.goal,1,9) IN ('/observe ','/preview ') OR substr(t.goal,1,7) IN ('/click ','/write ')
             OR (p.capability='agent.acp' AND EXISTS(SELECT 1 FROM json_each(policy.protocols) WHERE value=worker.protocol)))
           AND (COALESCE(policy.require_read_only,0)=0 OR substr(t.goal,1,9) IN ('/observe ','/preview ')
-            OR substr(t.goal,1,7)='/click ' OR EXISTS(SELECT 1 FROM json_each(worker.capabilities) WHERE value='read-only'))
+            OR substr(t.goal,1,7) IN ('/click ','/write ') OR EXISTS(SELECT 1 FROM json_each(worker.capabilities) WHERE value='read-only'))
           AND (NOT EXISTS(SELECT 1 FROM task_worker_protocol wp WHERE wp.task_id=t.id) OR
             EXISTS(SELECT 1 FROM task_worker_protocol wp WHERE wp.task_id=t.id AND wp.protocol=worker.protocol))
           AND NOT EXISTS(SELECT 1 FROM task_question_worker q WHERE q.task_id=t.id
@@ -1533,9 +1538,11 @@ export class TaskStore {
             AND NOT EXISTS(SELECT 1 FROM task_memory_input m WHERE m.task_id=t.id)
             AND NOT EXISTS(SELECT 1 FROM task_attachment a WHERE a.task_id=t.id)))
           AND NOT EXISTS(SELECT 1 FROM task_desktop_device target WHERE target.task_id=t.id AND target.device_id<>d.id)
+          AND ${desktopTextEntitlement('t', 'd.id')}
           AND (a.aliases IS NULL OR EXISTS(SELECT 1 FROM json_each(a.aliases) j WHERE
             substr(t.goal || ' ',1,length('/observe ' || j.value || ' '))='/observe ' || j.value || ' '
-            OR substr(t.goal || ' ',1,length('/click ' || j.value || ' '))='/click ' || j.value || ' '))
+            OR substr(t.goal || ' ',1,length('/click ' || j.value || ' '))='/click ' || j.value || ' '
+        OR substr(t.goal || ' ',1,length('/write ' || j.value || ' '))='/write ' || j.value || ' '))
         ) THEN 'queued' ELSE 'waiting_device' END AS next_status
         FROM task t WHERE t.status IN ('queued','waiting_device')
       )
@@ -1595,7 +1602,7 @@ export class TaskStore {
         });
       }
       const rows = this.db.prepare(`SELECT r.id,r.device,r.taskId,t.status,r.expires=d.deadline AS deadlineReached,
-        substr(t.goal,1,7)='/click ' AND EXISTS(SELECT 1 FROM approval a
+        substr(t.goal,1,7) IN ('/click ','/write ') AND EXISTS(SELECT 1 FROM approval a
           JOIN approval_use u ON u.id=a.id WHERE a.runId=r.id) AS clickMayHaveExecuted,
         EXISTS(SELECT 1 FROM invalid_workflow_run i WHERE i.id=r.id) AS staleInputs FROM run r
         JOIN task t ON r.taskId=t.id JOIN run_deadline d ON d.run_id=r.id WHERE r.expires<=?`).all(now);

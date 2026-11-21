@@ -313,7 +313,7 @@ export function routerServer(store: TaskStore, config: { owner: string; token: s
         const task = store.get(owner, saveTaskMemory[1]);
         if (!task) throw new RequestError(404, 'Task not found');
         if (data.expectedVersion !== task.version || task.status !== 'succeeded' || store.appEvidence(task.id) || store.personalEvidence(task.id).length ||
-            !task.result?.trim() || task.result.length > 16_000 || /^\/(observe|click) /.test(task.goal)) {
+            !task.result?.trim() || task.result.length > 16_000 || /^\/(observe|click|write) /.test(task.goal)) {
           throw new RequestError(409, 'This task version does not have a result eligible for memory');
         }
         reply(response, 200, { id: config.memory.rememberTaskResult(owner, task.workspace, task.id, task.version, task.result) });

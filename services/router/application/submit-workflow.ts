@@ -9,7 +9,7 @@ export function submitWorkflow(store: Pick<TaskStore, 'createWorkflow' | 'deskto
                                data: Record<string, unknown>, admin: boolean, caller?: string) {
   const workspace = requiredText(data.workspace, 'workspace', 128);
   const steps = workflowSteps(data.steps);
-  if (steps.some(step => step.goal.startsWith('/observe ') || step.goal.startsWith('/click '))) {
+  if (steps.some(step => step.goal.startsWith('/observe ') || step.goal.startsWith('/click ') || step.goal.startsWith('/write '))) {
     throw new RequestError(400, 'Desktop operations require a direct task request');
   }
   const desktopSteps = steps.flatMap(step => step.action ? [step.action] : []);
@@ -19,6 +19,7 @@ export function submitWorkflow(store: Pick<TaskStore, 'createWorkflow' | 'deskto
         target.deviceId === action.deviceId && target.alias === action.alias &&
         (action.kind === 'desktop.observe'
           ? (action.mode !== 'visual' && action.mode !== 'hybrid') || (target.controls?.visual === true && target.screenRecording !== 'denied')
+          : action.kind === 'desktop.write' ? target.controls?.textFields?.includes(action.field)
           : target.controls?.buttons.includes(action.button))))) {
       throw new RequestError(404, 'Workflow desktop target unavailable');
     }

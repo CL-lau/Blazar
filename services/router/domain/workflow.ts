@@ -81,7 +81,7 @@ export function workflowSteps(input: unknown): WorkflowStep[] {
 
 function workflowAction(value: unknown): WorkflowAction {
   if (!value || typeof value !== 'object') throw new InvalidWorkflow('Invalid workflow action');
-  const { kind, alias, deviceId, windowId, windowIdentity, button, expectedText, mode, windowFrom, waitSeconds } = value as Record<string, unknown>;
+  const { kind, alias, deviceId, windowId, windowIdentity, button, expectedText, mode, windowFrom, waitSeconds, field, value: text } = value as Record<string, unknown>;
   if (typeof alias !== 'string' || !/^[a-z0-9_-]{1,32}$/.test(alias) ||
       typeof deviceId !== 'string' || !/^[a-f0-9-]{36}$/.test(deviceId)) {
     throw new InvalidWorkflow('Invalid workflow desktop target');
@@ -112,6 +112,11 @@ function workflowAction(value: unknown): WorkflowAction {
   if (kind === 'desktop.observe' && (mode === undefined || mode === 'windows') && windowFrom === undefined && expectedText === undefined) {
     return { kind, alias, deviceId, ...(mode && { mode }) };
   }
+  if (kind === 'desktop.write' && reference && expectedText === undefined &&
+      typeof field === 'string' && field.trim() && field.length <= 120 && !/[\x00-\x1f\x7f]/.test(field) &&
+      typeof text === 'string' && text.length <= 500 && !/[\x00-\x1f\x7f]/.test(text)) {
+    return { kind, alias, deviceId, field, value: text, windowFrom: reference };
+  }
   if (kind === 'desktop.click' && typeof button === 'string' && button.trim() &&
       button.length <= 120 && !/[\x00-\x1f\x7f]/.test(button)) {
     const click = { kind, alias, deviceId, button, ...expectation } as const;
@@ -131,6 +136,9 @@ export function workflowActionGoal(action: WorkflowAction, observed?: DesktopWin
       : `/observe ${action.alias} [resolve workflow window]`;
     return '/observe ' + action.alias + (action.mode === 'windows' ? ' --windows-json' : '');
   }
+  if (action.kind === 'desktop.write') return observed
+    ? `/write ${action.alias} --window ${observed.windowId} --instance ${observed.windowIdentity}`
+    : `/write ${action.alias} [resolve workflow window]`;
   const target = 'windowFrom' in action ? observed : action;
   return target ? `/click ${action.alias} --window ${target.windowId} --instance ${target.windowIdentity} ${action.button}`
     : `/click ${action.alias} [resolve workflow window]`;

@@ -1139,3 +1139,38 @@ test('a Codex worktree write step requires the matching capability and permits n
   assert.equal(assignment?.task.id, step.taskId);
   assert.equal(assignment?.writableWorktreeRequired, true);
 });
+
+test('desktop writes bind to a current allowed field and require verified evidence', t => {
+  const db = new TaskStore(':memory:');
+  t.after(() => db.close());
+  const device = db.registerDevice('owner', 'Desktop', 'project');
+  const workflow = db.createWorkflow('owner', 'desktop-write', 'project', [
+    { key: 'windows', goal: 'List notes', needs: [],
+      action: { kind: 'desktop.observe', alias: 'notes', deviceId: device.id, mode: 'windows' } },
+    { key: 'edit', goal: 'Set the title', needs: ['windows'],
+      action: { kind: 'desktop.write', alias: 'notes', deviceId: device.id, field: 'Title', value: 'Approved title',
+        windowFrom: { step: 'windows', title: 'Draft' } } },
+    { key: 'follow', goal: 'Review the result', needs: ['edit'] },
+  ]);
+  const now = Date.now();
+  const claim = () => db.claim('owner', 'project', device.id, now, 45_000, '/observe ');
+  const inventory = claim()!;
+  assert.ok(db.finish(inventory.run.id, device.id, now, { status: 'succeeded', result: JSON.stringify([
+    { id: 'w-2', title: 'Draft', accessible: true, identity: 'a'.repeat(64) },
+  ]) }));
+  assert.equal(claim(), undefined);
+  db.recordDesktopApps(device.id, ['notes'], undefined, [{ alias: 'notes', buttons: [], visual: false, textFields: ['Title'] }]);
+  const edit = claim()!;
+  assert.equal(edit.task.goal, '/write notes --window w-2 --instance ' + 'a'.repeat(64));
+  assert.deepEqual(edit.desktopText, { field: 'Title', value: 'Approved title' });
+  const outcome = { status: 'succeeded', result: 'Verified', artifact: {
+    name: 'application-observation.txt', text: 'Verified text in "Title".',
+  } } as const;
+  assert.equal(db.finish(edit.run.id, device.id, now, outcome), false);
+  const approval = db.requestApproval(edit.run.id, device.id, 'Set the title', now)!;
+  assert.ok(db.command('owner', edit.task.id, edit.task.version, { action: 'approve', approvalId: String(approval.id) }));
+  assert.ok(db.consumeApproval(edit.run.id, device.id, String(approval.id), now));
+  assert.ok(db.finish(edit.run.id, device.id, now, outcome));
+  const follow = db.claim('owner', 'project', 'worker', now, 45_000)!;
+  assert.equal(follow.task.id, workflow.steps[2].taskId);
+});

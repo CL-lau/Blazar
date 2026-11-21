@@ -165,7 +165,7 @@ export function createConversationRouter(store: ConversationTasks, config: Conve
                 },
                 ...(admin && { workspaceCapabilities: () => ({
                   desktopTargets: store.desktopTargets(owner).filter(target => target.workspace === input.workspace)
-                    .slice(0, 16).map(target => ({ alias: String(target.alias), deviceId: String(target.deviceId) })),
+                    .slice(0, 16).map(target => ({ alias: String(target.alias), deviceId: String(target.deviceId), textFields: target.controls?.textFields })),
                   devices: store.devices(owner).filter(device => device.workspace === input.workspace && !device.revoked)
                     .slice(0, 16).map(device => ({
                       name: String(device.name), capability: String(device.capability ?? 'unreported'),
@@ -205,7 +205,7 @@ export function createConversationRouter(store: ConversationTasks, config: Conve
               const version = foundVersions.get(decision.taskId);
               const task = store.get(owner, decision.taskId);
               if (!task || task.workspace !== input.workspace || task.version !== version ||
-                  /^\/(observe|click|preview) /.test(task.goal) ||
+                  /^\/(observe|click|write|preview) /.test(task.goal) ||
                   ['cancelling', 'cancelled', 'pausing', 'paused'].includes(task.status)) {
                 throw new ConversationError(409, 'The proposed follow-up target changed or is unavailable');
               }
@@ -214,7 +214,7 @@ export function createConversationRouter(store: ConversationTasks, config: Conve
           }
           if (!authorized()) throw new ConversationError(401, 'Authentication required');
           if (decision.kind === 'create_task' && decision.goal && decision.goal !== input.text &&
-              /^\/(observe|click) /.test(decision.goal)) {
+              /^\/(observe|click|write) /.test(decision.goal)) {
             throw new ConversationError(400, 'Application observation requires an explicit command');
           }
           return store.persistRoutingDecision(owner, caller, key, input, decision, evidenceVersions);
@@ -231,6 +231,7 @@ export function createConversationRouter(store: ConversationTasks, config: Conve
     if (!authorized()) throw new ConversationError(401, 'Authentication required');
     if (decision.kind === 'create_task') {
       const goal = decision.goal ?? input.text;
+      if (goal.startsWith('/write ')) throw new ConversationError(400, 'Desktop text edits require a structured workflow');
       if ((goal.startsWith('/observe ') || goal.startsWith('/click ')) && goal !== input.text) {
         throw new ConversationError(400, 'Application observation requires an explicit command');
       }

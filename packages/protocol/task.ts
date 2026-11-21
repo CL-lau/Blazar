@@ -52,6 +52,7 @@ export type WorkflowAction =
   | { kind: 'desktop.observe'; alias: string; deviceId: string; mode?: 'windows' }
   | { kind: 'desktop.observe'; alias: string; deviceId: string; mode: 'window'; expectedText?: string; waitSeconds?: number; windowFrom: { step: string; title: string } }
   | { kind: 'desktop.observe'; alias: string; deviceId: string; mode: 'visual' | 'hybrid'; windowFrom: { step: string; title: string } }
+  | { kind: 'desktop.write'; alias: string; deviceId: string; field: string; value: string; windowFrom: { step: string; title: string } }
   | ({ kind: 'desktop.click'; alias: string; deviceId: string; button: string; expectedText?: string } &
     (DesktopWindowReference | { windowFrom: { step: string; title: string } }));
 
@@ -82,6 +83,7 @@ export interface TaskMemoryInput {
 export interface DesktopAppControls {
   alias: string;
   buttons: string[];
+  textFields?: string[];
   visual: boolean;
 }
 

@@ -2,6 +2,16 @@ import type { DatabaseSync } from 'node:sqlite';
 import type { Task, WorkerConfiguration } from '../../../packages/protocol/task.ts';
 import { IdempotencyConflict } from '../domain/idempotency.ts';
 
+// Match the persisted workflow action to the claiming device's most recent advertised controls.
+export const desktopTextEntitlement = (task: string, device: string) => `
+  (substr(${task}.goal,1,7)<>'/write ' OR EXISTS(
+    SELECT 1 FROM event e JOIN device_desktop_controls c ON c.device_id=${device}
+    JOIN json_each(c.controls) app JOIN json_each(app.value,'$.textFields') field
+    WHERE e.taskId=${task}.id AND e.type='task.created'
+      AND json_extract(e.data,'$.action.kind')='desktop.write'
+      AND json_extract(e.data,'$.action.alias')=json_extract(app.value,'$.alias')
+      AND json_extract(e.data,'$.action.field')=field.value))`;
+
 interface ClaimSelection {
   owner: string;
   workspace: string;
@@ -40,6 +50,7 @@ export class DispatchRepository {
         const assignment = JSON.parse(String(receipt.response));
         const current = this.db.prepare(`SELECT r.expires AS expires FROM run r JOIN task t ON r.taskId=t.id
           WHERE r.id=? AND r.device=? AND r.expires>? AND r.version=t.version AND t.status='running'
+          AND ${desktopTextEntitlement('t', 'r.device')}
           AND NOT EXISTS(SELECT 1 FROM invalid_workflow_run i WHERE i.id=r.id)
           AND (?=0 OR NOT EXISTS(SELECT 1 FROM task_worker_capability wc WHERE wc.task_id=t.id AND wc.capability='writable-worktree'))
           AND NOT EXISTS(SELECT 1 FROM task_worker_capability wc WHERE wc.task_id=t.id
@@ -47,7 +58,7 @@ export class DispatchRepository {
           AND NOT EXISTS(SELECT 1 FROM run_evidence_stop s WHERE s.run_id=r.id)
           AND (NOT EXISTS(SELECT 1 FROM task_worker_protocol wp WHERE wp.task_id=t.id) OR
             EXISTS(SELECT 1 FROM task_worker_protocol wp WHERE wp.task_id=t.id AND wp.protocol=?))
-          AND (? OR substr(t.goal,1,9) IN ('/observe ','/preview ') OR substr(t.goal,1,7)='/click ')
+          AND (? OR substr(t.goal,1,9) IN ('/observe ','/preview ') OR substr(t.goal,1,7) IN ('/click ','/write '))
           AND (? OR (
             NOT EXISTS(SELECT 1 FROM task_app_evidence e WHERE e.task_id=t.id)
             AND NOT EXISTS(SELECT 1 FROM task_memory_input m WHERE m.task_id=t.id)
@@ -75,7 +86,7 @@ export class DispatchRepository {
           AND capability.value='git-worktree'
         )) AS exclusive_count FROM occupied r JOIN task t ON t.id=r.task_id
         WHERE t.owner=? AND t.workspace=? AND r.expires>?
-        AND substr(t.goal,1,9) NOT IN ('/observe ','/preview ') AND substr(t.goal,1,7)<>'/click '`)
+        AND substr(t.goal,1,9) NOT IN ('/observe ','/preview ') AND substr(t.goal,1,7) NOT IN ('/click ','/write ')`)
         .get(owner, workspace, now);
       const count = Number(active?.count);
       workerHasCapacity = (policy?.max_concurrent == null || count < Number(policy.max_concurrent)) &&
@@ -87,8 +98,8 @@ export class DispatchRepository {
         WHERE e.taskId=task.id AND e.type='task.created' ORDER BY e.seq LIMIT 1
       ), '') AS origin_channel
       FROM task WHERE owner=? AND workspace=?
-      AND status IN ('queued','waiting_device') AND (substr(goal,1,length(?))=? OR (?='/observe ' AND substr(goal,1,7)='/click '))
-      AND (?='' OR (substr(goal,1,length(?))!=? AND substr(goal,1,9)!='/observe ' AND substr(goal,1,7)!='/click '))
+      AND status IN ('queued','waiting_device') AND (substr(goal,1,length(?))=? OR (?='/observe ' AND substr(goal,1,7) IN ('/click ','/write ')))
+      AND (?='' OR (substr(goal,1,length(?))!=? AND substr(goal,1,9)!='/observe ' AND substr(goal,1,7) NOT IN ('/click ','/write ')))
       AND NOT EXISTS(SELECT 1 FROM stale_workflow_step stale WHERE stale.task_id=task.id)
       AND NOT EXISTS(SELECT 1 FROM expired_approval_stop s WHERE s.task_id=task.id AND s.expires>?)
       AND (?=0 OR NOT EXISTS(SELECT 1 FROM task_worker_capability wc WHERE wc.task_id=task.id AND wc.capability='writable-worktree'))
@@ -99,14 +110,16 @@ export class DispatchRepository {
       AND NOT EXISTS(SELECT 1 FROM task_question_worker q WHERE q.task_id=task.id
         AND (q.device_id<>? OR ? IS NOT 'jsonl' OR q.revision IS NOT ?))
       AND NOT EXISTS(SELECT 1 FROM task_desktop_device target WHERE target.task_id=task.id AND target.device_id<>?)
-      AND (? OR substr(task.goal,1,9) IN ('/observe ','/preview ') OR substr(task.goal,1,7)='/click ')
+      AND ${desktopTextEntitlement('task', '?')}
+      AND (? OR substr(task.goal,1,9) IN ('/observe ','/preview ') OR substr(task.goal,1,7) IN ('/click ','/write '))
       AND (? OR (
         NOT EXISTS(SELECT 1 FROM task_app_evidence e WHERE e.task_id=task.id)
         AND NOT EXISTS(SELECT 1 FROM task_memory_input m WHERE m.task_id=task.id)
         AND NOT EXISTS(SELECT 1 FROM task_attachment a WHERE a.task_id=task.id)))
       AND (? IS NULL OR EXISTS(SELECT 1 FROM json_each(?) j WHERE
         substr(goal || ' ',1,length('/observe ' || j.value || ' '))='/observe ' || j.value || ' '
-        OR substr(goal || ' ',1,length('/click ' || j.value || ' '))='/click ' || j.value || ' '))
+        OR substr(goal || ' ',1,length('/click ' || j.value || ' '))='/click ' || j.value || ' '
+        OR substr(goal || ' ',1,length('/write ' || j.value || ' '))='/write ' || j.value || ' '))
       AND NOT EXISTS (
         SELECT 1 FROM workflow_dependency d JOIN task p ON p.id=d.predecessor
         WHERE d.task_id=task.id AND p.status!='succeeded'
@@ -116,7 +129,7 @@ export class DispatchRepository {
       ON d.owner=eligible.owner AND d.workspace=eligible.workspace AND d.channel=eligible.origin_channel
       AND d.goal_prefix=? AND d.excluding_prefix=?
     ORDER BY COALESCE(d.last_dispatch,0), eligible.queue_order LIMIT 1`).get(
-      owner, workspace, goalPrefix, goalPrefix, goalPrefix, excludingPrefix, excludingPrefix, excludingPrefix, now, Number(policy?.require_read_only === 1), capabilities, worker?.protocol ?? null, device, worker?.protocol ?? null, worker?.revision ?? null, device, Number(Boolean(workerPermitted) && workerHasCapacity), Number(allowWorkerInputs),
+      owner, workspace, goalPrefix, goalPrefix, goalPrefix, excludingPrefix, excludingPrefix, excludingPrefix, now, Number(policy?.require_read_only === 1), capabilities, worker?.protocol ?? null, device, worker?.protocol ?? null, worker?.revision ?? null, device, device, Number(Boolean(workerPermitted) && workerHasCapacity), Number(allowWorkerInputs),
       desktopApps ? JSON.stringify(desktopApps) : null, desktopApps ? JSON.stringify(desktopApps) : null,
       goalPrefix, excludingPrefix) as unknown as (Task & { origin_channel: string }) | undefined;
     if (!task) {

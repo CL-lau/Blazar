@@ -10,7 +10,7 @@ export class RunInputRepository {
   }
 
   desktopAction(task: Pick<Task, 'id' | 'goal'>) {
-    if (!/^\/(observe|click) /.test(task.goal)) return undefined;
+    if (!/^\/(observe|click|write) /.test(task.goal)) return undefined;
     const row = this.db.prepare(`SELECT json_extract(data,'$.action') AS action FROM event
       WHERE taskId=? AND type='task.created' ORDER BY seq LIMIT 1`).get(task.id);
     return typeof row?.action === 'string' ? JSON.parse(row.action) as WorkflowAction : undefined;
@@ -114,6 +114,7 @@ export class RunInputRepository {
       ...(required === 'writable-worktree' && { writableWorktreeRequired: true }),
       ...(typeof expected === 'string' && (task.goal.startsWith('/click ')
         ? { clickExpectedText: expected } : { observationExpectedText: expected })),
+      ...(action?.kind === 'desktop.write' && { desktopText: { field: action.field, value: action.value } }),
       ...(observationWaitSeconds !== undefined && { observationWaitSeconds }),
       ...(attachments.length && { attachments }),
       ...(memoryInputs.length && { memoryInputs }),

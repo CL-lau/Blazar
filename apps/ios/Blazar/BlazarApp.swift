@@ -229,7 +229,10 @@ private struct TaskScreen: View {
                                 VStack(alignment: .leading) {
                                     Text(step.goal)
                                     if let action = step.action {
-                                        if let button = action.button, let window = action.windowFrom?.title ?? action.windowId {
+                                        if action.kind == "desktop.write", let field = action.field, let value = action.value,
+                                           let title = action.windowFrom?.title {
+                                            Text("Set \(field) in \(action.alias), window \(title) to \(value)").font(.caption)
+                                        } else if let button = action.button, let window = action.windowFrom?.title ?? action.windowId {
                                             Text("Click \(button) in \(action.alias), window \(window)").font(.caption)
                                             if let expected = action.expectedText { Text("Expected text: \(expected)").font(.caption) }
                                         } else if let title = action.windowFrom?.title {

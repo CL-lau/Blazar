@@ -1,5 +1,5 @@
 import { setTimeout as delay } from 'node:timers/promises';
-import { captureWindow, clickApp, observeApp, observeWindowWithImage, type ObservationConfig } from '../../../packages/computer-use/observe.ts';
+import { captureWindow, clickApp, observeApp, observeWindowWithImage, setAppText, type ObservationConfig } from '../../../packages/computer-use/observe.ts';
 import type { RunOutcome } from '../../../packages/protocol/task.ts';
 
 export async function executeDesktopAction(
@@ -10,7 +10,17 @@ export async function executeDesktopAction(
   authorize: Parameters<typeof clickApp>[4],
   expectedText?: string,
   waitSeconds?: number,
+  desktopText?: { field: string; value: string },
 ): Promise<RunOutcome> {
+  if (desktopText) {
+    const match = /^\/write ([a-z0-9_-]{1,32}) --window (w-[0-9]{1,20}) --instance ([a-f0-9]{64})$/.exec(goal);
+    if (!match) throw new Error('Invalid desktop text edit target');
+    const text = await setAppText(config, root, {
+      alias: match[1], windowId: match[2], identity: match[3], label: desktopText.field, value: desktopText.value,
+    }, signal, authorize);
+    return { status: 'succeeded', result: text, artifact: { name: 'application-observation.txt', text } };
+  }
+
   const visual = /^\/observe ([a-z0-9_-]{1,32}) --window (w-[0-9]{1,20}) --instance ([a-f0-9]{64}) --(visual|hybrid)$/.exec(goal);
   if (visual) {
     const args = [config, root, visual[1], visual[2], visual[3], signal] as const;

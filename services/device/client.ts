@@ -16,7 +16,7 @@ import { completeInputArtifacts } from './execution/input-artifacts.ts';
 import { WorkerQuestion } from '../../packages/workers/custom-jsonl.ts';
 import { executeWorker } from './execution/worker.ts';
 
-type Assignment = { clickExpectedText?: string; observationExpectedText?: string; observationWaitSeconds?: number; fullInputRequired?: boolean; readOnlyRequired?: boolean; offlineToolsRequired?: boolean; writableWorktreeRequired?: boolean; gitPatchInputsRequired?: boolean; run: Run; task: Task; instructions: string[]; predecessors: PredecessorInput[]; runHistory?: RunHistoryEntry[]; previousQuestion?: string; expectedArtifact?: string; acceptanceCriteria?: string[]; memoryInputs?: TaskMemoryInput[]; attachments?: TaskAttachment[] };
+type Assignment = { desktopText?: { field: string; value: string }; clickExpectedText?: string; observationExpectedText?: string; observationWaitSeconds?: number; fullInputRequired?: boolean; readOnlyRequired?: boolean; offlineToolsRequired?: boolean; writableWorktreeRequired?: boolean; gitPatchInputsRequired?: boolean; run: Run; task: Task; instructions: string[]; predecessors: PredecessorInput[]; runHistory?: RunHistoryEntry[]; previousQuestion?: string; expectedArtifact?: string; acceptanceCriteria?: string[]; memoryInputs?: TaskMemoryInput[]; attachments?: TaskAttachment[] };
 
 export class DeviceClient {
   private socket: DeviceSocket;
@@ -148,6 +148,7 @@ export class DeviceClient {
       desktopApps: observation ? [...observation.apps.keys()] : undefined,
       desktopControls: observation ? [...observation.apps.keys()].map(alias => ({
         alias, buttons: [...observation.buttons?.get(alias) ?? []], visual: observation.visualApps?.has(alias) === true,
+        ...(observation.textFields?.get(alias)?.size && { textFields: [...observation.textFields.get(alias)!] }),
       })) : undefined,
     }, signal);
     if (!claim.ok) throw new Error(`Task claim failed (${claim.status})`);
@@ -203,7 +204,7 @@ export class DeviceClient {
               const decision = await this.approve(prefix, summary, signal);
               if (decision?.decision !== 'approved') return undefined;
               return () => this.consumeApproval(prefix, decision.id, signal);
-            }, assignment.clickExpectedText ?? assignment.observationExpectedText, assignment.observationWaitSeconds);
+            }, assignment.clickExpectedText ?? assignment.observationExpectedText, assignment.observationWaitSeconds, assignment.desktopText);
         } else if (this.worker) {
           const root = this.worktrees ? await this.worktrees.prepare(assignment.run.id, active) : this.root;
           active.throwIfAborted();

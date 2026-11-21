@@ -100,7 +100,13 @@ export function deviceOperation(store: DeviceTasks, bearer: string, pathname: st
               || label.length > 120 || /[\x00-\x1f\x7f]/.test(label))) {
           throw new RequestError(400, 'Invalid desktop controls');
         }
-        return { alias: entry.alias, visual: entry.visual, buttons: [...new Set<string>(entry.buttons)] };
+        if (entry.textFields !== undefined && (!Array.isArray(entry.textFields) || entry.textFields.length > 25 ||
+            entry.textFields.some((label: unknown) => typeof label !== 'string' || !label.trim() ||
+              label.length > 120 || /[\x00-\x1f\x7f]/.test(label)))) {
+          throw new RequestError(400, 'Invalid desktop text fields');
+        }
+        return { alias: entry.alias, visual: entry.visual, buttons: [...new Set<string>(entry.buttons)],
+          ...(entry.textFields && { textFields: [...new Set<string>(entry.textFields)] }) };
       });
     }
     store.recordDesktopApps(device.id, desktopApps, desktopPermissions, desktopControls);

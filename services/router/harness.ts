@@ -15,7 +15,7 @@ export type RouterHarness = (input: RouteRequest & {
   recent: ConversationTurn[];
   personalMemory?: string[];
   workspaceCapabilities?: () => {
-    desktopTargets?: { alias: string; deviceId: string }[];
+    desktopTargets?: { alias: string; deviceId: string; textFields?: string[] }[];
     devices: { name: string; capability: string; online: boolean; available: boolean }[];
     apps: { app: string; documentRead: boolean }[];
   };
@@ -41,6 +41,7 @@ const instructions = [
   'When the user gives a step time limit between 30 and 600 seconds, include runLimitSeconds on that step.',
   'For an explicitly requested read-only observation of an exact window title, propose a desktop.observe window inventory with mode windows, followed by desktop.observe with mode window and windowFrom {"step":"inventory step key","title":"exact user-supplied title"}. Both steps must use the same device and alias. If the user requires the window to show particular text before later steps run, set expectedText on the window step. If the user asks to wait for text to appear, set waitSeconds from 1 to 20 on that step. For a requested screenshot, use mode visual instead of window; this requires a screenshot-enabled target and does not accept expectedText. When the user explicitly asks for both a screenshot and a semantic window observation, use mode hybrid with the same screenshot permission requirement.',
   'For an explicitly requested click by exact window title, use a desktop.observe step with mode windows followed by a desktop.click on the same device and alias. Set windowFrom to {"step":"observation step key","title":"exact user-supplied title"} and include that step in needs. The device will require approval.',
+  'For an explicitly requested text edit, discover the exact allowed field in workspace_capabilities and propose a desktop.observe step with mode windows, followed by desktop.write with field, value, and windowFrom naming that step and an exact window title. Use the exact user-supplied value. Ask for clarification when the destination or value is ambiguous. Never use this action for credentials. Execution requires separate approval and verifies the field before dependent steps run.',
   'A proposed workflow is reviewed by the user before anything is queued.',
   'If the request needs clarification, return {"kind":"clarify","text":"Your question"}.',
   'For a question you can answer from the message and any relevant supplied reference data, return {"kind":"reply","text":"Answer"}.',

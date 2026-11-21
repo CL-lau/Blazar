@@ -9,6 +9,7 @@ export function submitTask(store: Pick<TaskStore, 'create' | 'get' | 'appEvidenc
                            owner: string, key: string, data: Record<string, unknown>, admin: boolean, caller?: string) {
   const workspace = requiredText(data.workspace, 'workspace', 128);
   const goal = requiredText(data.text, 'text', 32_000);
+  if (goal.startsWith('/write ')) throw new RequestError(400, 'Desktop text edits require a structured workflow');
   const desktopDevice = data.desktopDevice;
   if (desktopDevice !== undefined) {
     const targetApp = /^\/(?:observe|click) ([a-z0-9_-]{1,32})(?: |$)/.exec(goal)?.[1];
