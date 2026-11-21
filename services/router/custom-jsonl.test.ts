@@ -19,6 +19,13 @@ test('a registered JSONL extension executes a real subprocess through Router and
   await writeFile(script, `
     const request = JSON.parse(require('node:fs').readFileSync(0, 'utf8'));
     if (request.version !== 1 || request.type !== 'run') process.exit(2);
+    if (request.input.goal === 'Inspect the attachment') {
+      const [attachment] = request.input.attachments ?? [];
+      if (attachment?.name !== 'notes.txt' || attachment.text !== 'Attachment fixture body' ||
+          request.input.instructions.length) process.exit(7);
+      console.log(JSON.stringify({version:1,type:'completed',result:'Attachment verified'}));
+      return;
+    }
     if (request.input.goal === 'Verify upstream file') {
       const artifact = request.input.predecessorResults[0].artifact;
       if (artifact.text !== 'Z'.repeat(2500) || artifact.excerpt.length !== 2000 ||
@@ -183,6 +190,25 @@ test('a registered JSONL extension executes a real subprocess through Router and
   const source = { connection, resource: 'guide.md', revision: '1' };
   memory.importDocument('owner', 'project', 'Private review template', source);
   const base = 'http://127.0.0.1:' + address.port;
+  const createAttachmentTask = (key: string, attachments: { name: string; text: string }[]) => fetch(base + '/v1/events', {
+    method: 'POST', headers: {
+      Authorization: 'Bearer local', 'Content-Type': 'application/json', 'Idempotency-Key': key,
+    }, body: JSON.stringify({ workspace: 'project', text: 'Inspect the attachment', attachments }),
+  });
+  const attachment = { name: 'notes.txt', text: 'Attachment fixture body' };
+  assert.equal((await createAttachmentTask('path-attachment', [{ ...attachment, name: '../notes.txt' }])).status, 400);
+  assert.equal((await createAttachmentTask('large-attachment', [{ ...attachment, text: 'a'.repeat(8193) }])).status, 400);
+  const attachmentResponse = await createAttachmentTask('valid-attachment', [attachment]);
+  assert.equal(attachmentResponse.status, 202);
+  const attachedTask = await attachmentResponse.json();
+  assert.equal((await (await createAttachmentTask('valid-attachment', [attachment])).json()).id, attachedTask.id);
+  assert.equal((await createAttachmentTask('valid-attachment', [{ ...attachment, text: 'Changed' }])).status, 409);
+  await expectNoLegacyAssignment();
+  assert.equal(await client.runOnce(AbortSignal.timeout(5_000)), true);
+  assert.equal(store.get('owner', attachedTask.id)?.result, 'Attachment verified');
+  const attachedEvent = store.timeline('owner', attachedTask.id)?.events.find(event => event.type === 'task.created');
+  assert.equal(attachedEvent?.data.attachments[0].name, attachment.name);
+  assert.doesNotMatch(JSON.stringify(attachedEvent), /Attachment fixture body/);
   const createWithEvidence = (key: string, sourceId = connection, goal = 'Use the review template') => fetch(base + '/v1/events', {
     method: 'POST', headers: {
       Authorization: 'Bearer local', 'Content-Type': 'application/json', 'Idempotency-Key': key,

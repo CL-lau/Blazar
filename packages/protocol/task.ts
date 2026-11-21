@@ -63,6 +63,11 @@ export interface DesktopAppControls {
   visual: boolean;
 }
 
+export interface TaskAttachment {
+  name: string;
+  text: string;
+}
+
 export interface WorkerConfiguration {
   label: string;
   protocol: string;

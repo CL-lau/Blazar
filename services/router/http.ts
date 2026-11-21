@@ -1,4 +1,4 @@
-import type { DesktopAppControls, RunOutcome, WorkerConfiguration } from '../../packages/protocol/task.ts';
+import type { DesktopAppControls, RunOutcome, TaskAttachment, WorkerConfiguration } from '../../packages/protocol/task.ts';
 import { displayTaskStatus } from '../../packages/protocol/task.ts';
 import { artifactDiff } from './artifact-diff.ts';
 import { workerCatalog } from '../../packages/workers/registry.ts';
@@ -91,6 +91,21 @@ async function stream(store: TaskStore, owner: string, cursor: number, response:
   } finally {
     response.end();
   }
+}
+
+function textAttachments(value: unknown): TaskAttachment[] {
+  if (!Array.isArray(value) || value.length < 1 || value.length > 4) throw new RequestError(400, 'Invalid task attachments');
+  let bytes = 0;
+  return value.map(item => {
+    if (!item || typeof item !== 'object' || Array.isArray(item)) throw new RequestError(400, 'Invalid task attachment');
+    const name = requiredText(item.name, 'attachment name', 128);
+    const text = requiredText(item.text, 'attachment text', 8_192).toWellFormed();
+    bytes += Buffer.byteLength(text);
+    if (/[\x00-\x1f\x7f/\\]/.test(name) || /[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]/.test(text) || bytes > 16_384) {
+      throw new RequestError(400, 'Invalid task attachment text or size');
+    }
+    return { name: name.toWellFormed(), text };
+  });
 }
 
 function selectAppEvidence(memory: MemoryStore | undefined, owner: string, workspace: string, value: unknown): AppEvidence {
@@ -1054,7 +1069,11 @@ export function routerServer(store: TaskStore, config: { owner: string; token: s
             }
             appEvidence = selectAppEvidence(config.memory, owner, workspace, data.appMemory);
           }
-          const task = store.create(owner, 'desktop-api', key, workspace, goal, desktopDevice, memoryInputs, appEvidence);
+          if (data.attachments !== undefined && /^\/(observe|click|preview) /.test(goal)) {
+            throw new RequestError(400, 'Attachments require a Worker task');
+          }
+          const attachments = data.attachments === undefined ? undefined : textAttachments(data.attachments);
+          const task = store.create(owner, 'desktop-api', key, workspace, goal, desktopDevice, memoryInputs, appEvidence, attachments);
           metrics.observe('event', performance.now() - started);
           reply(response, 202, canReadTask(task.id) ? task : { ...task, result: null });
           return;

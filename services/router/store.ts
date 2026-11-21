@@ -3,7 +3,7 @@ import { orderWorkflow } from './workflow.ts';
 import type { ConversationTurn, Decision, RouteRequest } from './harness.ts';
 import { createHash, randomBytes, randomUUID } from 'node:crypto';
 import { DatabaseSync } from 'node:sqlite';
-import type { DesktopAppControls, PredecessorInput, Run, RunOutcome, Task, TaskEvent, TaskMemoryInput, WorkerConfiguration, WorkflowStep } from '../../packages/protocol/task.ts';
+import type { DesktopAppControls, PredecessorInput, Run, RunOutcome, Task, TaskAttachment, TaskEvent, TaskMemoryInput, WorkerConfiguration, WorkflowStep } from '../../packages/protocol/task.ts';
 import { displayTaskStatus, windowImageLifetimeMs } from '../../packages/protocol/task.ts';
 
 const runLimitMs = 10 * 60_000;
@@ -135,6 +135,11 @@ export class TaskStore {
       );
       CREATE TABLE IF NOT EXISTS device_worker (
         device_id TEXT PRIMARY KEY REFERENCES device(id), label TEXT NOT NULL, protocol TEXT NOT NULL
+      );
+      CREATE TABLE IF NOT EXISTS task_attachment (
+        task_id TEXT NOT NULL REFERENCES task(id) ON DELETE CASCADE,
+        position INTEGER NOT NULL, name TEXT NOT NULL, text TEXT NOT NULL,
+        PRIMARY KEY(task_id,position)
       );
       CREATE TABLE IF NOT EXISTS task_memory_input (
         task_id TEXT NOT NULL REFERENCES task(id), position INTEGER NOT NULL, memory_id TEXT NOT NULL,
@@ -709,13 +714,18 @@ export class TaskStore {
   }
 
   create(owner: string, source: string, key: string, workspace: string, goal: string, desktopDevice?: string,
-         memoryInputs?: TaskMemoryInput[], appEvidence?: AppEvidence): Task {
+         memoryInputs?: TaskMemoryInput[], appEvidence?: AppEvidence, attachments?: TaskAttachment[]): Task {
     return this.transaction(() => {
-      const fingerprint = JSON.stringify(appEvidence
+      const parameters: unknown[] = appEvidence
         ? [workspace, goal, { query: appEvidence.query, sources: appEvidence.sources, usePersonalMemory: Boolean(memoryInputs) }]
         : memoryInputs
         ? [workspace, goal, desktopDevice ?? null, { usePersonalMemory: true }]
-        : desktopDevice ? [workspace, goal, desktopDevice] : [workspace, goal]);
+        : desktopDevice ? [workspace, goal, desktopDevice] : [workspace, goal];
+      const attachmentRefs = attachments?.map(({ name, text }) => ({
+        name, sha256: createHash('sha256').update(text).digest('hex'), size: Buffer.byteLength(text),
+      }));
+      if (attachmentRefs?.length) parameters.push({ attachments: attachmentRefs });
+      const fingerprint = JSON.stringify(parameters);
       const receipt = this.db.prepare('SELECT fingerprint, taskId FROM receipt WHERE owner=? AND source=? AND key=?')
         .get(owner, source, key);
       if (receipt) {
@@ -734,9 +744,14 @@ export class TaskStore {
         if (!appEvidence.refs.length) throw new Error('No authorized application evidence was found');
         this.db.prepare('INSERT INTO task_app_evidence VALUES(?,?)').run(id, JSON.stringify(appEvidence.refs));
       }
+      for (const [position, attachment] of (attachments ?? []).entries()) {
+        this.db.prepare('INSERT INTO task_attachment VALUES(?,?,?,?)')
+          .run(id, position, attachment.name, attachment.text);
+      }
       this.event(id, 'task.created', { goal, workspace, ...(desktopDevice && { desktopDevice }),
         ...(memoryInputs?.length && { memoryInputs: memoryInputs.map(({ id, version }) => ({ id, version })) }),
         ...(appEvidence && { appEvidence: appEvidence.refs }),
+        ...(attachmentRefs?.length && { attachments: attachmentRefs }),
       });
       return this.get(owner, id)!;
     });
@@ -1242,7 +1257,7 @@ export class TaskStore {
     });
   }
 
-  claim(owner: string, workspace: string, device: string, now: number, leaseMs: number, goalPrefix = '', excludingPrefix = '', requestId?: string, worker?: WorkerConfiguration, desktopApps?: string[], allowWorkerMemory = false) {
+  claim(owner: string, workspace: string, device: string, now: number, leaseMs: number, goalPrefix = '', excludingPrefix = '', requestId?: string, worker?: WorkerConfiguration, desktopApps?: string[], allowWorkerInputs = false) {
     return this.transaction(() => {
       const identity = [owner, workspace, goalPrefix, excludingPrefix];
       const fingerprint = JSON.stringify(desktopApps ? [...identity, desktopApps] : worker ? [...identity, worker] : identity);
@@ -1259,8 +1274,9 @@ export class TaskStore {
             AND NOT EXISTS(SELECT 1 FROM run_evidence_stop s WHERE s.run_id=r.id)
             AND (? OR (
               NOT EXISTS(SELECT 1 FROM task_app_evidence e WHERE e.task_id=t.id)
-              AND NOT EXISTS(SELECT 1 FROM task_memory_input m WHERE m.task_id=t.id)))`)
-            .get(assignment.run.id, device, now, Number(allowWorkerMemory));
+              AND NOT EXISTS(SELECT 1 FROM task_memory_input m WHERE m.task_id=t.id)
+              AND NOT EXISTS(SELECT 1 FROM task_attachment a WHERE a.task_id=t.id)))`)
+            .get(assignment.run.id, device, now, Number(allowWorkerInputs));
           if (!current) return undefined;
           assignment.run.expires = Number(current.expires);
           return assignment as ReturnType<TaskStore['assignment']>;
@@ -1278,7 +1294,8 @@ export class TaskStore {
         AND NOT EXISTS(SELECT 1 FROM task_desktop_device target WHERE target.task_id=task.id AND target.device_id<>?)
         AND (? OR (
           NOT EXISTS(SELECT 1 FROM task_app_evidence e WHERE e.task_id=task.id)
-          AND NOT EXISTS(SELECT 1 FROM task_memory_input m WHERE m.task_id=task.id)))
+          AND NOT EXISTS(SELECT 1 FROM task_memory_input m WHERE m.task_id=task.id)
+          AND NOT EXISTS(SELECT 1 FROM task_attachment a WHERE a.task_id=task.id)))
         AND (? IS NULL OR EXISTS(SELECT 1 FROM json_each(?) j WHERE
           substr(goal || ' ',1,length('/observe ' || j.value || ' '))='/observe ' || j.value || ' '
           OR substr(goal || ' ',1,length('/click ' || j.value || ' '))='/click ' || j.value || ' '))
@@ -1291,7 +1308,7 @@ export class TaskStore {
         ON d.owner=eligible.owner AND d.workspace=eligible.workspace AND d.channel=eligible.origin_channel
         AND d.goal_prefix=? AND d.excluding_prefix=?
       ORDER BY COALESCE(d.last_dispatch,0), eligible.queue_order LIMIT 1`).get(
-        owner, workspace, goalPrefix, goalPrefix, goalPrefix, excludingPrefix, excludingPrefix, excludingPrefix, device, Number(allowWorkerMemory),
+        owner, workspace, goalPrefix, goalPrefix, goalPrefix, excludingPrefix, excludingPrefix, excludingPrefix, device, Number(allowWorkerInputs),
         desktopApps ? JSON.stringify(desktopApps) : null, desktopApps ? JSON.stringify(desktopApps) : null,
         goalPrefix, excludingPrefix) as unknown as (Task & { origin_channel: string }) | undefined;
       if (!task) {
@@ -1357,7 +1374,10 @@ export class TaskStore {
       .all(run.taskId).map(row => String(row.criterion));
     const memoryInputs = this.db.prepare('SELECT memory_id AS id,version,body FROM task_memory_input WHERE task_id=? ORDER BY position')
       .all(run.taskId) as unknown as TaskMemoryInput[];
+    const attachments = this.db.prepare('SELECT name,text FROM task_attachment WHERE task_id=? ORDER BY position')
+      .all(run.taskId) as unknown as TaskAttachment[];
     return { run, task: this.get(owner, run.taskId)!, instructions, predecessors, acceptanceCriteria,
+      ...(attachments.length && { attachments }),
       ...(memoryInputs.length && { memoryInputs }),
     };
   }
@@ -1598,7 +1618,8 @@ export class TaskStore {
             ELSE 'agent.acp' END)
           AND (p.capability='agent.acp' OR (
             NOT EXISTS(SELECT 1 FROM task_app_evidence e WHERE e.task_id=t.id)
-            AND NOT EXISTS(SELECT 1 FROM task_memory_input m WHERE m.task_id=t.id)))
+            AND NOT EXISTS(SELECT 1 FROM task_memory_input m WHERE m.task_id=t.id)
+            AND NOT EXISTS(SELECT 1 FROM task_attachment a WHERE a.task_id=t.id)))
           AND NOT EXISTS(SELECT 1 FROM task_desktop_device target WHERE target.task_id=t.id AND target.device_id<>d.id)
           AND (a.aliases IS NULL OR EXISTS(SELECT 1 FROM json_each(a.aliases) j WHERE
             substr(t.goal || ' ',1,length('/observe ' || j.value || ' '))='/observe ' || j.value || ' '
