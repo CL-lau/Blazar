@@ -3,6 +3,16 @@ import XCTest
 @testable import Blazar
 
 final class ClientTests: XCTestCase {
+    func testStoredPairingSurvivesStalePreferencesAndReadsLegacyTokens() throws {
+        let token = String(repeating: "A", count: 43)
+        let pairing = Credentials.Pairing(endpoint: "https://new.example", token: token)
+        let legacyEndpoint = "https://old.example"
+        XCTAssertEqual(Credentials.decode(try JSONEncoder().encode(pairing), legacyEndpoint: legacyEndpoint), pairing)
+        XCTAssertEqual(Credentials.decode(Data(token.utf8), legacyEndpoint: legacyEndpoint)?.endpoint, legacyEndpoint)
+        XCTAssertNil(Credentials.decode(Data(token.utf8), legacyEndpoint: ""))
+        XCTAssertNil(Credentials.decode(Data("{truncated".utf8), legacyEndpoint: legacyEndpoint))
+    }
+
     func testPairingCredentialMatchesOnlyTheSavedEndpoint() {
         let paired = "https://router.example:8443"
         XCTAssertTrue(PairingPayload.credentialApplies(to: paired, pairedEndpoint: paired))

@@ -2,7 +2,7 @@ import Foundation
 import Security
 
 enum Credentials {
-    private struct Pairing: Codable {
+    struct Pairing: Codable, Equatable {
         let endpoint: String
         let token: String
     }
@@ -12,21 +12,25 @@ enum Credentials {
          kSecAttrService as String: "com.blazar.app.router", kSecAttrAccount as String: "token"]
     }
 
-    static func read(for endpoint: String) -> String {
+    static func read(legacyEndpoint: String) -> Pairing? {
         var lookup = query
         lookup[kSecReturnData as String] = true
         var item: CFTypeRef?
         guard SecItemCopyMatching(lookup as CFDictionary, &item) == errSecSuccess,
-              let data = item as? Data else { return "" }
-        if let pairing = try? JSONDecoder().decode(Pairing.self, from: data) {
-            return PairingPayload.credentialApplies(to: endpoint, pairedEndpoint: pairing.endpoint) ? pairing.token : ""
-        }
-        // Older versions stored the token alone and saved the endpoint in preferences.
-        return endpoint.isEmpty ? "" : String(decoding: data, as: UTF8.self)
+              let data = item as? Data else { return nil }
+        return decode(data, legacyEndpoint: legacyEndpoint)
     }
 
-    static func save(_ token: String, for endpoint: String) throws {
-        let data = try JSONEncoder().encode(Pairing(endpoint: endpoint, token: token))
+    static func decode(_ data: Data, legacyEndpoint: String) -> Pairing? {
+        if let pairing = try? JSONDecoder().decode(Pairing.self, from: data) { return pairing }
+        // Older versions stored the token alone and saved the endpoint in preferences.
+        guard !legacyEndpoint.isEmpty, let token = String(data: data, encoding: .utf8),
+              token.wholeMatch(of: #/[A-Za-z0-9_-]{43}/#) != nil else { return nil }
+        return Pairing(endpoint: legacyEndpoint, token: token)
+    }
+
+    static func save(_ pairing: Pairing) throws {
+        let data = try JSONEncoder().encode(pairing)
         var entry = query
         entry[kSecValueData as String] = data
         entry[kSecAttrAccessible as String] = kSecAttrAccessibleWhenUnlockedThisDeviceOnly

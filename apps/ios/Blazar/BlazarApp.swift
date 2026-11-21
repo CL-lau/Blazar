@@ -40,7 +40,9 @@ private struct TaskScreen: View {
     @Environment(\.scenePhase) private var scenePhase
     @AppStorage("router.endpoint") private var savedEndpoint = ""
     @State private var endpoint = ""
-    @State private var token = Credentials.read(for: UserDefaults.standard.string(forKey: "router.endpoint") ?? "")
+    @State private var pairingCredential = Credentials.read(
+        legacyEndpoint: UserDefaults.standard.string(forKey: "router.endpoint") ?? ""
+    )
     @State private var snapshot: RouterSnapshot?
     @State private var offlineSummary: OfflineTaskSummary?
     @State private var snapshotRequest = UUID()
@@ -69,10 +71,10 @@ private struct TaskScreen: View {
     }
 
     private var client: RouterClient? {
-        guard !token.isEmpty,
-              PairingPayload.credentialApplies(to: endpoint, pairedEndpoint: savedEndpoint),
+        guard let pairingCredential, !pairingCredential.token.isEmpty,
+              PairingPayload.credentialApplies(to: endpoint, pairedEndpoint: pairingCredential.endpoint),
               let base = routerURL else { return nil }
-        return RouterClient(base: base, token: token)
+        return RouterClient(base: base, token: pairingCredential.token)
     }
 
     var body: some View {
@@ -107,10 +109,11 @@ private struct TaskScreen: View {
                             do {
                                 let paired = try await RouterClient.pair(base: base, code: code, name: "iPhone")
                                 guard base == routerURL else { return }
-                                try Credentials.save(paired.token, for: base.absoluteString)
-                                savedEndpoint = base.absoluteString
-                                endpoint = savedEndpoint
-                                token = paired.token
+                                let credential = Credentials.Pairing(endpoint: base.absoluteString, token: paired.token)
+                                try Credentials.save(credential)
+                                pairingCredential = credential
+                                savedEndpoint = credential.endpoint
+                                endpoint = credential.endpoint
                                 pairingCode = ""
                                 await reload()
                             } catch { self.error = error.localizedDescription }
@@ -363,7 +366,7 @@ private struct TaskScreen: View {
             .refreshable { await reload() }
             .task {
                 if endpoint.isEmpty {
-                    endpoint = savedEndpoint
+                    endpoint = pairingCredential?.endpoint ?? savedEndpoint
                 }
             }
             .task(id: scenePhase == .active ? client : nil) {
@@ -438,7 +441,7 @@ private struct TaskScreen: View {
         offlineSummary = nil
         answer = nil
         plan = nil
-        token = ""
+        pairingCredential = nil
         do {
             try Credentials.remove()
             error = "This phone’s Router access has ended. Pair again to reconnect."
