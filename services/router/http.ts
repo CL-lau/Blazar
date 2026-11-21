@@ -1091,7 +1091,7 @@ export function routerServer(store: TaskStore, config: { owner: string; token: s
         }
         const appEvidence = data.appMemory === undefined ? undefined :
           selectAppEvidence(config.memory, owner, workspace, data.appMemory);
-        reply(response, 202, store.createWorkflow(owner, key, workspace, steps, appEvidence));
+        reply(response, 202, store.createWorkflow(owner, key, workspace, steps, appEvidence, mobile?.id));
         return;
       }
       if (request.method === 'POST' && url.pathname === '/v1/conversation') {

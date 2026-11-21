@@ -1061,21 +1061,23 @@ export class TaskStore {
     if (!wasStopping) this.event(taskId, 'run.memory_access_changed', { runId, status: 'waiting_user' });
   }
 
-  createWorkflow(owner: string, key: string, workspace: string, steps: WorkflowStep[], appEvidence?: AppEvidence) {
+  createWorkflow(owner: string, key: string, workspace: string, steps: WorkflowStep[], appEvidence?: AppEvidence, caller?: string) {
     const ordered = orderWorkflow(steps);
+    // Mobile keys exceed the public 128-character limit to preserve existing administrator receipts.
+    const requestKey = caller ? 'mobile:' + createHash('sha512').update(JSON.stringify([caller, key])).digest('hex') : key;
 
     return this.transaction(() => {
       const fingerprint = JSON.stringify(appEvidence
         ? [workspace, steps, { query: appEvidence.query, sources: appEvidence.sources }]
         : [workspace, steps]);
       const existing = this.db.prepare('SELECT id,fingerprint FROM workflow WHERE owner=? AND request_key=?')
-        .get(owner, key);
+        .get(owner, requestKey);
       if (existing) {
         if (existing.fingerprint !== fingerprint) throw new IdempotencyConflict();
         return { id: String(existing.id), steps: this.workflowSteps(String(existing.id)) };
       }
       const id = randomUUID();
-      this.db.prepare('INSERT INTO workflow VALUES(?,?,?,?)').run(id, owner, key, fingerprint);
+      this.db.prepare('INSERT INTO workflow VALUES(?,?,?,?)').run(id, owner, requestKey, fingerprint);
       const tasks = new Map<string, string>();
       for (const step of ordered) {
         const name = step.key;

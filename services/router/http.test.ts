@@ -729,7 +729,7 @@ test('Router capability tools only expose active connections and devices in the 
   }, undefined, undefined]);
 });
 
-test('direct task intake deduplicates per paired phone and administrator', async t => {
+test('task and workflow intake deduplicate per paired phone and administrator', async t => {
   const store = new TaskStore(':memory:');
   const server = routerServer(store, { owner: 'owner', token: 'admin-secret' });
   const pair = (name: string) => store.redeemPairing(store.createPairing('owner', Date.now()).code, name, Date.now())!;
@@ -761,6 +761,25 @@ test('direct task intake deduplicates per paired phone and administrator', async
   assert.equal((await replay.json()).id, tasks[1].id);
   assert.equal((await submit(second.token, 'Different request')).status, 409);
   assert.equal(store.snapshot('owner').tasks.length, 3);
+
+  const createWorkflow = (token: string, goal: string) => fetch('http://127.0.0.1:' + address.port + '/v1/workflows', {
+    method: 'POST',
+    headers: { Authorization: 'Bearer ' + token, 'Content-Type': 'application/json', 'Idempotency-Key': 'shared-key' },
+    body: JSON.stringify({ workspace: 'project', steps: [{ key: 'draft', goal, needs: [] }] }),
+  });
+  const workflowResponses = await Promise.all([
+    createWorkflow(first.token, 'Draft first report'),
+    createWorkflow(second.token, 'Draft second report'),
+    createWorkflow('admin-secret', 'Draft second report'),
+  ]);
+  assert.deepEqual(workflowResponses.map(item => item.status), [202, 202, 202]);
+  const workflows = await Promise.all(workflowResponses.map(item => item.json()));
+  assert.equal(new Set(workflows.map(workflow => workflow.id)).size, 3);
+  const workflowReplay = await createWorkflow(second.token, 'Draft second report');
+  assert.equal(workflowReplay.status, 202);
+  assert.deepEqual(await workflowReplay.json(), workflows[1]);
+  assert.equal((await createWorkflow(second.token, 'Different plan')).status, 409);
+  assert.equal(store.snapshot('owner').tasks.length, 6);
 });
 
 test('concurrent conversation retries share routing and reject in-flight key conflicts', { timeout: 5000 }, async t => {
