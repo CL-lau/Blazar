@@ -327,3 +327,5 @@ packages/storage          事务、迁移、备份
 - 使用设备端 ACP Registry 安装命令，把官方 Gemini CLI 0.70.0 安装在独立目录并生成 manifest。在独立工作区运行探测，Blazar 直接调用已安装的 Gemini 可执行文件，ACP v1 握手成功。账号登录仍未验证。
 
 - 混合 Pi 基准改用设备的生产唤醒路径，一次 Apple M4 验证处理 300 次请求，首次接收 p95 为 57.35 ms，首次领取 p95 为 106.73 ms。模型使用本机模拟流。
+
+- Codex 增加 offline-tools 步骤能力。Router 仅派给声明该能力的 Worker，设备在启动轮次前确认原生沙箱的 networkAccess 为 false。使用真实 Codex App Server 和本机 HTTP 测试服务验证，宿主请求可以访问，沙箱内命令无法连接。该验证覆盖工具子进程，不涉及模型端点。

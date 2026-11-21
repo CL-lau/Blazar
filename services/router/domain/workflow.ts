@@ -55,7 +55,7 @@ export function workflowSteps(input: unknown): WorkflowStep[] {
     const outputArtifact = artifactName(value.outputArtifact);
     if (value.outputArtifact !== undefined && (!outputArtifact || outputArtifact === 'git-changes.json' || action ||
         /^\/(observe|click|preview) /.test(value.goal) || (protocols && !protocols.includes('jsonl')) ||
-        capability === 'read-only' || capability === 'steer')) {
+        capability === 'read-only' || capability === 'offline-tools' || capability === 'steer')) {
       throw new InvalidWorkflow('A declared text output requires a compatible JSONL Worker');
     }
     const runLimitSeconds = value.runLimitSeconds;

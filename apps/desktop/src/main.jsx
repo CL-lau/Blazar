@@ -576,7 +576,7 @@ function App() {
                     {step.inputArtifacts && <ul aria-label="Named input artifacts">{Object.entries(step.inputArtifacts).map(([source, filename]) =>
                       <li key={source}>{filename} from {source}</li>)}</ul>}
                     {step.runLimitSeconds && <p>Time limit: {step.runLimitSeconds} seconds</p>}
-                    {step.workerCapability && <p>Requires {({ steer: 'live instructions', 'full-input-artifacts': 'full input artifacts', 'git-worktree': 'an isolated Git checkout', 'git-patch-inputs': 'applying predecessor Git patches in an isolated checkout', 'read-only': 'a read-only Worker' })[step.workerCapability] ?? step.workerCapability}</p>}
+                    {step.workerCapability && <p>Requires {({ steer: 'live instructions', 'full-input-artifacts': 'full input artifacts', 'git-worktree': 'an isolated Git checkout', 'git-patch-inputs': 'applying predecessor Git patches in an isolated checkout', 'read-only': 'a read-only Worker', 'offline-tools': 'a Worker with tool network access disabled' })[step.workerCapability] ?? step.workerCapability}</p>}
                     {step.workerProtocols?.length > 0 && <p>Worker protocols: {step.workerProtocols.join(', ')}</p>}
                     {step.action?.expectedText && <p>Expected text: {step.action.expectedText}
                       {step.action.waitSeconds && ` (wait up to ${step.action.waitSeconds} seconds)`}</p>}

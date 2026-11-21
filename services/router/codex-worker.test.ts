@@ -56,6 +56,25 @@ test('Codex refuses to start a turn when the server reports a writable sandbox',
     AbortSignal.timeout(3_000)), /did not confirm the read-only sandbox/);
 });
 
+test('Codex refuses offline tool execution when the server allows tool networking', async () => {
+  const worker = {
+    executable: process.execPath, label: 'Networked Codex fixture',
+    args: ['-e', `
+      require('node:readline').createInterface({ input: process.stdin }).on('line', line => {
+        const { id, method } = JSON.parse(line);
+        if (method === 'initialize') console.log(JSON.stringify({ id, result: {} }));
+        if (method === 'thread/start') console.log(JSON.stringify({ id, result: {
+          thread: { id: 'thread' }, sandbox: { type: 'readOnly', networkAccess: true }, approvalPolicy: 'never',
+        } }));
+        if (method === 'turn/start') process.exit(3);
+      });
+    `],
+  };
+  await assert.rejects(runCodex(worker, process.cwd(), {
+    goal: 'Read notes', instructions: [], predecessors: [], offlineToolsRequired: true,
+  }, AbortSignal.timeout(3_000)), /tool network access is disabled/);
+});
+
 const steeringWorker = {
   executable: process.execPath, label: 'Codex steering fixture', protocol: 'codex' as const,
   args: ['-e', String.raw`
@@ -68,7 +87,7 @@ const steeringWorker = {
       if (method === 'thread/start') {
         assert.equal(params.sandbox, 'read-only');
         assert.equal(params.approvalPolicy, 'never');
-        reply({ thread: { id: 'thread' }, sandbox: { type: 'readOnly' }, approvalPolicy: 'never' });
+        reply({ thread: { id: 'thread' }, sandbox: { type: 'readOnly', networkAccess: false }, approvalPolicy: 'never' });
       }
       if (method === 'turn/start') reply({ turn: { id: 'active' } });
       if (method === 'turn/steer') {
@@ -119,7 +138,7 @@ test('Router delivers an appended instruction to an active Codex turn and accept
     store.close();
   });
   store.createWorkflow('owner', 'steer', 'project', [
-    { key: 'review', goal: 'Review the notes', needs: [], workerCapability: 'read-only' },
+    { key: 'review', goal: 'Review the notes', needs: [], workerCapability: 'offline-tools' },
   ]);
   const task = store.snapshot('owner').tasks.find(task => task.goal === 'Review the notes')!;
   assert(task);

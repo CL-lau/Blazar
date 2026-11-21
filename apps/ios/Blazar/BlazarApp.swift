@@ -246,7 +246,8 @@ private struct TaskScreen: View {
                                             "full-input-artifacts": "Requires full input artifacts",
                                             "git-worktree": "Requires an isolated Git checkout",
                                             "git-patch-inputs": "Applies predecessor Git patches in an isolated checkout",
-                                            "read-only": "Requires a read-only Worker"
+                                            "read-only": "Requires a read-only Worker",
+                                            "offline-tools": "Requires disabled tool network access"
                                         ][capability] ?? capability)
                                             .font(.caption)
                                     }

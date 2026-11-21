@@ -13,6 +13,7 @@ export type JobContext = {
   runHistory?: RunHistoryEntry[];
   previousQuestion?: string;
   expectedArtifact?: string;
+  offlineToolsRequired?: boolean;
 };
 
 export function jobPrompt(job: JobContext) {

@@ -85,6 +85,9 @@ export async function runCodex(worker: WorkerCommand, root: string, job: JobCont
     if (started.sandbox?.type !== 'readOnly' || started.approvalPolicy !== 'never') {
       throw new Error('Codex did not confirm the read-only sandbox and approval policy');
     }
+    if (job.offlineToolsRequired && started.sandbox.networkAccess !== false) {
+      throw new Error('Codex did not confirm that tool network access is disabled');
+    }
     if (typeof started.thread?.id !== 'string') throw new Error('Codex returned no thread ID');
     threadId = started.thread.id;
     const turn = await request('turn/start', {

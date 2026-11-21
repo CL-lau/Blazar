@@ -48,7 +48,7 @@ export function deviceOperation(store: DeviceTasks, bearer: string, pathname: st
       if (reported.capabilities !== undefined) {
         const supported = ['git-worktree', 'git-patch-inputs'];
         if (protocol === 'codex' || protocol === 'pi') supported.push('steer');
-        if (protocol === 'codex') supported.push('read-only');
+        if (protocol === 'codex') supported.push('read-only', 'offline-tools');
         if (protocol === 'jsonl') supported.push('full-input-artifacts');
         if (!Array.isArray(reported.capabilities) || new Set(reported.capabilities).size !== reported.capabilities.length ||
             reported.capabilities.some(capability => !supported.includes(capability)) ||
