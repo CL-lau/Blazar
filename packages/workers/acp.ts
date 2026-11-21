@@ -15,6 +15,10 @@ export const deepSeekWorker: AcpWorker = {
 };
 
 export type ApprovalHandler = (summary: string, signal: AbortSignal) => Promise<'approved' | 'denied' | undefined>;
+type AcpSession = {
+  resumeId?: string;
+  onCompleted?: (sessionId: string) => void;
+};
 
 export async function probeAcp(worker: AcpWorker, root: string, signal: AbortSignal) {
   signal.throwIfAborted();
@@ -26,7 +30,11 @@ export async function probeAcp(worker: AcpWorker, root: string, signal: AbortSig
           cancellationSignal: signal, stopWaitingOnCancel: true,
         });
         if (ready.protocolVersion !== PROTOCOL_VERSION) throw new Error('ACP version is unsupported');
-        return { version: ready.protocolVersion, loadSession: ready.agentCapabilities?.loadSession === true };
+        return {
+          version: ready.protocolVersion,
+          loadSession: ready.agentCapabilities?.loadSession === true,
+          resumeSession: Boolean(ready.agentCapabilities?.sessionCapabilities?.resume),
+        };
       });
   } finally {
     await stop();
@@ -35,7 +43,8 @@ export async function probeAcp(worker: AcpWorker, root: string, signal: AbortSig
 
 export async function runAcp(worker: AcpWorker, root: string, job: JobContext, signal: AbortSignal,
                              approve?: ApprovalHandler,
-                             report?: (message: string, signal: AbortSignal) => Promise<void>): Promise<string> {
+                             report?: (message: string, signal: AbortSignal) => Promise<void>,
+                             continuity?: AcpSession): Promise<string> {
   const active = AbortSignal.any([signal, AbortSignal.timeout(10 * 60_000)]);
   active.throwIfAborted();
   const { child, closed, stop } = spawnWorker(worker, root);
@@ -112,8 +121,22 @@ export async function runAcp(worker: AcpWorker, root: string, job: JobContext, s
         active.throwIfAborted();
         const ready = await ctx.request(methods.agent.initialize, { protocolVersion: PROTOCOL_VERSION }, options);
         if (ready.protocolVersion !== PROTOCOL_VERSION) throw new Error('ACP version is unsupported');
-        const session = await ctx.request(methods.agent.session.new, { cwd: root, mcpServers: [] }, options);
-        sessionId = session.sessionId;
+        const scope = { cwd: root, mcpServers: [] };
+        if (continuity?.resumeId) {
+          const parameters = { ...scope, sessionId: continuity.resumeId };
+          if (ready.agentCapabilities?.sessionCapabilities?.resume) {
+            await ctx.request(methods.agent.session.resume, parameters, options);
+          } else if (ready.agentCapabilities?.loadSession) {
+            await ctx.request(methods.agent.session.load, parameters, options);
+          } else {
+            throw new Error('ACP Worker does not support session restoration');
+          }
+          sessionId = continuity.resumeId;
+        } else {
+          const session = await ctx.request(methods.agent.session.new, { cwd: root, mcpServers: [] }, options);
+          sessionId = session.sessionId;
+        }
+        if (!sessionId) throw new Error('ACP Worker returned no session ID');
         active.throwIfAborted();
         const outcome = await ctx.request(methods.agent.session.prompt, {
           sessionId,
@@ -122,6 +145,9 @@ export async function runAcp(worker: AcpWorker, root: string, job: JobContext, s
         await reports.catch(() => {});
         active.throwIfAborted();
         if (outcome.stopReason !== 'end_turn' || !text.trim()) throw new Error('ACP worker did not return a completed response');
+        if (ready.agentCapabilities?.loadSession || ready.agentCapabilities?.sessionCapabilities?.resume) {
+          continuity?.onCompleted?.(sessionId);
+        }
         return text.toWellFormed();
       } finally {
         active.removeEventListener('abort', cancel);

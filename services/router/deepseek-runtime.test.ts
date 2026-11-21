@@ -5,6 +5,7 @@ import { createServer } from 'node:http';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
+import { probeAcp, runAcp } from '../../packages/workers/acp.ts';
 import { resolveWorker } from '../../packages/workers/registry.ts';
 import { DeviceClient } from '../device/client.ts';
 import { DeviceLedger } from '../device/ledger.ts';
@@ -65,7 +66,7 @@ test('DeepSeek Harness completes an ACP task with a local mock provider', {
   assert(address && typeof address !== 'string');
   await writeFile(join(home, '.env'), 'DEEPSEEK_API_KEY=local-fixture\nDEEPSEEK_BASE_URL=http://127.0.0.1:' + address.port + '\n');
   const worker = await resolveWorker('deepseek', undefined, executable);
-  assert.equal(worker?.label, 'DeepSeek Harness');
+  assert(worker?.label === 'DeepSeek Harness');
   const store = new TaskStore(':memory:');
   const ledger = new DeviceLedger(':memory:');
   const router = routerServer(store, { owner: 'owner', token: 'test-token' });
@@ -106,4 +107,19 @@ test('DeepSeek Harness completes an ACP task with a local mock provider', {
   assert.equal(await artifact.text(), 'DEEPSEEK_SMOKE_OK');
   assert.equal(requests.length, 1);
   assert.match(requests[0], /Use the test response/);
+
+  const capabilities = await probeAcp(worker, workspace, signal);
+  assert.equal(capabilities.resumeSession, true);
+  let sessionId: string | undefined;
+  await runAcp(worker, workspace, {
+    goal: 'Preserve this first turn for restoration', instructions: [], predecessors: [],
+  }, signal, undefined, undefined, { onCompleted: id => { sessionId = id; } });
+  assert.ok(sessionId);
+  const resumed = await runAcp(worker, workspace, {
+    goal: 'Continue after the process restarts', instructions: [], predecessors: [],
+  }, signal, undefined, undefined, { resumeId: sessionId });
+  assert.equal(resumed, 'DEEPSEEK_SMOKE_OK');
+  assert.equal(requests.length, 3);
+  assert.match(requests[2], /Preserve this first turn for restoration/);
+  assert.match(requests[2], /Continue after the process restarts/);
 });

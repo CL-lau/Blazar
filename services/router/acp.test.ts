@@ -42,7 +42,7 @@ test('ACP probe reports a successful handshake without opening a session', async
     });
   `] };
   assert.deepEqual(await probeAcp(onlyInitialize, process.cwd(), AbortSignal.timeout(2000)),
-    { version: 1, loadSession: false });
+    { version: 1, loadSession: false, resumeSession: false });
 });
 
 test('ACP starts a subprocess, initializes a session, and assembles streamed text', async () => {
