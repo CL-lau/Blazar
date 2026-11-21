@@ -11,8 +11,42 @@ import { preview } from '../device/preview.ts';
 import { DeviceSocket } from '../device/socket.ts';
 import { routerServer } from './http.ts';
 import { TaskStore } from './store.ts';
+import { piHarness } from './harness.ts';
 
 const mixed = process.argv.includes('--mixed');
+const runPiHarness = process.argv.includes('--pi');
+if (runPiHarness && !mixed) throw new Error('Use --pi with --mixed to exercise model routing.');
+const localFetch = globalThis.fetch;
+let modelTransportRequests = 0;
+if (runPiHarness) {
+  process.env.OPENAI_API_KEY = 'blazar-benchmark-fixture';
+  globalThis.fetch = async (input, init) => {
+    const request = new Request(input, init);
+    const url = new URL(request.url);
+    if (url.hostname === '127.0.0.1') return localFetch(request);
+    assert.equal(url.origin, 'https://api.openai.com');
+    assert.equal(url.pathname, '/v1/responses');
+    assert.equal(request.headers.get('authorization'), 'Bearer blazar-benchmark-fixture');
+    const payload = await request.text();
+    assert.match(payload, /Review fixture /);
+    modelTransportRequests++;
+    const id = 'fixture-' + modelTransportRequests;
+    const text = '{"kind":"create_task"}';
+    const item = { type: 'message', id: 'msg_' + id, role: 'assistant', status: 'completed',
+      content: [{ type: 'output_text', text, annotations: [] }] };
+    const events = [
+      { type: 'response.created', response: { id } },
+      { type: 'response.output_item.added', output_index: 0, item: { ...item, content: [] } },
+      { type: 'response.output_text.delta', output_index: 0, delta: text },
+      { type: 'response.output_item.done', output_index: 0, item },
+      { type: 'response.completed', response: { id, status: 'completed', output: [item],
+        usage: { input_tokens: 12, output_tokens: 4, total_tokens: 16 } } },
+    ];
+    return new Response(events.map(event => 'event: ' + event.type + '\ndata: ' + JSON.stringify(event) + '\n\n').join(''), {
+      headers: { 'Content-Type': 'text/event-stream' },
+    });
+  };
+}
 const jobs = 200;
 const duplicates = 100;
 const concurrency = 10;
@@ -25,7 +59,8 @@ const store = new TaskStore(join(root, 'router.sqlite'));
 const token = randomBytes(32).toString('hex');
 const server = routerServer(store, {
   owner: 'benchmark', token,
-  ...(mixed && { harness: async () => ({ kind: 'create_task' as const }) }),
+  ...(mixed && { harness: runPiHarness ? piHarness('openai', 'gpt-5-mini')
+    : async () => ({ kind: 'create_task' as const }) }),
 });
 const connections: DeviceSocket[] = [];
 const opened = new Map<string, number>();
@@ -38,6 +73,7 @@ const intake = [
 const reception = intake.map(() => ({ first: [] as number[], replay: [] as number[] }));
 const dispatch: number[] = [];
 const cancellations: number[] = [];
+let rateLimitedRequests = 0;
 
 function p95(values: number[]) {
   return Number([...values].sort((a, b) => a - b)[Math.ceil(values.length * 0.95) - 1].toFixed(2));
@@ -68,12 +104,20 @@ try {
     const started = performance.now();
     if (!opened.has(goal)) opened.set(goal, started);
     const route = intake[channel];
-    const response = await fetch(new URL(route.path, base), {
-      method: 'POST', headers: { ...(route.client === 'ios' ? mobileHeaders : headers), 'Idempotency-Key': key }, signal: active,
-      body: JSON.stringify({ workspace, text: goal }),
-    });
-    assert.equal(response.status, 202);
-    await response.arrayBuffer();
+    for (;;) {
+      const response = await fetch(new URL(route.path, base), {
+        method: 'POST', headers: { ...(route.client === 'ios' ? mobileHeaders : headers), 'Idempotency-Key': key }, signal: active,
+        body: JSON.stringify({ workspace, text: goal }),
+      });
+      await response.arrayBuffer();
+      if (response.status !== 429) {
+        assert.equal(response.status, 202);
+        break;
+      }
+      assert(mixed && route.path === '/v1/conversation', 'Unexpected rate-limited route');
+      rateLimitedRequests++;
+      await delay(10, undefined, { signal: active });
+    }
     reception[channel][replay ? 'replay' : 'first'].push(performance.now() - started);
   }
 
@@ -180,6 +224,7 @@ try {
   const response = await fetch(new URL('/v1/admin/metrics', base), { headers, signal: active });
   const serverMetrics = await response.json() as { routing: { model: number } };
   assert.equal(serverMetrics.routing.model, mixed ? Math.floor((jobs + 1) / 3) : 0);
+  assert.equal(modelTransportRequests, runPiHarness ? serverMetrics.routing.model : 0);
   const firstReceipts = reception.flatMap(group => group.first);
   const replayReceipts = reception.flatMap(group => group.replay);
   assert.equal(firstReceipts.length, jobs);
@@ -197,12 +242,13 @@ try {
     approvals, cpu: cpus()[0]?.model, node: process.version, concurrency, submitted: firstReceipts.length + replayReceipts.length,
     completed: finishes, cancelled: cancellations.length,
     cancelToStopP95Ms: cancellations.length ? p95(cancellations) : null, duplicateTasks: 0, unexpectedAssignments: 0,
-    modelRequests: serverMetrics.routing.model, receiptP95Ms, firstReceiptP95Ms, claimP95Ms, receiptByClient,
+    modelRequests: serverMetrics.routing.model, modelTransportRequests, rateLimitedRequests, receiptP95Ms, firstReceiptP95Ms, claimP95Ms, receiptByClient,
     elapsedMs: Math.round(performance.now() - started),
   }, null, 2));
   assert(firstReceiptP95Ms < 100, 'First local acknowledgement p95 exceeded 100 ms');
   assert(claimP95Ms < 250, 'Local claim p95 exceeded 250 ms');
 } finally {
+  globalThis.fetch = localFetch;
   stop.abort();
   for (const socket of connections) socket.close();
   server.closeDeviceSockets();
