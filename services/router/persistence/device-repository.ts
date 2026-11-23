@@ -22,7 +22,7 @@ export class DeviceRepository {
   devices(owner: string, now = Date.now()) {
     return this.db.prepare(`SELECT d.id,d.name,d.workspace,d.revoked,p.last_seen AS lastSeen,
       p.capability,p.platform,w.label AS workerLabel,w.protocol AS workerProtocol,
-      w.revision AS workerRevision,w.adapter_version AS workerAdapterVersion,
+      w.revision AS workerRevision,w.adapter_version AS workerAdapterVersion,w.capabilities AS workerCapabilities,
       CASE WHEN p.capability='agent.acp' AND policy.protocols IS NOT NULL
         THEN NOT EXISTS(SELECT 1 FROM json_each(policy.protocols) WHERE value=w.protocol)
           OR (policy.require_read_only=1 AND NOT EXISTS(SELECT 1 FROM json_each(w.capabilities) WHERE value='read-only'))

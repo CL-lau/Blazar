@@ -31,5 +31,13 @@ export function submitWorkflow(store: Pick<TaskStore, 'createWorkflow' | 'deskto
   const appEvidence = data.appMemory === undefined ? undefined :
     selectAppEvidence(memory, owner, workspace, data.appMemory);
   const proposalKey = data.proposalKey === undefined ? undefined : requiredText(data.proposalKey, 'proposal key', 128);
-  return store.createWorkflow(owner, key, workspace, steps, appEvidence, caller, proposalKey);
+  const assignments = data.agentAssignments;
+  if (assignments !== undefined && (!admin || !proposalKey || !assignments ||
+      typeof assignments !== 'object' || Array.isArray(assignments) ||
+      Object.entries(assignments).some(([stepKey, id]) =>
+        !steps.some(step => step.key === stepKey) || typeof id !== 'string'))) {
+    throw new RequestError(400, 'Invalid workflow Agent assignments');
+  }
+  return store.createWorkflow(owner, key, workspace, steps, appEvidence, caller, proposalKey,
+    assignments as Record<string, string> | undefined);
 }

@@ -1,0 +1,64 @@
+/* Workspace proportions adapted from T3 Code 0591d328, see public/third-party/T3-Code.txt. */
+:root {
+  --control-radius: .5rem;
+  --workspace-topbar-height: 52px;
+  --chat-content-max-width: 46rem;
+  --sidebar-content-inset: .5rem;
+  --panel: #191a1c;
+  --line: #2b2d30;
+  --accent: #dfdef4;
+  background: #141517;
+  color: #ededef;
+}
+.app-shell { display: grid; grid-template-columns: minmax(190px, 232px) minmax(0, 1fr); height: 100dvh; }
+.app-shell > .task-sidebar {
+  position: static; height: 100%; max-height: none; min-height: 0;
+  padding: 0 var(--sidebar-content-inset) 12px; display: flex; flex-direction: column; overflow: hidden;
+}
+.sidebar-brand { display: flex; align-items: center; padding: 0 10px; min-height: var(--workspace-topbar-height); font-size: 16px; letter-spacing: -.02em; }
+.task-sidebar nav { display: grid; gap: 2px; padding-bottom: 10px; border-bottom: 1px solid var(--line); }
+.task-sidebar nav button, .thread-list button { margin: 0; text-align: left; background: transparent; border: 1px solid transparent; color: #babac2; padding: 5px 9px; border-radius: var(--control-radius); }
+.task-sidebar nav button:hover, .task-sidebar nav button[aria-current], .thread-list button:hover, .thread-list button[aria-current] { background: #252629; color: #fff; }
+.thread-list { overflow-y: auto; min-height: 0; padding-top: 9px; }
+.thread-list .new-task { color: #ededef; font-weight: 550; border-color: var(--line); }
+.task-group { margin-top: 14px; }
+.task-group h2 { color: #9898a3; }
+.thread-list .task-link { display: flex; align-items: center; gap: 8px; }
+.thread-dot { width: 7px; height: 7px; border-radius: 100%; background: #656574; flex: 0 0 7px; }
+.thread-dot[data-status="running"] { background: #7dacf5; }
+.thread-dot[data-status="waiting_review"], .thread-dot[data-status="waiting_user"] { background: #ebb56f; }
+.thread-dot[data-status="failed"] { background: #f17c8b; }
+.thread-dot[data-status="succeeded"] { background: #7bc6a7; }
+.thread-title { text-overflow: ellipsis; min-width: 0; }
+.app-content { min-width: 0; min-height: 0; overflow: auto; }
+.app-content > .detail, .app-content > .error, .app-content > .router-recovery { margin: 18px auto; max-width: min(950px, calc(100% - 32px)); }
+.workspace, .workspace.with-preview { grid-template-columns: minmax(0, 1fr); min-height: 100%; }
+.workspace.with-preview { grid-template-columns: minmax(0, 1fr) minmax(260px, 38%); }
+.workspace > .detail { padding: 0 22px 32px; max-width: var(--chat-content-max-width); }
+.conversation-heading { min-height: var(--workspace-topbar-height); display: flex; align-items: center; border-bottom: 1px solid var(--line); }
+.conversation-heading h1 { font-size: 15px; min-width: 0; }
+.conversation-empty { margin: clamp(50px, 15vh, 150px) 0 20px; font-size: clamp(20px, 3vw, 27px); letter-spacing: -.035em; text-align: center; }
+.task-composer textarea { min-height: 84px; background: #1e1f22; border-color: #36373c; }
+.primary { background: var(--accent); color: #21212a; }
+.artifact-panel { grid-column: auto; border-left: 1px solid var(--line); }
+.notification-heading { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; }
+.notification-row { display: grid; gap: 4px; text-align: left; width: 100%; background: #222326; }
+.notification-row span { color: #a9a9b2; overflow-wrap: anywhere; }
+.middle-truncate { display: inline-flex; min-width: 0; max-width: 100%; overflow: hidden; white-space: nowrap; }
+.middle-truncate-head { min-width: 0; overflow: hidden; white-space: pre; }
+.middle-truncate-tail { flex-shrink: 0; white-space: pre; }
+.middle-truncate-head[data-overflow] + .middle-truncate-tail::before { content: '…'; }
+.middle-truncate-whole { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+@media (max-width: 840px) {
+  .workspace.with-preview { grid-template-columns: minmax(0, 1fr); }
+  .artifact-panel { border-left: 0; }
+}
+@media (max-width: 640px) {
+  .app-shell { grid-template-columns: minmax(118px, 29%) minmax(0, 1fr); }
+  .workspace > .detail { padding-inline: 12px; }
+}
+.work-item-columns { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 12px; }
+.work-item-columns > section { padding: 12px; border: 1px solid var(--line); border-radius: var(--control-radius); }
+.work-item-columns h3 { font-size: 13px; }
+.work-item-columns .notification-row strong { overflow-wrap: anywhere; }
+@media (max-width: 850px) { .work-item-columns { grid-template-columns: minmax(0, 1fr); } }

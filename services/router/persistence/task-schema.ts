@@ -84,6 +84,12 @@ export function initializeTaskSchema(db: DatabaseSync, runLimitMs: number) {
       request_key TEXT NOT NULL, fingerprint TEXT NOT NULL, UNIQUE(owner,request_key)
     );
     CREATE INDEX IF NOT EXISTS workflow_schedule_due ON workflow_schedule(next_at) WHERE enabled=1;
+    CREATE TABLE IF NOT EXISTS workflow_schedule_run (
+      workflow_id TEXT PRIMARY KEY REFERENCES workflow(id),
+      schedule_id TEXT NOT NULL REFERENCES workflow_schedule(id)
+    );
+    INSERT OR IGNORE INTO workflow_schedule_run(workflow_id,schedule_id)
+      SELECT last_workflow_id,id FROM workflow_schedule WHERE last_workflow_id IS NOT NULL;
     CREATE TABLE IF NOT EXISTS workflow_source (
       workflow_id TEXT NOT NULL REFERENCES workflow(id) ON DELETE CASCADE,
       task_id TEXT NOT NULL, version INTEGER NOT NULL, PRIMARY KEY(workflow_id,task_id)

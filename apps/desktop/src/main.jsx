@@ -1,4 +1,5 @@
 import React, { useEffect, useRef, useState } from 'react';
+import { invoke, isTauri } from '@tauri-apps/api/core';
 import { createRoot } from 'react-dom/client';
 import { PairingCode } from './PairingCode.jsx';
 import { Timeline } from './Timeline.jsx';
@@ -8,10 +9,15 @@ import { Schedules } from './Schedules.jsx';
 import { ArtifactPreview } from './ArtifactPreview.jsx';
 import { ChannelLinks } from './ChannelLinks.jsx';
 import { DesktopControl } from './DesktopControl.jsx';
+import { AgentInstallations } from './AgentInstallations.jsx';
 import { Devices } from './Devices.jsx';
+import { Notifications, loadReadNotifications, saveReadNotifications, taskNotifications } from './Notifications.jsx';
+import { WorkItems } from './WorkItems.jsx';
 import { RouterStatus } from './RouterStatus.jsx';
 import { callRouter } from './router.js';
+import { MiddleTruncate } from './vendor/t3/MiddleTruncate.tsx';
 import './style.css';
+import './workbench.css';
 
 async function readTaskFiles(files) {
   if (files.length > 4 || files.some(file => file.size > 8192) ||
@@ -28,9 +34,32 @@ async function readTaskFiles(files) {
 }
 
 function App() {
+  const native = isTauri();
   const [token, setToken] = useState('');
   const [connected, setConnected] = useState('');
   const [localRouter, setLocalRouter] = useState('checking');
+  const [registeredAgentRevision, setRegisteredAgentRevision] = useState(0);
+  const [readNotifications, setReadNotifications] = useState(loadReadNotifications);
+  const [notificationTarget, setNotificationTarget] = useState(null);
+  const [workflowAgents, setWorkflowAgents] = useState([]);
+  const [agentAssignments, setAgentAssignments] = useState({});
+  const [workflowAgentError, setWorkflowAgentError] = useState('');
+  const [settingUpRouter, setSettingUpRouter] = useState(false);
+  const [setupError, setSetupError] = useState('');
+  async function startLocalRouter() {
+    setSettingUpRouter(true);
+    setSetupError('');
+    try {
+      await invoke('start_local_router');
+      setSnapshot(await callRouter('', '/state'));
+      setConnected('local');
+      setSyncError('');
+    } catch (failure) {
+      setSetupError(failure.message ?? String(failure));
+    } finally {
+      setSettingUpRouter(false);
+    }
+  }
   const [snapshot, setSnapshot] = useState(null);
   const [syncError, setSyncError] = useState('');
   const snapshotSequence = useRef({ requested: 0, applied: 0 });
@@ -82,18 +111,26 @@ function App() {
     let timer;
     async function check() {
       try {
+        if (native) {
+          const state = await callRouter('', '/state', { signal: stop.signal });
+          if (!stop.signal.aborted) {
+            setSnapshot(state);
+            setConnected('local');
+          }
+          return;
+        }
         const health = await callRouter('', '/health', { signal: stop.signal });
         if (!stop.signal.aborted) setLocalRouter(
           health?.service === 'blazar-router' && health.status === 'ready' ? 'ready' : 'unavailable');
-      } catch {
-        if (!stop.signal.aborted) setLocalRouter('unavailable');
+      } catch (failure) {
+        if (!stop.signal.aborted) setLocalRouter(native ? failure.message : 'unavailable');
       } finally {
         if (!stop.signal.aborted) timer = setTimeout(check, 5_000);
       }
     }
     void check();
     return () => { stop.abort(); clearTimeout(timer); };
-  }, [connected]);
+  }, [connected, native]);
 
   useEffect(() => {
     if (!preview?.expires) return;
@@ -170,6 +207,48 @@ function App() {
     finally { setBusy(false); }
   }
 
+  useEffect(() => {
+    setAgentAssignments({});
+    setWorkflowAgents([]);
+    setWorkflowAgentError('');
+    if (!plan || !connected) return;
+    const abort = new AbortController();
+    callRouter(connected, '/admin/devices', { signal: abort.signal }).then(({ devices }) => {
+      if (!abort.signal.aborted) setWorkflowAgents(devices);
+    }).catch(failure => {
+      if (!abort.signal.aborted) setWorkflowAgentError(failure.message);
+    });
+    return () => abort.abort();
+  }, [connected, plan]);
+
+  useEffect(() => {
+    if (!notificationTarget || settings !== 'tasks') return;
+    const frame = requestAnimationFrame(() => {
+      const element = document.getElementById(notificationTarget) ?? document.getElementById('task-heading');
+      element?.focus();
+      element?.scrollIntoView({ block: 'nearest' });
+      setNotificationTarget(null);
+    });
+    return () => cancelAnimationFrame(frame);
+  }, [notificationTarget, settings, selected]);
+
+  const notifications = taskNotifications(snapshot);
+  const readNotificationIds = new Set(readNotifications);
+  const unreadCount = notifications.filter(item => !readNotificationIds.has(item.id)).length;
+  function markNotificationsRead(ids) {
+    const changed = new Set([...readNotificationIds, ...ids]);
+    const recent = [...changed].slice(-1000);
+    setReadNotifications(recent);
+    saveReadNotifications(recent);
+  }
+  function openTask(item, target = 'task-heading') {
+    setWorkspace(item.workspace);
+    setSelected(item.id);
+    setInstruction('');
+    setPreview(null);
+    setSettings('tasks');
+    setNotificationTarget(target);
+  }
   const task = snapshot?.tasks.find(item => item.id === selected);
   const tasksByWorkspace = new Map();
   for (const item of snapshot?.tasks ?? []) {
@@ -198,7 +277,7 @@ function App() {
   const api = (path, options) => callRouter(connected, path, options);
   const createWorkflow = appMemory => submit(async () => {
     const created = await api('/workflows', {
-      method: 'POST', key: plan.key, body: { workspace: plan.workspace, steps: plan.steps, proposalKey: plan.proposalKey, appMemory },
+      method: 'POST', key: plan.key, body: { workspace: plan.workspace, steps: plan.steps, proposalKey: plan.proposalKey, agentAssignments, appMemory },
     });
     setSelected(created.steps[0].taskId);
     setPlan(null);
@@ -232,26 +311,66 @@ function App() {
 
   return (
     <main className={connected ? 'app-shell' : 'connection-shell'}>
-      <header className="app-bar">
-        <h1>Blazar</h1>
-        {connected && (
-          <nav aria-label="Workspace views">
+      {connected ? (
+        <aside className="task-sidebar" aria-label="Blazar navigation">
+          <div className="sidebar-brand"><strong>Blazar</strong></div>
+          <nav aria-label="Blazar views">
             <button aria-current={settings === 'tasks' ? 'page' : undefined} onClick={() => setSettings('tasks')}>Assistant</button>
-            <button onClick={() => { setMemoryAnswer(null); setPreview(null); setSettings('knowledge'); }}>Apps and memory</button>
+            <button aria-current={settings === 'knowledge' ? 'page' : undefined} onClick={() => { setMemoryAnswer(null); setPreview(null); setSettings('knowledge'); }}>Apps and memory</button>
+            <button aria-current={settings === 'work-items' ? 'page' : undefined} onClick={() => setSettings('work-items')}>Work items</button>
+            <button aria-current={settings === 'notifications' ? 'page' : undefined}
+              onClick={() => setSettings('notifications')}>Notifications{unreadCount ? ' (' + unreadCount + ')' : ''}</button>
             <button aria-current={settings === 'wiki' ? 'page' : undefined} onClick={() => setSettings('wiki')}>Wiki</button>
             <button aria-current={settings === 'schedules' ? 'page' : undefined} onClick={() => setSettings('schedules')}>Schedules</button>
-            <button onClick={() => setSettings('devices')}>Execution devices</button>
-            <button onClick={() => setSettings('desktop-control')}>Desktop control</button>
-            <button onClick={() => setSettings('router-status')}>Router status</button>
-            <button onClick={() => submit(async () => {
+            <button aria-current={settings === 'devices' ? 'page' : undefined} onClick={() => setSettings('devices')}>Agents</button>
+            <button aria-current={settings === 'desktop-control' ? 'page' : undefined} onClick={() => setSettings('desktop-control')}>Desktop</button>
+            <button aria-current={settings === 'router-status' ? 'page' : undefined} onClick={() => setSettings('router-status')}>Router status</button>
+            <button aria-current={settings === 'phones' ? 'page' : undefined} onClick={() => submit(async () => {
               setClients((await api('/admin/mobile-clients')).clients);
               setSettings('phones');
             })}>Linked phones</button>
           </nav>
-        )}
-      </header>
+          <div className="thread-list" aria-label="Conversations">
+            <button className="primary new-task" onClick={() => { setSelected(''); setPreview(null); setSettings('tasks'); }}>
+              <span aria-hidden="true">+</span> New chat
+            </button>
+            {Array.from(tasksByWorkspace, ([name, tasks]) => (
+              <section key={name} className="task-group">
+                <h2>{name}</h2>
+                <ul>{tasks.map(item => (
+                  <li key={item.id}>
+                    <button className="task-link" aria-current={item.id === selected ? 'true' : undefined}
+                      onClick={() => { setSelected(item.id); setWorkspace(item.workspace); setInstruction(''); setPreview(null); setSettings('tasks'); }}>
+                      <span className="thread-dot" data-status={item.status} aria-label={item.status.replaceAll('_', ' ')} />
+                      <span className="thread-title" title={item.goal}>{item.goal}</span>
+                    </button>
+                  </li>
+                ))}</ul>
+              </section>
+            ))}
+          </div>
+        </aside>
+      ) : <header className="app-bar"><h1>Blazar</h1></header>}
+      <div className="app-content">
       {(error || syncError) && <p className="error" role="alert">{error || syncError}</p>}
-      {!connected ? (
+      {native && connected && syncError && (
+        <div className="router-recovery">
+          <button disabled={settingUpRouter} onClick={startLocalRouter}>
+            {settingUpRouter ? 'Starting Router…' : 'Recover local Router'}
+          </button>
+          {setupError && <p className="error" role="alert">{setupError}</p>}
+        </div>
+      )}
+      {!connected ? (native ? (
+        <section className="connect">
+          <h2>Blazar setup</h2>
+          <p role="status">{settingUpRouter ? 'Starting the local Router…' :
+            localRouter === 'checking' ? 'Connecting to the local Router…' : localRouter}</p>
+          {setupError && <p className="error" role="alert">{setupError}</p>}
+          <button className="primary" disabled={settingUpRouter || localRouter === 'checking'}
+            onClick={startLocalRouter}>Set up or start Router</button>
+        </section>
+      ) : (
         <form className="connect" onSubmit={event => {
           event.preventDefault();
           submit(async () => {
@@ -269,6 +388,11 @@ function App() {
           <label>Access token<input type="password" autoComplete="off" value={token} onChange={event => setToken(event.target.value)} required /></label>
           <button className="primary" disabled={busy}>Connect</button>
         </form>
+      )) : settings === 'work-items' ? (
+        <WorkItems tasks={snapshot?.tasks ?? []} open={openTask} />
+      ) : settings === 'notifications' ? (
+        <Notifications items={notifications} read={readNotificationIds} open={item => { markNotificationsRead([item.id]); openTask(item.task, item.target); }}
+          markAllRead={() => markNotificationsRead(notifications.map(item => item.id))} />
       ) : settings === 'knowledge' ? (
         <Knowledge token={connected} />
       ) : settings === 'wiki' || settings === 'schedules' ? (
@@ -280,7 +404,9 @@ function App() {
                 showTask={id => { setSelected(id); setInstruction(''); setPreview(null); setSettings('tasks'); }} />)}
         </>
       ) : settings === 'devices' ? (
-        <Devices token={connected} />
+        <>{native && <AgentInstallations workspace={workspace}
+          onAdded={() => setRegisteredAgentRevision(value => value + 1)} />}
+          <Devices key={registeredAgentRevision} token={connected} /></>
       ) : settings === 'desktop-control' ? (
         <DesktopControl targets={snapshot?.desktopTargets ?? []} tasks={snapshot?.tasks ?? []}
           workspace={workspace} setWorkspace={setWorkspace} busy={busy}
@@ -327,27 +453,12 @@ function App() {
         </section>
       ) : (
         <div className={visiblePreview ? 'workspace with-preview' : 'workspace'}>
-          <aside className="task-sidebar" aria-label="Tasks">
-            <button className="primary new-task" onClick={() => { setSelected(''); setPreview(null); }}>
-              <span aria-hidden="true">+</span> New task
-            </button>
-            {Array.from(tasksByWorkspace, ([name, tasks]) => (
-              <section key={name} className="task-group">
-                <h2>{name}</h2>
-                <ul>{tasks.map(item => (
-                  <li key={item.id}>
-                    <button className="task-link" aria-current={item.id === selected ? 'true' : undefined}
-                      onClick={() => { setSelected(item.id); setWorkspace(item.workspace); setInstruction(''); setPreview(null); }}>
-                      <span>{item.goal}</span><small>{item.status.replaceAll('_', ' ')}</small>
-                    </button>
-                  </li>
-                ))}</ul>
-              </section>
-            ))}
-          </aside>
           <section className="detail">
             <section className="assistant-conversation" aria-label="Blazar conversation">
-              <h2>{workspace.trim() || 'Blazar'}</h2>
+              <div className="conversation-heading">
+                <h1><MiddleTruncate value={workspace.trim() || 'Blazar'} /></h1>
+              </div>
+              {!task && !turns.length && <p className="conversation-empty">What would you like to get done?</p>}
               {turns.length > 0 && <ol aria-live="polite">{turns.map(turn => <li key={turn.id}>
                 <div className="assistant-user"><strong>You</strong><p>{turn.text}</p></div>
                 <div><strong>Blazar</strong><p>{turn.reply}</p></div>
@@ -355,7 +466,7 @@ function App() {
             </section>
             {task && (
               <>
-                <h2>{task.goal}</h2>
+                <h2 id="task-heading" tabIndex={-1}>{task.goal}</h2>
                 <p className="status">{task.status.replaceAll('_', ' ')}</p>
                 {workflowTasks.length > 1 && <nav aria-label="Workflow steps">
                   {workflowTasks.map(item => <button type="button" key={item.id}
@@ -423,7 +534,7 @@ function App() {
                   </button>
                 )}
                 {snapshot.approvals.filter(item => item.taskId === task.id).map(item => (
-                  <section className="approval" key={item.id}>
+                  <section className="approval" id={'approval-' + item.id} tabIndex={-1} key={item.id}>
                     <h3>Approval required</h3>
                     <p>{item.summary}</p>
                     <button disabled={busy} onClick={() => command('approve', { approvalId: item.id })}>Approve</button>
@@ -457,7 +568,7 @@ function App() {
                     })}>Compare with latest</button>}
                   </div>;
                 })}
-                {(task.status === 'waiting_review' || task.desktopReconciliationRequired) && <section className="approval" aria-label="Result review">
+                {(task.status === 'waiting_review' || task.desktopReconciliationRequired) && <section className="approval" id="result-review" tabIndex={-1} aria-label="Result review">
                   <h3>Review result</h3>
                   <button disabled={busy} onClick={() => command('accept_result')}>{task.desktopReconciliationRequired ? 'Confirm click took effect' : 'Accept result'}</button>
                   <button disabled={busy} onClick={() => command('reject_result')}>{task.desktopReconciliationRequired ? 'Confirm click did not take effect' : 'Reject result'}</button>
@@ -633,6 +744,7 @@ function App() {
                 {plan && <section className="approval" aria-label="Proposed workflow">
                   <h3>Proposed workflow</h3>
                   <p>Workspace: {plan.workspace}</p>
+                  {workflowAgentError && <p role="alert">{workflowAgentError}</p>}
                   <ol>{plan.steps.map(step => <li key={step.key}>
                     <strong>{step.key}</strong> · {step.goal}
                     {step.action && <p>{step.action.kind === 'desktop.click'
@@ -645,7 +757,30 @@ function App() {
                       <li key={source}>{filename} from {source}</li>)}</ul>}
                     {step.runLimitSeconds && <p>Time limit: {step.runLimitSeconds} seconds</p>}
                     {step.workerCapability && <p>Requires {({ steer: 'live instructions', 'full-input-artifacts': 'full input artifacts', 'git-worktree': 'an isolated Git checkout', 'writable-worktree': 'an isolated writable Git checkout', 'git-patch-inputs': 'applying predecessor Git patches in an isolated checkout', 'read-only': 'a read-only Worker', 'offline-tools': 'a Worker with tool network access disabled' })[step.workerCapability] ?? step.workerCapability}</p>}
-                    {step.workerDeviceId && <p>Agent device: {step.workerDeviceId}</p>}
+                    {!step.action && !step.goal.startsWith('/preview ') && <label>
+                      Execution Agent
+                      <select value={agentAssignments[step.key] ?? ''} disabled={busy}
+                        onChange={event => {
+                          const id = event.target.value;
+                          setAgentAssignments(current => {
+                            const next = { ...current };
+                            if (id) next[step.key] = id;
+                            else delete next[step.key];
+                            return next;
+                          });
+                        }}>
+                        <option value="">{step.workerDeviceId
+                          ? 'Proposed · ' + (workflowAgents.find(device => device.id === step.workerDeviceId)?.name ?? step.workerDeviceId)
+                          : 'Assign automatically'}</option>
+                        {workflowAgents.filter(device => device.workspace === plan.workspace &&
+                          device.workerProtocol && !device.revoked && !device.paused && !device.workerPolicyBlocked &&
+                          (!step.workerProtocols || step.workerProtocols.includes(device.workerProtocol)) &&
+                          (!step.workerCapability || JSON.parse(device.workerCapabilities ?? '[]').includes(step.workerCapability)))
+                          .map(device => <option key={device.id} value={device.id}>
+                            {device.name} · {device.workerLabel}{device.online ? '' : ' · Offline'}
+                          </option>)}
+                      </select>
+                    </label>}
                     {step.workerProtocols?.length > 0 && <p>Worker protocols: {step.workerProtocols.join(', ')}</p>}
                     {step.action?.expectedText && <p>Expected text: {step.action.expectedText}
                       {step.action.waitSeconds && ` (wait up to ${step.action.waitSeconds} seconds)`}</p>}
@@ -666,6 +801,7 @@ function App() {
           {visiblePreview && <ArtifactPreview preview={preview} close={() => setPreview(null)} />}
         </div>
       )}
+      </div>
     </main>
   );
 }

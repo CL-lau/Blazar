@@ -54,6 +54,7 @@ test('scheduled workflows survive restart and run through normal claims and appr
   assert(store.finish(first.run.id, device.id, now, { status: 'succeeded', result: 'Summary' }));
   const pending = store.get('owner', first.task.id)!;
   assert.equal(pending.status, 'waiting_review');
+  assert.deepEqual(store.snapshot('owner').completedSchedules, []);
   assert.equal(store.dispatchDueWorkflows(nextAt + 120_000), 0);
   assert.equal(store.claim('owner', 'project', device.id, now, 45_000), undefined);
   assert.equal(store.command('owner', first.task.id, pending.version, { action: 'accept_result' })?.status, 'succeeded');
@@ -61,9 +62,16 @@ test('scheduled workflows survive restart and run through normal claims and appr
   assert.equal(next.task.goal, 'Archive summary');
   assert.equal(next.predecessors[0].result, 'Summary');
   assert(store.finish(next.run.id, device.id, now, { status: 'succeeded', result: 'Archived' }));
+  const completed = { workflowId: store.workflowSchedules('owner')[0].lastWorkflowId,
+    label: 'Daily review', taskId: next.task.id };
+  assert.deepEqual(store.snapshot('owner').completedSchedules.map(row => ({ ...row })), [completed]);
   assert.equal(store.dispatchDueWorkflows(nextAt + 120_000), 1);
   assert.equal(store.workflowSchedules('owner')[0].nextAt, nextAt + 180_000);
   assert.equal(store.snapshot('owner').tasks.length, 4);
+  store.close();
+  store = new TaskStore(db);
+  assert.deepEqual(store.snapshot('owner').completedSchedules.map(row => ({ ...row })), [completed]);
+  assert.deepEqual(store.snapshot('other').completedSchedules, []);
   const second = store.claim('owner', 'project', device.id, now, 45_000)!;
   assert(store.finish(second.run.id, device.id, now, { status: 'failed', result: 'Worker unavailable' }));
   const failed = store.get('owner', second.task.id)!;

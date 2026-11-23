@@ -1,13 +1,15 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
+mod agent_detection;
+mod local_setup;
+
 use reqwest::{Client, Method};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use std::time::Duration;
+use std::{path::PathBuf, time::Duration};
 
 #[derive(Deserialize)]
 struct RouterCall {
-    token: String,
     path: String,
     method: String,
     body: Option<Value>,
@@ -52,27 +54,41 @@ fn allowed(method: &Method, path: &str) -> bool {
             .is_some_and(|cursor| {
                 !cursor.is_empty() && cursor.bytes().all(|byte| byte.is_ascii_digit())
             }),
-        ("GET", ["", "health" | "state" | "app-connections" | "memory" | "wiki" | "conversation"]) => true,
+        (
+            "GET",
+            ["", "health" | "state" | "app-connections" | "memory" | "wiki" | "conversation"],
+        ) => true,
         (
             "POST",
-            ["", "events" | "conversation" | "workflows" | "pairings" | "app-connections" | "memory" | "wiki"],
+            ["", "events" | "conversation" | "workflows" | "pairings" | "app-connections" | "memory"
+            | "wiki"],
         ) => true,
-        ("POST", ["", "app-connections", id, "import-document" | "test-document" | "revoke-resource" | "refresh-documents" | "document-sync" | "write-proposals"])
-        | ("GET", ["", "app-connections", id, "usage" | "write-proposals"]) => {
-            identifier(id)
-        }
+        (
+            "POST",
+            ["", "app-connections", id, "import-document" | "test-document" | "revoke-resource" | "refresh-documents"
+            | "document-sync" | "write-proposals"],
+        )
+        | ("GET", ["", "app-connections", id, "usage" | "write-proposals"]) => identifier(id),
         ("GET", ["", "app-write-proposals", id])
-        | ("POST", ["", "app-write-proposals", id, "confirm" | "reconcile" | "share" | "check-result"]) => identifier(id),
-        ("POST", ["", "app-connections", id, "capabilities",
-            "connection.health" | "document.test" | "document.read" | "document.import" | "document.refresh" | "document.search" | "document.discover"]) => identifier(id),
-        ("PATCH" | "DELETE", ["", "app-connections" | "memory", id]) => {
-            identifier(id)
-        }
+        | (
+            "POST",
+            ["", "app-write-proposals", id, "confirm" | "reconcile" | "share" | "check-result"],
+        ) => identifier(id),
+        (
+            "POST",
+            ["", "app-connections", id, "capabilities", "connection.health" | "document.test" | "document.read" | "document.import"
+            | "document.refresh" | "document.search" | "document.discover"],
+        ) => identifier(id),
+        ("PATCH" | "DELETE", ["", "app-connections" | "memory", id]) => identifier(id),
         ("POST", ["", "wiki", "draft"]) => true,
         ("PUT", ["", "wiki", id, "watch"]) => identifier(id),
         ("GET" | "POST", ["", "admin", "workflow-schedules"]) => true,
         ("DELETE", ["", "admin", "workflow-schedules", id]) => identifier(id),
-        ("GET", ["", "admin", "mobile-clients" | "mobile-pairings" | "devices" | "workers" | "worker-registry" | "metrics"]) => true,
+        (
+            "GET",
+            ["", "admin", "mobile-clients" | "mobile-pairings" | "devices" | "workers" | "worker-registry"
+            | "metrics"],
+        ) => true,
         ("GET" | "PUT", ["", "admin", "worker-policies"]) => true,
         ("POST", ["", "admin", "devices" | "task-links"]) => true,
         ("POST", ["", "admin", "mobile-pairings", id]) => identifier(id),
@@ -86,7 +102,9 @@ fn allowed(method: &Method, path: &str) -> bool {
         ("GET", ["", "artifacts", id] | ["", "artifacts", id, "diff" | "image"]) => identifier(id),
         ("GET", ["", "tasks", id, "attachments", "0" | "1" | "2" | "3"]) => identifier(id),
         ("GET", ["", "tasks", id, "timeline" | "share-result"]) => identifier(id),
-        ("POST", ["", "tasks", id, "commands" | "remember-result" | "share-result"]) => identifier(id),
+        ("POST", ["", "tasks", id, "commands" | "remember-result" | "share-result"]) => {
+            identifier(id)
+        }
         ("DELETE", ["", "admin", "mobile-clients" | "devices", id]) => identifier(id),
         _ => false,
     }
@@ -94,7 +112,26 @@ fn allowed(method: &Method, path: &str) -> bool {
 
 struct RouterClient {
     http: Client,
-    port: u16,
+    port: Option<u16>,
+    config: PathBuf,
+}
+
+fn config_value<'a>(config: &'a str, name: &str) -> Option<&'a str> {
+    config
+        .lines()
+        .filter_map(|line| {
+            let line = line.trim().strip_prefix("export ").unwrap_or(line.trim());
+            let (key, value) = line.split_once('=')?;
+            if key.trim() != name {
+                return None;
+            }
+            let value = value.trim();
+            if let Some(quote @ ('\'' | '"')) = value.chars().next() {
+                return value[1..].split_once(quote).map(|(value, _)| value);
+            }
+            Some(value.split('#').next()?.trim())
+        })
+        .last()
 }
 
 #[tauri::command]
@@ -122,13 +159,24 @@ async fn request_local_router(
     if !allowed(&method, &call.path) {
         return Err("Unsupported Router operation".into());
     }
+    let config = std::fs::read_to_string(&client.config).map_err(|_| {
+        "Local Router configuration is missing or unreadable. Use the setup button to initialize the Router."
+    })?;
+    let token = config_value(&config, "BLAZAR_ROUTER_TOKEN")
+        .filter(|token| !token.is_empty())
+        .ok_or("Local Router configuration has no access credential.")?;
+    let port = client
+        .port
+        .or_else(|| {
+            config_value(&config, "BLAZAR_PORT")
+                .and_then(|value| value.parse::<u16>().ok())
+                .filter(|port| *port > 0)
+        })
+        .unwrap_or(4199);
     let mut request = client
         .http
-        .request(
-            method,
-            format!("http://127.0.0.1:{}/v1{}", client.port, call.path),
-        )
-        .bearer_auth(call.token);
+        .request(method, format!("http://127.0.0.1:{}/v1{}", port, call.path))
+        .bearer_auth(token);
     if call.path.starts_with("/stream?") || call.path == "/wiki/draft" {
         request = request.timeout(Duration::from_secs(35));
     }
@@ -157,16 +205,28 @@ async fn request_local_router(
 
 fn main() {
     let client = loopback_client();
-    let port = std::env::var("BLAZAR_PORT").map_or(4199, |value| {
+    let port = std::env::var("BLAZAR_PORT").ok().map(|value| {
         value
             .parse::<u16>()
             .ok()
             .filter(|port| *port > 0)
             .expect("invalid BLAZAR_PORT")
     });
+    let config = std::env::home_dir()
+        .unwrap_or_default()
+        .join(".config/blazar/router.env");
     tauri::Builder::default()
-        .manage(RouterClient { http: client, port })
-        .invoke_handler(tauri::generate_handler![router_request])
+        .manage(RouterClient {
+            http: client,
+            port,
+            config,
+        })
+        .invoke_handler(tauri::generate_handler![
+            router_request,
+            local_setup::start_local_router,
+            local_setup::add_local_agent,
+            agent_detection::detect_local_agents
+        ])
         .run(tauri::generate_context!())
         .expect("run Blazar");
 }
@@ -226,16 +286,28 @@ mod tests {
         assert!(!allowed(&Method::GET, "/health?redirect=1"));
         assert!(!allowed(&Method::POST, "/device/claim"));
         assert!(!allowed(&Method::GET, "/app-write-proposals"));
-        assert!(!allowed(&Method::GET,
-            "/app-write-proposals/00000000-0000-0000-0000-000000000000/confirm"));
-        assert!(!allowed(&Method::POST, "/app-write-proposals/invalid/confirm"));
-        assert!(!allowed(&Method::POST,
-            "/app-connections/00000000-0000-0000-0000-000000000000/capabilities/document.publish"));
-        assert!(!allowed(&Method::GET,
-            "/app-connections/00000000-0000-0000-0000-000000000000/capabilities/document.search"));
+        assert!(!allowed(
+            &Method::GET,
+            "/app-write-proposals/00000000-0000-0000-0000-000000000000/confirm"
+        ));
+        assert!(!allowed(
+            &Method::POST,
+            "/app-write-proposals/invalid/confirm"
+        ));
+        assert!(!allowed(
+            &Method::POST,
+            "/app-connections/00000000-0000-0000-0000-000000000000/capabilities/document.publish"
+        ));
+        assert!(!allowed(
+            &Method::GET,
+            "/app-connections/00000000-0000-0000-0000-000000000000/capabilities/document.search"
+        ));
         assert!(!allowed(&Method::POST, "/admin/metrics"));
         assert!(!allowed(&Method::POST, "/admin/mobile-pairings/invalid"));
-        assert!(!allowed(&Method::GET, "/tasks/00000000-0000-0000-0000-000000000000/attachments/4"));
+        assert!(!allowed(
+            &Method::GET,
+            "/tasks/00000000-0000-0000-0000-000000000000/attachments/4"
+        ));
         assert!(!allowed(&Method::GET, "/tasks/../timeline"));
     }
 
@@ -279,15 +351,22 @@ mod tests {
                 ).unwrap();
             }
         });
+        let config =
+            std::env::temp_dir().join(format!("blazar-router-test-{}.env", std::process::id()));
+        std::fs::write(
+            &config,
+            format!("BLAZAR_ROUTER_TOKEN='fixture'\nBLAZAR_PORT={port}\n"),
+        )
+        .unwrap();
         let client = RouterClient {
             http: loopback_client(),
-            port,
+            port: None,
+            config: config.clone(),
         };
         let invoke = |cursor| {
             tauri::async_runtime::block_on(request_local_router(
                 &client,
                 RouterCall {
-                    token: "fixture".into(),
                     path: format!("/stream?once=1&after={cursor}"),
                     method: "GET".into(),
                     body: None,
@@ -306,5 +385,6 @@ mod tests {
         assert_eq!(reset.text, conflict);
         assert_eq!(invoke(100).status, 302);
         server.join().unwrap();
+        std::fs::remove_file(config).unwrap();
     }
 }

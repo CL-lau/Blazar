@@ -6,7 +6,7 @@ function routerError(message, status) {
 
 export async function callRouter(token, path, { method = 'GET', body, key, signal } = {}) {
   if (isTauri()) {
-    const response = await invoke('router_request', { call: { token, path, method, body, key } })
+    const response = await invoke('router_request', { call: { path, method, body, key } })
       .catch(failure => { throw failure instanceof Error ? failure : new Error(String(failure)); });
     const data = response.json ? JSON.parse(response.text) : response.text;
     if (response.status < 200 || response.status >= 300) {

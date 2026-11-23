@@ -1,5 +1,5 @@
 import { execFileSync } from 'node:child_process';
-import { mkdirSync, mkdtempSync, readFileSync, renameSync, rmSync, symlinkSync } from 'node:fs';
+import { chmodSync, copyFileSync, cpSync, mkdirSync, mkdtempSync, readFileSync, renameSync, rmSync, symlinkSync } from 'node:fs';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -19,7 +19,33 @@ if (!cargoPackage || cargoPackage.version !== config.version) {
 const arch = { arm64: 'aarch64', x64: 'x64' }[process.arch];
 if (!arch) throw new Error('Unsupported macOS architecture.');
 
-execFileSync(tauri, ['build', '--bundles', 'app'], { cwd: desktop, stdio: 'inherit' });
+const root = fileURLToPath(new URL('../../../', import.meta.url));
+const runtimeStaging = mkdtempSync(join(desktop, 'src-tauri', '.router-bundle-'));
+try {
+  const runtime = join(runtimeStaging, 'router-runtime');
+  mkdirSync(runtime);
+  copyFileSync(process.execPath, join(runtime, 'node'));
+  chmodSync(join(runtime, 'node'), 0o755);
+  for (const file of ['package.json', 'package-lock.json']) {
+    copyFileSync(join(root, file), join(runtime, file));
+  }
+  for (const directory of ['services', 'packages', 'deploy/macos']) {
+    cpSync(join(root, directory), join(runtime, directory), {
+      recursive: true,
+      filter: path => !path.endsWith('.test.ts'),
+    });
+  }
+  execFileSync('npm', ['ci', '--omit=dev', '--no-audit', '--no-fund'], {
+    cwd: runtime, stdio: 'inherit',
+  });
+  const resourcePath = join(runtimeStaging.split('/').at(-1), 'router-runtime');
+  rmSync(join(metadata.target_directory, 'release', 'router-runtime'), { recursive: true, force: true });
+  execFileSync(tauri, ['build', '--bundles', 'app', '--config', JSON.stringify({
+    bundle: { resources: { [resourcePath]: 'router-runtime' } },
+  })], { cwd: desktop, stdio: 'inherit' });
+} finally {
+  rmSync(runtimeStaging, { recursive: true, force: true });
+}
 const bundle = join(metadata.target_directory, 'release', 'bundle');
 const dmgDirectory = join(bundle, 'dmg');
 mkdirSync(dmgDirectory, { recursive: true });

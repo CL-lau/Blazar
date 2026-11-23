@@ -24,8 +24,10 @@ if (retentionDays !== undefined && (!/^[1-9]\d{0,3}$/.test(retentionDays) || Num
   throw new Error('Set BLAZAR_PROGRESS_RETENTION_DAYS to a whole number from 1 to 3650');
 }
 const progressRetentionMs = retentionDays === undefined ? undefined : Number(retentionDays) * 86_400_000;
-const provider = process.env.BLAZAR_MODEL_PROVIDER;
-const model = process.env.BLAZAR_MODEL;
+const configuredProvider = process.env.BLAZAR_MODEL_PROVIDER;
+const provider = configuredProvider === 'local' ? undefined : configuredProvider;
+const model = configuredProvider === 'local' ? undefined : process.env.BLAZAR_MODEL;
+if (configuredProvider === 'local') console.warn('Local Router model support was removed. Configure an OpenAI or Anthropic model to enable model routing.');
 if (Boolean(provider) !== Boolean(model)) throw new Error('Set BLAZAR_MODEL_PROVIDER and BLAZAR_MODEL together');
 const harness = provider && model ? piHarness(provider, model) : undefined;
 const answerMemory = provider && model ? piMemoryAnswer(provider, model) : undefined;

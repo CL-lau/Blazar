@@ -1087,11 +1087,11 @@ test('Router decisions can consume versioned text results without crossing works
   assert.deepEqual(await (await ask('What was visible?')).json(), { kind: 'reply', text: 'A draft is visible.' });
   const { proposalKey, steps } = await (await ask('Plan the review')).json();
   assert.equal(proposalKey, 'Plan the review');
-  const confirm = (key: string, proposal: string, selected = steps) =>
+  const confirm = (key: string, proposal: string, selected = steps, agentAssignments?: Record<string, string>) =>
     fetch('http://127.0.0.1:' + address.port + '/v1/workflows', {
       method: 'POST',
       headers: { Authorization: 'Bearer admin', 'Content-Type': 'application/json', 'Idempotency-Key': key },
-      body: JSON.stringify({ workspace: 'project', steps: selected, proposalKey: proposal }),
+      body: JSON.stringify({ workspace: 'project', steps: selected, proposalKey: proposal, agentAssignments }),
     });
   assert.equal((await confirm('altered', proposalKey, [{ key: 'different', goal: 'Different plan', needs: [] }])).status, 409);
   const admitted = await confirm('original', proposalKey);
@@ -1101,9 +1101,16 @@ test('Router decisions can consume versioned text results without crossing works
   const active = store.claim('owner', 'project', 'plan-device', now + 1, 45_000)!.run;
   assert.equal(active.taskId, admittedSteps[0].taskId);
   const queued = await (await ask('Plan a queued review')).json();
-  const queuedResponse = await confirm('queued', queued.proposalKey, queued.steps);
+  const custom = store.registerDevice('owner', 'Custom reviewer', 'project');
+  store.recordDeviceActivity(custom.id, now, 'agent.acp');
+  store.recordDeviceWorker(custom.id, { protocol: 'jsonl', label: 'Custom reviewer' });
+  assert.equal((await confirm('invalid-agent', queued.proposalKey, queued.steps, { missing: custom.id })).status, 400);
+  const queuedResponse = await confirm('queued', queued.proposalKey, queued.steps, { review: custom.id });
   assert.equal(queuedResponse.status, 202);
   const queuedWorkflow = await queuedResponse.json();
+  assert.equal(store.snapshot('owner').workflowSteps.find(step =>
+    step.taskId === queuedWorkflow.steps[0].taskId)?.workerDeviceId, custom.id);
+  assert.equal((await confirm('changed-agent', queued.proposalKey, queued.steps)).status, 409);
   const stale = await (await ask('Plan a second review')).json();
   assert.equal((await ask('Change during routing')).status, 409);
   assert.equal((await ask('What was visible?')).status, 409);

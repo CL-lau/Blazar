@@ -802,16 +802,21 @@ export class TaskStore {
     if (!wasStopping) this.event(taskId, 'run.memory_access_changed', { runId, status: 'waiting_user' });
   }
 
-  createWorkflow(owner: string, key: string, workspace: string, steps: WorkflowStep[], appEvidence?: AppEvidence, caller?: string, proposalKey?: string) {
+  createWorkflow(owner: string, key: string, workspace: string, steps: WorkflowStep[], appEvidence?: AppEvidence, caller?: string, proposalKey?: string, agentAssignments?: Record<string, string>) {
     // Mobile keys exceed the public 128-character limit to preserve existing administrator receipts.
     const requestKey = proposalKey ? 'proposal:' + createHash('sha512').update(JSON.stringify([caller ?? 'admin', proposalKey])).digest('hex')
       : caller ? 'mobile:' + createHash('sha512').update(JSON.stringify([caller, key])).digest('hex') : key;
 
-    return this.transaction(() => this.persistWorkflow(owner, requestKey, workspace, steps, appEvidence, caller, proposalKey));
+    return this.transaction(() => this.persistWorkflow(owner, requestKey, workspace, steps, appEvidence, caller, proposalKey, agentAssignments));
   }
 
   private persistWorkflow(owner: string, requestKey: string, workspace: string, steps: WorkflowStep[],
-                          appEvidence?: AppEvidence, caller?: string, proposalKey?: string) {
+                          appEvidence?: AppEvidence, caller?: string, proposalKey?: string, agentAssignments?: Record<string, string>) {
+    const proposedSteps = steps;
+    if (agentAssignments && Object.keys(agentAssignments).length) {
+      steps = workflowSteps(steps.map(step => Object.hasOwn(agentAssignments, step.key)
+        ? { ...step, workerDeviceId: agentAssignments[step.key] } : step));
+    }
     const ordered = orderWorkflow(steps);
     const fingerprint = JSON.stringify(appEvidence
       ? [workspace, steps, { query: appEvidence.query, sources: appEvidence.sources }]
@@ -827,7 +832,7 @@ export class TaskStore {
       const proposal = this.db.prepare(`SELECT decision FROM routing_decision WHERE owner=? AND caller=? AND key=?
         AND json_extract(request,'$[0]')=?`).get(owner, identity, proposalKey, workspace);
       const saved = proposal ? JSON.parse(String(proposal.decision)) as Decision : undefined;
-      if (saved?.kind !== 'propose_workflow' || JSON.stringify(workflowSteps(saved.steps)) !== JSON.stringify(steps)) {
+      if (saved?.kind !== 'propose_workflow' || JSON.stringify(workflowSteps(saved.steps)) !== JSON.stringify(proposedSteps)) {
         throw new IdempotencyConflict();
       }
       this.assertRoutingEvidence(owner, identity, proposalKey);
@@ -938,6 +943,8 @@ export class TaskStore {
         const key = 'schedule:' + createHash('sha512').update(JSON.stringify([row.id, due])).digest('hex');
         const result = this.persistWorkflow(String(row.owner), key,
           String(row.workspace), JSON.parse(String(row.steps)) as WorkflowStep[]);
+        this.db.prepare('INSERT OR IGNORE INTO workflow_schedule_run(workflow_id,schedule_id) VALUES(?,?)')
+          .run(result.id, row.id!);
         this.db.prepare('UPDATE workflow_schedule SET next_at=?,last_workflow_id=? WHERE id=?')
           .run(next, result.id, row.id!);
       }

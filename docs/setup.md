@@ -24,17 +24,9 @@ The local administrator can query `GET /v1/admin/metrics` for task counts by sta
 
 Run `npm run router:benchmark` to test a temporary local SQLite database with 300 submissions, including retries, and 10 concurrent WebSocket preview workers. The run checks local acknowledgement and first-claim p95, task duplication, and assignment accuracy across desktop and paired mobile HTTP clients. Run `npm run router:benchmark -- --mixed` for simulated model routing, ten isolated Worker fixtures, and mobile approval and cancellation latency. Add `--pi` to exercise the production Pi harness with locally simulated OpenAI streaming responses. The report counts conversation rate limits and includes retry delay in receipt latency.
 
-## Local Router inference
+## Router inference
 
-Start a local model server with an OpenAI-compatible streaming Chat Completions API. Set these values in the Router environment and restart it:
-
-```sh
-BLAZAR_MODEL_PROVIDER=local
-BLAZAR_MODEL=your-installed-model-id
-BLAZAR_LOCAL_MODEL_URL=http://127.0.0.1:11434/v1
-```
-
-The URL defaults to the loopback address shown above. If your local server requires a bearer token, set `BLAZAR_LOCAL_MODEL_KEY`. Pick a model that supports tool calling for task routing and can return structured JSON for routing decisions. The Router runs one model operation at a time per configured model. Conversation and memory questions are admitted ahead of queued memory drafts. In-progress calls keep their slot until they end or are cancelled.
+To enable model routing and memory answers, set `BLAZAR_MODEL_PROVIDER` to `openai` or `anthropic`, set `BLAZAR_MODEL` to the corresponding model ID, and provide the provider credential in the Router environment. Restart the Router to apply the configuration.
 
 ## Source-backed Wiki
 
@@ -56,7 +48,15 @@ List schedules and their latest workflow IDs with `GET /v1/admin/workflow-schedu
 
 ## Native desktop build
 
-Install the Rust toolchain and macOS build tools, run `npm ci`, then use `npm run desktop:bundle` to build the Tauri app and a background-safe DMG with an Applications shortcut. Local bundles use an ad hoc signature when no signing identity is configured. Public macOS distribution requires Developer ID signing and notarization. The native app checks Router availability over loopback on the connection screen. Use the configured admin token to connect once the Router is ready. If you change the Router port, launch Blazar with the same `BLAZAR_PORT` value in its environment.
+Install the Rust toolchain and macOS build tools, run `npm ci`, then use `npm run desktop:bundle` to build the Tauri app and DMG. The DMG bundles Node and the Router. Copy Blazar to Applications before opening it. Local bundles use an ad hoc signature when no signing identity is configured. Public macOS distribution requires Developer ID signing and notarization.
+
+On first launch, select **Set up or start Router**. Blazar creates a private configuration file and a user LaunchAgent, waits for the Router, then opens the assistant. The app reads the credential and port from `~/.config/blazar/router.env`. If a running connection is interrupted, use **Recover local Router**. Startup diagnostics are available under `~/.config/blazar/logs/`.
+
+Open **Agents** to find installed Agent executables or register one in a Git workspace. Choose a built-in preset or enter a custom executable with ACP or JSONL arguments. Once it is online, the Agent is available for compatible steps in that workspace's proposed workflows.
+
+Use **Work items** to review task status by workspace. **Notifications** opens outstanding approvals and reviews, failed tasks, and recent successful scheduled workflows. Select a notification to open its task and the corresponding action.
+
+The desktop includes code from [T3 Code](https://github.com/pingdotgg/t3code/tree/0591d328) under the [MIT license](../apps/desktop/public/third-party/T3-Code.txt). The Work items page takes inspiration from [Linger's work items](https://github.com/simplexai-labs/linger/tree/d4dd925/apps/web/src/features/work-items).
 
 ## iOS build
 
@@ -66,7 +66,7 @@ To enable task notifications, turn on Push Notifications for the signed iOS App 
 
 ## Run in the background on macOS
 
-Run `npm run macos:setup-router -- --start` from the checkout to generate a private Router configuration, create its LaunchAgent, and start the background service. Setup waits for the configured token to authenticate to the local Router. Use `--check` to verify an existing service without starting it. Run it without `--start` to prepare the files only. The setup keeps an existing Router token. Use the token in `~/.config/blazar/router.env` to connect the desktop client.
+Run `npm run macos:setup-router -- --start` from the checkout to generate a private Router configuration, create its LaunchAgent, and start the background service. Setup waits for the configured token to authenticate to the local Router. Use `--check` to verify an existing service without starting it. Run it without `--start` to prepare the files only. The setup keeps an existing Router token. The installed macOS app reads the credential from `~/.config/blazar/router.env` and connects automatically. The browser development client still accepts the token manually.
 
 For manual setup or a Worker device, follow the steps below.
 

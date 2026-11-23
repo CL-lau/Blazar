@@ -1,4 +1,3 @@
-import { localModelProvider } from './local-model.ts';
 import { ModelQueue } from './model-queue.ts';
 import { workflowSteps } from './domain/workflow.ts';
 import type { WorkflowStep } from '../../packages/protocol/task.ts';
@@ -98,7 +97,6 @@ function piCompletion(provider: string, modelId: string, systemPrompt: string, p
   const models = createModels();
   if (provider === 'openai') models.setProvider(openaiProvider());
   else if (provider === 'anthropic') models.setProvider(anthropicProvider());
-  else if (provider === 'local') models.setProvider(localModelProvider(modelId, process.env.BLAZAR_LOCAL_MODEL_URL));
   else throw new Error('Unsupported Router model provider');
   const model = models.getModel(provider, modelId);
   if (!model) throw new Error('Unknown Router model');

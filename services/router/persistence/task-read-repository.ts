@@ -54,14 +54,24 @@ export class TaskReadRepository {
         WHERE t.owner=? AND t.status='running' AND r.version=t.version
         AND (p.device_seq IS NOT NULL OR a.stalled=1)`).all(owner);
       const workflowSteps = this.db.prepare(`SELECT s.workflow_id AS workflowId,s.step_key AS stepKey,
-        s.task_id AS taskId,d.predecessor AS predecessorId FROM workflow_step s
+        s.task_id AS taskId,d.predecessor AS predecessorId,a.device_id AS workerDeviceId FROM workflow_step s
         JOIN workflow w ON w.id=s.workflow_id LEFT JOIN workflow_dependency d ON d.task_id=s.task_id
-        WHERE w.owner=? ORDER BY s.rowid`).all(owner);
+        LEFT JOIN task_worker_device a ON a.task_id=s.task_id
+        WHERE w.owner=? ORDER BY s.rowid`).all(owner).map(({ workerDeviceId, ...step }) =>
+          workerDeviceId ? { ...step, workerDeviceId } : step);
       const criteria = this.db.prepare(`SELECT c.task_id AS taskId,c.criterion FROM task_criterion c
         JOIN task t ON t.id=c.task_id WHERE t.owner=? ORDER BY c.task_id,c.position`).all(owner);
       const attachments = this.db.prepare(`SELECT a.task_id AS taskId,a.position,a.name,length(CAST(a.text AS BLOB)) AS size
         FROM task_attachment a JOIN task t ON t.id=a.task_id WHERE t.owner=? ORDER BY a.task_id,a.position`).all(owner);
-      return { tasks, artifacts, attachments, approvals, progress, workflowSteps, criteria, cursor };
+      const completedSchedules = this.db.prepare(`SELECT r.workflow_id AS workflowId,s.label,
+        (SELECT step.task_id FROM workflow_step step WHERE step.workflow_id=r.workflow_id
+          ORDER BY step.rowid DESC LIMIT 1) AS taskId
+        FROM workflow_schedule_run r JOIN workflow_schedule s ON s.id=r.schedule_id
+        WHERE s.owner=? AND NOT EXISTS (
+          SELECT 1 FROM workflow_step step JOIN task t ON t.id=step.task_id
+          WHERE step.workflow_id=r.workflow_id AND t.status<>'succeeded'
+        ) ORDER BY r.rowid DESC LIMIT 50`).all(owner);
+      return { tasks, artifacts, attachments, approvals, progress, workflowSteps, criteria, completedSchedules, cursor };
     });
   }
 

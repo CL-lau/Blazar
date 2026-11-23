@@ -21,3 +21,6 @@ apps/ios/build/
 
 # Generated Tauri schemas
 apps/desktop/src-tauri/gen/schemas/
+
+# Staging for the macOS DMG
+apps/desktop/src-tauri/.router-bundle-*/
