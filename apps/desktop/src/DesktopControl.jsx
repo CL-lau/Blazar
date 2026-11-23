@@ -1,3 +1,5 @@
+import { useDesktopLanguage } from './DesktopLanguage.jsx';
+import { PageHeading } from './PageHeading.jsx';
 import React, { useRef, useState } from 'react';
 
 function targetKey(target) {
@@ -16,6 +18,7 @@ function inventoryWindows(task) {
 }
 
 export function DesktopControl({ targets, tasks, workspace, setWorkspace, busy, createTask, showTask }) {
+  const { t } = useDesktopLanguage();
   const [selection, setSelection] = useState('');
   const [inventory, setInventory] = useState(null);
   const [windowId, setWindowId] = useState('');
@@ -51,13 +54,14 @@ export function DesktopControl({ targets, tasks, workspace, setWorkspace, busy, 
   }
 
   const lastTask = submitted?.binding === binding ? tasks.find(task => task.id === submitted.id) : undefined;
-  return <section className="detail">
-    <h2>Desktop control</h2>
+  return <section className="detail desktop-control-page">
+    <PageHeading title="Desktop control" description="Choose a device and application before inspecting its windows." />
+    <div className="page-split desktop-control-layout">
     <fieldset disabled={busy}>
-      <legend>Target</legend>
-      <label>Workspace<input value={workspace} maxLength={128} onChange={event => setWorkspace(event.target.value)} /></label>
+      <legend>{t('Target', '目标')}</legend>
+      <label>{t('Workspace', '工作区')}<input value={workspace} maxLength={128} onChange={event => setWorkspace(event.target.value)} /></label>
       {target ? <>
-        <label>Device and application<select value={targetKey(target)} onChange={event => {
+        <label>{t('Device and application', '设备和应用')}<select value={targetKey(target)} onChange={event => {
           setSelection(event.target.value);
           setInventory(null);
           setWindowId('');
@@ -67,39 +71,45 @@ export function DesktopControl({ targets, tasks, workspace, setWorkspace, busy, 
             {item.deviceName} · {item.alias}
           </option>)}
         </select></label>
-        <button type="button" onClick={() => dispatch('/observe ' + target.alias + ' --windows-json', true)}>List windows</button>
+        <button type="button" onClick={() => dispatch('/observe ' + target.alias + ' --windows-json', true)}>{t('List windows', '列出窗口')}</button>
       </> : <p>No desktop targets are available in this workspace.</p>}
     </fieldset>
+    <div className="desktop-operation-pane">
     {inventory?.binding === binding && <fieldset disabled={busy}>
-      <legend>Window operations</legend>
+      <legend>{t('Window operations', '窗口操作')}</legend>
       {inventoryTask?.status !== 'succeeded' ? <p role="status">Window inventory {inventoryTask?.status?.replaceAll('_', ' ') ?? 'pending'}.</p>
         : windows.length === 0 ? <p role="status">No identifiable windows found.</p> : <>
-          <label>Window<select value={window?.id ?? ''} onChange={event => setWindowId(event.target.value)}>
-            <option value="">Choose a window</option>
+          <label>{t('Window', '窗口')}<select value={window?.id ?? ''} onChange={event => setWindowId(event.target.value)}>
+            <option value="">{t('Choose a window', '选择窗口')}</option>
             {windows.map(item => <option key={item.id} value={item.id}>{item.title || item.id}</option>)}
           </select></label>
           <button type="button" disabled={!targetCommand || !window?.accessible || target.accessibility === 'denied'}
-            onClick={() => dispatch('/observe ' + targetCommand)}>Inspect window</button>
+            onClick={() => dispatch('/observe ' + targetCommand)}>{t('Inspect window', '检查窗口')}</button>
           {controls?.visual && <button type="button" disabled={!targetCommand || target.screenRecording === 'denied'}
-            onClick={() => dispatch('/observe ' + targetCommand + ' --visual')}>Capture screenshot</button>}
+            onClick={() => dispatch('/observe ' + targetCommand + ' --visual')}>{t('Capture screenshot', '截取屏幕')}</button>}
           {controls?.visual && <button type="button" disabled={!targetCommand || !window?.accessible ||
             target.accessibility === 'denied' || target.screenRecording === 'denied'}
-            onClick={() => dispatch('/observe ' + targetCommand + ' --hybrid')}>Inspect and capture</button>}
+            onClick={() => dispatch('/observe ' + targetCommand + ' --hybrid')}>{t('Inspect and capture', '检查与截图')}</button>}
           {controls?.visual && target.screenRecording === 'denied' && <p>Grant Screen Recording permission on the device to capture screenshots.</p>}
           {controls?.buttons?.length > 0 && <>
-            <label>Button<select value={button} onChange={event => setButton(event.target.value)}>
-              <option value="">Choose a button</option>
+            <label>{t('Button', '按钮')}<select value={button} onChange={event => setButton(event.target.value)}>
+              <option value="">{t('Choose a button', '选择按钮')}</option>
               {controls.buttons.map(label => <option key={label}>{label}</option>)}
             </select></label>
             <button type="button" disabled={!targetCommand || !window?.accessible ||
               target.accessibility === 'denied' || !controls.buttons.includes(button)}
-              onClick={() => dispatch('/click ' + targetCommand + ' ' + button)}>Request click approval</button>
+              onClick={() => dispatch('/click ' + targetCommand + ' ' + button)}>{t('Request click approval', '申请点击许可')}</button>
           </>}
         </>}
     </fieldset>}
+    {inventory?.binding !== binding && <section className="page-pane"><h2>{t('Window operations', '窗口操作')}</h2>
+      <p className="muted">List the target application's windows to inspect or capture one.</p>
+    </section>}
     {submitted?.binding === binding && <p role="status">
       {lastTask ? lastTask.status.replaceAll('_', ' ') : 'Submitted'}{' '}
-      <button type="button" onClick={() => showTask(submitted.id)}>View task</button>
+      <button type="button" onClick={() => showTask(submitted.id)}>{t('View task', '查看任务')}</button>
     </p>}
+    </div>
+    </div>
   </section>;
 }

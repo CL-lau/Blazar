@@ -342,3 +342,18 @@ Use the following checks to verify OS permissions, APNs delivery, and deployment
 
 Record the OS and driver versions, Router commit, and outcome for each check. Keep tokens, signing
 keys, screenshots of private apps, and request bodies out of shared verification logs.
+
+## Complete upstream frontends
+
+The desktop's component ports and the original upstream apps are separate entry points. To bring the full pinned checkouts into this workspace, run:
+
+```sh
+npm run upstream:frontend -- t3
+npm run upstream:frontend -- linger
+```
+
+Pass a local clone as the second argument to reuse its Git objects during checkout. The script creates independent copies at `.upstream-frontends/t3` and `.upstream-frontends/linger`. It adds a loopback link back to Blazar in each original web entry. The third argument overrides the default Blazar address of `http://127.0.0.1:1420/`. Both copies retain their original routes, assets, dependencies, and licenses.
+
+Run T3 Code with its pinned Node and pnpm versions and the development command in its repository. Run Linger with its TeamHub services using the Linger setup instructions. In Blazar, open **Connected tools** and save the loopback address for each frontend. The web development build can also take the initial addresses from `VITE_BLAZAR_T3_URL` and `VITE_BLAZAR_LINGER_URL`. The **Open** links use the addresses saved in that client.
+
+The compatibility layer provides navigation between the applications. T3 Code uses its own server and data directory. Linger uses its own account and TeamHub database. Blazar tasks, credentials, and application connections remain in the Blazar Router.

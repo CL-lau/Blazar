@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto';
 import type { DatabaseSync } from 'node:sqlite';
 import type { Task, TaskEvent } from '../../../packages/protocol/task.ts';
 import { sqliteTransaction } from '../../../packages/storage/sqlite.ts';
@@ -142,8 +143,8 @@ export class TaskReadRepository {
       });
   }
 
-  recentConversation(owner: string, workspace: string, caller = 'admin'): ConversationTurn[] {
-    return this.db.prepare(`SELECT json_extract(request,'$[1]') AS text,decision,(
+  recentConversation(owner: string, workspace: string, caller = 'admin', includeLinks = false): (ConversationTurn & { id?: string; taskId?: string })[] {
+    return this.db.prepare(`SELECT json_extract(request,'$[1]') AS text,r.key,decision,(
         SELECT json_group_array(json_array(e.task_id,e.version)) FROM routing_task_evidence e
         WHERE e.owner=r.owner AND e.caller=r.caller AND e.request_key=r.key
       ) AS evidence FROM routing_decision r
@@ -154,8 +155,8 @@ export class TaskReadRepository {
       AND NOT (
         json_extract(request,'$[1]') IN ('/status','/状态')
         OR json_extract(request,'$[1]') GLOB '/status *' OR json_extract(request,'$[1]') GLOB '/状态 *'
-      ) ORDER BY rowid DESC LIMIT 6`)
-      .all(owner, caller, workspace).reverse().map(row => {
+      ) ORDER BY rowid DESC LIMIT ?`)
+      .all(owner, caller, workspace, includeLinks ? 50 : 6).reverse().map(row => {
         const decision = JSON.parse(String(row.decision)) as Decision;
         if (decision.kind === 'propose_workflow') {
           decision.text = decision.text.slice(0, 2_000);
@@ -166,7 +167,20 @@ export class TaskReadRepository {
         } else if (decision.kind !== 'create_task') decision.text = decision.text.slice(0, 2_000);
         else if (decision.goal) decision.goal = decision.goal.slice(0, 2_000);
         const taskEvidence = JSON.parse(String(row.evidence)) as [string, number][];
-        return { text: String(row.text).slice(0, 2_000), decision, ...(taskEvidence.length && { taskEvidence }) };
+        const id = String(row.key);
+        let taskId: string | undefined;
+        if (includeLinks && decision.kind === 'create_task') {
+          const source = caller === 'admin' ? 'conversation' : 'conversation:' + caller;
+          const receipt = this.db.prepare('SELECT taskId FROM receipt WHERE owner=? AND source=? AND key=?')
+            .get(owner, source, id);
+          if (receipt) taskId = String(receipt.taskId);
+        } else if (includeLinks && decision.kind === 'propose_workflow') {
+          const requestKey = 'proposal:' + createHash('sha512').update(JSON.stringify([caller, id])).digest('hex');
+          const step = this.db.prepare(`SELECT s.task_id FROM workflow w JOIN workflow_step s ON s.workflow_id=w.id
+            WHERE w.owner=? AND w.request_key=? ORDER BY s.rowid LIMIT 1`).get(owner, requestKey);
+          if (step) taskId = String(step.task_id);
+        }
+        return { ...(includeLinks && { id, taskId }), text: String(row.text).slice(0, 2_000), decision, ...(taskEvidence.length && { taskEvidence }) };
       });
   }
 }

@@ -374,8 +374,12 @@ export class MemoryStore {
     }));
   }
 
-  saveWikiPage(owner: string, workspace: string, title: string, body: string, references: MemoryReference[]) {
+  saveWikiPage(owner: string, workspace: string, title: string, body: string, references: MemoryReference[], replaces?: string) {
     return sqliteTransaction(this.db, () => {
+      const previous = replaces && this.db.prepare(`SELECT w.page_id AS watched FROM wiki_page p
+        LEFT JOIN wiki_watch w ON w.page_id=p.id WHERE p.owner=? AND p.workspace=? AND p.id=?`)
+        .get(owner, workspace, replaces);
+      if (replaces && !previous) return undefined;
       const evidence = this.resolveAppEvidence(owner, workspace, references);
       if (!references.length || !evidence) return undefined;
       const encoded = JSON.stringify(evidence.map(({ id, version, scopeVersion }) => ({ id, version, scopeVersion }))
@@ -384,9 +388,13 @@ export class MemoryStore {
       const inserted = this.db.prepare(`INSERT INTO wiki_page VALUES(?,?,?,?,?,?,?)
         ON CONFLICT(owner,workspace,title,body,evidence) DO NOTHING`)
         .run(id, owner, workspace, title, body, encoded, Date.now());
-      if (inserted.changes) return id;
-      return String(this.db.prepare(`SELECT id FROM wiki_page WHERE owner=? AND workspace=?
+      const published = inserted.changes ? id : String(this.db.prepare(`SELECT id FROM wiki_page WHERE owner=? AND workspace=?
         AND title=? AND body=? AND evidence=?`).get(owner, workspace, title, body, encoded)!.id);
+      if (previous && previous.watched && replaces !== published) {
+        this.db.prepare('DELETE FROM wiki_watch WHERE page_id=?').run(replaces!);
+        this.db.prepare('INSERT OR IGNORE INTO wiki_watch(page_id,next_check) VALUES(?,?)').run(published, Date.now());
+      }
+      return published;
     });
   }
 
@@ -428,6 +436,30 @@ export class MemoryStore {
 
   acknowledgeWikiReminder(id: string) {
     this.db.prepare('UPDATE wiki_watch SET notified=1 WHERE page_id=?').run(id);
+  }
+
+  wikiRevision(owner: string, id: string) {
+    return sqliteTransaction(this.db, () => {
+      const row = this.db.prepare('SELECT workspace,title,evidence FROM wiki_page WHERE id=? AND owner=?').get(id, owner);
+      if (!row) return undefined;
+      const workspace = String(row.workspace);
+      const previous = JSON.parse(String(row.evidence)) as (MemoryReference & { scopeVersion: number })[];
+      const sources = previous.map(reference => {
+        const current = this.db.prepare(`SELECT m.id,COALESCE(s.version,1) AS version
+          FROM memory old LEFT JOIN document_head h ON h.owner=old.owner AND h.workspace=old.workspace
+            AND h.connection=old.connection AND h.resource=old.resource
+          JOIN memory m ON m.id=COALESCE(h.memory_id,old.id)
+          LEFT JOIN memory_state s ON s.id=m.id WHERE old.id=? AND old.owner=? AND old.workspace=?`)
+          .get(reference.id, owner, workspace);
+        if (!current) return { state: 'unavailable' };
+        const [source] = this.resolveAppEvidence(owner, workspace, [{ id: String(current.id), version: Number(current.version) }]) ?? [];
+        if (!source) return { state: 'unavailable' };
+        return { id: source.id, version: source.version, resource: source.resource, revision: source.revision,
+          state: source.id !== reference.id || source.version !== reference.version || source.scopeVersion !== reference.scopeVersion
+            ? 'updated' : 'current' };
+      });
+      return { id, workspace, title: sources.every(source => source.id) ? String(row.title) : '', sources };
+    });
   }
 
   wikiPages(owner: string, workspace: string, query: string) {

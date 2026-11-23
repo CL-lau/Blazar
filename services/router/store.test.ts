@@ -1194,5 +1194,13 @@ test('a workflow can select one custom Agent among devices sharing a protocol', 
   assert.equal(store.claim(owner, workspace, competing.id, now, 45_000, '', '/preview ', undefined, worker), undefined);
   const claim = () => store.claim(owner, workspace, selected.id, now, 45_000, '', '/preview ', 'chosen-agent', worker);
   assert.equal(claim()?.task.id, workflow.steps[0].taskId);
-  assert.equal(claim()?.task.id, workflow.steps[0].taskId);
+  const failed = claim()!;
+  assert.equal(failed.task.id, workflow.steps[0].taskId);
+  assert.equal(store.finish(failed.run.id, selected.id, now, { status: 'failed', result: 'Retry elsewhere' }), true);
+  assert.equal(store.retryWorkers(owner, failed.task.id).some(device => device.id === competing.id), true);
+  const current = store.get(owner, failed.task.id)!;
+  const reassigned = store.command(owner, current.id, current.version, { action: 'retry_on_worker', deviceId: competing.id });
+  assert.equal(reassigned?.status, 'queued');
+  assert.equal(store.claim(owner, workspace, selected.id, now, 45_000, '', '/preview ', 'old-agent', worker), undefined);
+  assert.equal(store.claim(owner, workspace, competing.id, now, 45_000, '', '/preview ', 'new-agent', worker)?.task.id, current.id);
 });

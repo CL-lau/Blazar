@@ -661,12 +661,41 @@ export class TaskStore {
       memoryInputs, appEvidence, attachments, copiedFromTask));
   }
 
+  hasGitDelivery(taskId: string, artifactId: string, version: number, result: { branch: string; commit: string }) {
+    return Boolean(this.db.prepare(
+      "SELECT 1 FROM event WHERE taskId=? AND type='task.git_delivered' AND data=?")
+      .get(taskId, JSON.stringify({ artifactId, version, ...result })));
+  }
+
+  recordGitDelivery(taskId: string, artifactId: string, version: number, result: { branch: string; commit: string; remote?: string; url?: string }) {
+    this.transaction(() => {
+      const data = { artifactId, version, ...result };
+      const type = result.url ? 'task.git_pull_request' : result.remote ? 'task.git_pushed' : 'task.git_delivered';
+      const encoded = JSON.stringify(data);
+      const existing = this.db.prepare(
+        "SELECT 1 FROM event WHERE taskId=? AND type=? AND data=?").get(taskId, type, encoded);
+      if (!existing) this.event(taskId, type, data);
+    });
+  }
+
   createWikiReminder(owner: string, workspace: string, pageId: string) {
     return this.transaction(() => {
       if (this.db.prepare("SELECT 1 FROM receipt WHERE owner=? AND source='wiki-watch' AND key=?").get(owner, pageId)) return;
       const task = this.createTask(owner, 'wiki-watch', pageId, workspace, 'Review a Wiki page with changed or unavailable sources');
       this.db.prepare("UPDATE task SET status='waiting_user' WHERE id=?").run(task.id);
       this.event(task.id, 'wiki.review_requested', { status: 'waiting_user', pageId });
+    });
+  }
+
+  completeWikiReminder(owner: string, pageId: string, revisionId: string) {
+    this.transaction(() => {
+      const receipt = this.db.prepare("SELECT taskId FROM receipt WHERE owner=? AND source='wiki-watch' AND key=?")
+        .get(owner, pageId);
+      if (!receipt) return;
+      const taskId = String(receipt.taskId);
+      const updated = this.db.prepare(`UPDATE task SET status='succeeded',version=version+1,result=?
+        WHERE id=? AND owner=? AND status='waiting_user'`).run('Wiki revision published.', taskId, owner);
+      if (updated.changes) this.event(taskId, 'wiki.review_completed', { revisionId, status: 'succeeded' });
     });
   }
 
@@ -957,7 +986,24 @@ export class TaskStore {
       .all(id);
   }
 
-  command(owner: string, taskId: string, version: number, command: { action: 'cancel' | 'pause' | 'resume' | 'retry' | 'accept_result' | 'reject_result' } | { action: 'append'; text: string } | { action: 'approve' | 'deny'; approvalId: string }, key?: string, caller = 'admin') {
+  retryWorkers(owner: string, taskId: string) {
+    const task = this.get(owner, taskId);
+    if (!task || task.status !== 'failed' || !this.db.prepare(`SELECT 1 FROM workflow_step
+      WHERE task_id=? AND NOT EXISTS(SELECT 1 FROM task_desktop_device WHERE task_id=?)
+      AND NOT EXISTS(SELECT 1 FROM task_question_worker WHERE task_id=?)`).get(taskId, taskId, taskId) ||
+      /^\/(preview|observe|click|write) /.test(task.goal)) return [];
+    const protocols = this.db.prepare('SELECT protocol FROM task_worker_protocol WHERE task_id=?')
+      .all(taskId).map(row => row.protocol);
+    const capability = this.db.prepare('SELECT capability FROM task_worker_capability WHERE task_id=?')
+      .get(taskId)?.capability;
+    return this.devices(owner).filter(device => device.workspace === task.workspace && device.capability === 'agent.acp' && device.workerProtocol &&
+      !device.revoked && !device.paused && !device.workerPolicyBlocked && !device.interruptedRunId &&
+      (!protocols.length || protocols.includes(device.workerProtocol)) &&
+      (!capability || JSON.parse(String(device.workerCapabilities ?? '[]')).includes(capability)))
+      .map(device => ({ id: device.id, name: device.name, label: device.workerLabel, online: device.online }));
+  }
+
+  command(owner: string, taskId: string, version: number, command: { action: 'cancel' | 'pause' | 'resume' | 'retry' | 'accept_result' | 'reject_result' } | { action: 'append'; text: string } | { action: 'retry_on_worker'; deviceId: string } | { action: 'approve' | 'deny'; approvalId: string }, key?: string, caller = 'admin') {
     return this.transaction(() => {
       const fingerprint = JSON.stringify([taskId, version, command]);
       if (key) {
@@ -989,6 +1035,12 @@ export class TaskStore {
         if (!this.reviewResult(task, command.action === 'accept_result')) return undefined;
       } else if (command.action === 'pause') {
         if (!this.pauseTask(taskId, task.status)) return undefined;
+      } else if (command.action === 'retry_on_worker') {
+        if (caller !== 'admin' || !this.retryWorkers(owner, taskId).some(device => device.id === command.deviceId)) return undefined;
+        if (!this.requeueTask(taskId, task.status, 'retry')) return undefined;
+        this.db.prepare(`INSERT INTO task_worker_device VALUES(?,?)
+          ON CONFLICT(task_id) DO UPDATE SET device_id=excluded.device_id`).run(taskId, command.deviceId);
+        this.event(taskId, 'task.worker_reassigned', { deviceId: command.deviceId });
       } else if (command.action === 'resume' || command.action === 'retry') {
         if (!this.requeueTask(taskId, task.status, command.action)) return undefined;
       } else if (command.action === 'cancel') {

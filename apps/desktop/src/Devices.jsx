@@ -1,8 +1,11 @@
+import { useDesktopLanguage } from './DesktopLanguage.jsx';
+import { PageHeading } from './PageHeading.jsx';
 import React, { useEffect, useState } from 'react';
 import { AcpRegistry } from './AcpRegistry.jsx';
 import { callRouter } from './router.js';
 
 export function Devices({ token }) {
+  const { t } = useDesktopLanguage();
   const [devices, setDevices] = useState([]);
   const [catalog, setCatalog] = useState(null);
   const [policies, setPolicies] = useState([]);
@@ -72,30 +75,13 @@ export function Devices({ token }) {
     }
   }
 
-  return <section className="detail">
-    <h2>Execution devices</h2>
+  return <section className="detail devices-page">
+    <PageHeading title="Execution devices" description="Register Workers, manage assignments, and set workspace policies." />
     {error && <p role="alert">{error}</p>}
-    <form onSubmit={event => {
-      event.preventDefault();
-      const form = event.currentTarget;
-      const values = new FormData(form);
-      void update(async () => {
-        const device = await callRouter(token, '/admin/devices', {
-          method: 'POST', body: { name: values.get('name'), workspace: values.get('workspace') },
-        });
-        setRegistration(device);
-        form.reset();
-      });
-    }}>
-      <label>Device name<input name="name" maxLength={128} required /></label>
-      <label>Workspace<input name="workspace" maxLength={128} required /></label>
-      <button className="primary" disabled={pending || !!registration}>Register device</button>
-    </form>
-    {registration && <div>
-      <p>Set <code>BLAZAR_DEVICE_TOKEN</code> on {registration.name} using this token.</p>
-      <input aria-label="New device token" readOnly value={registration.token} onFocus={event => event.target.select()} />
-      <button onClick={() => setRegistration(null)}>Hide token</button>
-    </div>}
+    <div className="page-split plan-layout">
+    <section className="page-pane" aria-label={t('Registered devices', '已登记设备')}>
+      <h2>{t('Registered devices', '已登记设备')}</h2>
+      {!devices.length && <p className="muted">No execution devices are registered.</p>}
     <ul>{devices.map(device => <li key={device.id}>
       <strong>{device.name}</strong> · {device.workspace} · {device.revoked ? 'Revoked' : device.interruptedRunId ? 'Needs reconciliation' : device.online ? 'Online' : 'Offline'}
       {device.platform && <> · {device.platform}</>}
@@ -117,10 +103,36 @@ export function Devices({ token }) {
           await callRouter(token, '/admin/devices/' + device.id, { method: 'DELETE' });
           setRegistration(current => current?.id === device.id ? null : current);
         });
-      }}>Revoke</button>}
+      }}>{t('Revoke', '撤销')}</button>}
     </li>)}</ul>
+    </section>
+    <section className="page-pane" aria-label="Device registration">
+      <h2>{t('Register a device', '登记设备')}</h2>
+      <form onSubmit={event => {
+      event.preventDefault();
+      const form = event.currentTarget;
+      const values = new FormData(form);
+      void update(async () => {
+        const device = await callRouter(token, '/admin/devices', {
+          method: 'POST', body: { name: values.get('name'), workspace: values.get('workspace') },
+        });
+        setRegistration(device);
+        form.reset();
+      });
+    }}>
+      <label>{t('Device name', '设备名称')}<input name="name" maxLength={128} required /></label>
+      <label>{t('Workspace', '工作区')}<input name="workspace" maxLength={128} required /></label>
+      <button className="primary" disabled={pending || !!registration}>{t('Register device', '登记设备')}</button>
+    </form>
+    {registration && <div>
+      <p>Set <code>BLAZAR_DEVICE_TOKEN</code> on {registration.name} using this token.</p>
+      <input aria-label="New device token" readOnly value={registration.token} onFocus={event => event.target.select()} />
+      <button onClick={() => setRegistration(null)}>{t('Hide token', '隐藏令牌')}</button>
+    </div>}
+    </section>
+    </div>
     {protocols.length > 0 && <details>
-      <summary>Workspace Worker policies</summary>
+      <summary>{t('Workspace Worker policies', '工作区 Worker 策略')}</summary>
       <form onSubmit={event => {
         event.preventDefault();
         const fields = new FormData(event.currentTarget);
@@ -129,13 +141,13 @@ export function Devices({ token }) {
         const seconds = fields.get('runLimitSeconds');
         void update(() => savePolicy(selected, limit ? Number(limit) : undefined, seconds ? Number(seconds) : undefined, fields.has('requireReadOnly')));
       }}>
-        <label>Workspace<input list="worker-policy-workspaces" value={policyWorkspace} maxLength={128}
+        <label>{t('Workspace', '工作区')}<input list="worker-policy-workspaces" value={policyWorkspace} maxLength={128}
           onChange={event => setPolicyWorkspace(event.target.value)} required /></label>
         <datalist id="worker-policy-workspaces">{[...new Set([
           ...devices.map(device => device.workspace), ...policies.map(item => item.workspace),
         ])].sort().map(workspace => <option value={workspace} key={workspace} />)}</datalist>
         <fieldset key={JSON.stringify([policyWorkspace.trim(), policy?.protocols, policy?.maxConcurrent, policy?.runLimitSeconds, policy?.requireReadOnly])} disabled={pending}>
-          <legend>Allowed protocols for new assignments</legend>
+          <legend>{t('Allowed protocols for new assignments', '新分配允许的协议')}</legend>
           {protocols.map(protocol => <label key={protocol} className="checkbox-label">
             <input type="checkbox" name="protocol" value={protocol}
               defaultChecked={!policy || policy.protocols.includes(protocol)} /> {protocol.toUpperCase()}
@@ -146,17 +158,17 @@ export function Devices({ token }) {
             placeholder="600" defaultValue={policy?.runLimitSeconds ?? ''} /></label>
           <label className="checkbox-label"><input type="checkbox" name="requireReadOnly"
             defaultChecked={policy?.requireReadOnly === true} /> Require read-only Worker execution</label>
-          <button disabled={!policyWorkspace.trim()}>Save policy</button>
+          <button disabled={!policyWorkspace.trim()}>{t('Save policy', '保存策略')}</button>
           {policy && <button type="button" onClick={() => void update(() => savePolicy(null))}>Clear restriction</button>}
         </fieldset>
       </form>
     </details>}
     <details>
-      <summary>Worker presets</summary>
+      <summary>{t('Worker presets', 'Worker 预设')}</summary>
       {catalogError && <p role="alert">{catalogError}</p>}
       {catalog && <>
         <label>Preset<select value={preset} onChange={event => setPreset(event.target.value)}>
-          <option value="">Choose a Worker</option>
+          <option value="">{t('Choose a Worker', '选择 Worker')}</option>
           {catalog.presets.map(worker => <option key={worker.id} value={worker.id}>
             {worker.label} ({worker.protocol.toUpperCase()})
           </option>)}

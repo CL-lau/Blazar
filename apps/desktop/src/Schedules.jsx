@@ -1,9 +1,12 @@
+import { useDesktopLanguage } from './DesktopLanguage.jsx';
+import { PageHeading } from './PageHeading.jsx';
 import React, { useEffect, useRef, useState } from 'react';
 import { callRouter } from './router.js';
 
 const schedulePath = '/admin/workflow-schedules';
 
-export function Schedules({ token, workspace, workflowSteps, showTask }) {
+export function Schedules({ token, workspace, workflowSteps, showTask, scope }) {
+  const { t } = useDesktopLanguage();
   const [schedules, setSchedules] = useState([]);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
@@ -55,11 +58,16 @@ export function Schedules({ token, workspace, workflowSteps, showTask }) {
     });
   }
 
-  return <section className="detail">
-    <h2>Scheduled workflows</h2>
+  const scoped = schedules.filter(schedule => schedule.workspace === workspace);
+  return <section className="detail schedules-page">
+    <PageHeading title="Schedules" description={t('Scheduled workflows in ' + workspace + '.', workspace + ' 的计划工作流。')}
+      actions={<>{scope}<button disabled={busy} onClick={() => perform(reload)}>{t('Refresh schedules', '刷新计划')}</button></>} />
     {error && <p className="error" role="alert">{error}</p>}
-    <button disabled={busy} onClick={() => perform(reload)}>Refresh schedules</button>
-    {schedules.filter(schedule => schedule.workspace === workspace).map(schedule =>
+    <div className="page-split plan-layout">
+    <section className="page-pane" aria-label="Existing schedules">
+      <h2>{t('Scheduled workflows', '计划工作流')}</h2>
+      {!scoped.length && <p className="muted">No workflows are scheduled for this workspace.</p>}
+    {scoped.map(schedule =>
       <article className="workbench-entry" key={schedule.id}>
         <h3>{schedule.label}</h3>
         <p>{!schedule.enabled ? 'Disabled' : schedule.nextAt === null ? 'Dispatched' : 'Next run ' +
@@ -70,18 +78,20 @@ export function Schedules({ token, workspace, workflowSteps, showTask }) {
         <button disabled={busy || !schedule.enabled || schedule.nextAt === null} onClick={() => perform(async () => {
           await request(schedulePath + '/' + schedule.id, { method: 'DELETE' });
           await reload();
-        })}>Disable future runs</button>
+        })}>{t('Disable future runs', '停用后续执行')}</button>
       </article>)}
+    </section>
     <form onSubmit={createSchedule}>
       <fieldset disabled={busy}>
-        <legend>New schedule</legend>
-        <label>Name<input name="label" required maxLength={160} /></label>
-        <label>First run<input name="start" type="datetime-local" required /></label>
+        <legend>{t('New schedule', '新建计划')}</legend>
+        <label>{t('Name', '名称')}<input name="label" required maxLength={160} /></label>
+        <label>{t('First run', '首次执行')}<input name="start" type="datetime-local" required /></label>
         <label>Repeat every (minutes)<input name="interval" type="number" min={1} max={43200} placeholder="Run once" /></label>
         <label>Worker steps, one per line<textarea name="steps" required /></label>
         <label className="checkbox-label"><input name="review" type="checkbox" defaultChecked /> Require review after each step</label>
-        <button className="primary">Create schedule</button>
+        <button className="primary">{t('Create schedule', '创建计划')}</button>
       </fieldset>
     </form>
+    </div>
   </section>;
 }

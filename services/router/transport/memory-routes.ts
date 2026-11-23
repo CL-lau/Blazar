@@ -20,6 +20,7 @@ const legacyDocumentCapabilities = new Map([
 export async function handleMemory(
   request: IncomingMessage, response: ServerResponse, url: URL, owner: string, store: MemoryStore, admission: ModelAdmission,
   documents?: readonly DocumentConnector[], answerMemory?: MemoryAnswer, draftMemory?: MemoryDraft, applicationWrites: readonly ConfiguredApplicationWrite[] = [],
+  completeWikiReminder?: (pageId: string, revisionId: string) => void,
 ): Promise<boolean> {
   const { pathname, searchParams } = url;
   const method = request.method;
@@ -139,9 +140,19 @@ export async function handleMemory(
     const title = requiredText(data.title, 'title', 160);
     const body = requiredText(data.body, 'body', 16_000);
     const references = wikiReferences(data.sources);
-    const id = store.saveWikiPage(owner, workspace, title, body, references);
+    const replaces = data.replaces === undefined ? undefined : requiredText(data.replaces, 'previous Wiki page', 36);
+    const id = store.saveWikiPage(owner, workspace, title, body, references, replaces);
     if (!id) throw new RequestError(409, 'A Wiki source changed or is no longer available');
+    if (replaces && replaces !== id) completeWikiReminder?.(replaces, id);
     reply(response, 201, { id });
+    return true;
+  }
+
+  const wikiRevision = /^\/v1\/wiki\/([a-f0-9-]{36})\/revision$/.exec(pathname);
+  if (wikiRevision && method === 'GET') {
+    const revision = store.wikiRevision(owner, wikiRevision[1]);
+    if (!revision) throw new RequestError(404, 'Wiki page unavailable');
+    reply(response, 200, revision);
     return true;
   }
 

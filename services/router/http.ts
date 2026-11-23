@@ -1,3 +1,4 @@
+import { compareGitSnapshots, deliverGitPatch, publishGitDelivery } from './application/git-delivery.ts';
 import { handleApplicationWrites } from './transport/app-write-routes.ts';
 import type { ConfiguredApplicationWrite } from '../../packages/apps/config.ts';
 import { jsonBody, jsonObject, reply } from './transport/json.ts';
@@ -355,6 +356,66 @@ export function routerServer(store: TaskStore, config: { owner: string; token: s
         reply(response, 200, attachment);
         return;
       }
+      const snapshotDiff = /^\/v1\/artifacts\/([a-f0-9-]{36})\/git-compare$/.exec(url.pathname);
+      if (request.method === 'POST' && snapshotDiff) {
+        if (!admin) throw new RequestError(403, 'Administrator required for Git comparison');
+        const data = await jsonObject(request);
+        const current = store.artifact(owner, snapshotDiff[1]);
+        const previous = store.artifact(owner, requiredText(data.base, 'base artifact', 36));
+        if (!current || !previous || current.taskId !== previous.taskId ||
+            current.name !== 'git-changes.json' || previous.name !== current.name || !canReadTask(current.taskId)) {
+          throw new RequestError(404, 'Comparable Git snapshots not found');
+        }
+        const patch = await compareGitSnapshots(requiredText(data.repository, 'local repository path', 4096),
+          previous.content, current.content);
+        if (!canReadTask(current.taskId)) throw new RequestError(404, 'Comparable Git snapshots not found');
+        reply(response, 200, { patch });
+        return;
+      }
+      const delivery = /^\/v1\/artifacts\/([a-f0-9-]{36})\/git-delivery(?:\/(push|pull-request))?$/.exec(url.pathname);
+      if (request.method === 'POST' && delivery) {
+        if (!admin) throw new RequestError(403, 'Administrator required for Git delivery');
+        const data = await jsonObject(request);
+        const artifactId = delivery[1];
+        const file = store.artifact(owner, artifactId);
+        if (!file || file.name !== 'git-changes.json' || file.mime || !canReadTask(file.taskId)) {
+          throw new RequestError(404, 'Git artifact not found');
+        }
+        const assertCurrent = () => {
+          const task = store.get(owner, file.taskId);
+          if (!canReadTask(file.taskId) || task?.status !== 'succeeded' || task.version !== file.version ||
+              data.expectedVersion !== task.version) {
+            throw new RequestError(409, 'The current task result must be accepted before delivery');
+          }
+        };
+        assertCurrent();
+        const repository = requiredText(data.repository, 'local repository path', 4096);
+        const branch = requiredText(data.branch, 'branch name', 240);
+        if (delivery[2]) {
+          const commit = requiredText(data.commit, 'commit', 64);
+          if (!store.hasGitDelivery(file.taskId, artifactId, Number(file.version), { branch, commit })) {
+            throw new RequestError(409, 'Create a local delivery for this artifact first');
+          }
+          const result = await publishGitDelivery({
+            repository, branch, commit, assertCurrent,
+            remote: requiredText(data.remote, 'remote', 240),
+            ...(delivery[2] === 'pull-request' && {
+              base: requiredText(data.base, 'base branch', 240),
+              title: requiredText(data.title, 'pull request title', 240),
+            }),
+            record: result => store.recordGitDelivery(file.taskId, artifactId, Number(file.version), result),
+          });
+          reply(response, 200, result);
+          return;
+        }
+        const result = await deliverGitPatch({
+          repository, branch,
+          artifactId, content: file.content, assertCurrent,
+          record: result => store.recordGitDelivery(file.taskId, artifactId, Number(file.version), result),
+        });
+        reply(response, 200, result);
+        return;
+      }
       const artifactPath = /^\/v1\/artifacts\/([a-f0-9-]{36})(\/image)?$/.exec(url.pathname);
       if (request.method === 'GET' && artifactPath) {
         const file = store.artifact(owner, artifactPath[1]);
@@ -433,7 +494,9 @@ export function routerServer(store: TaskStore, config: { owner: string; token: s
       if (request.method === 'GET' && url.pathname === '/v1/conversation') {
         if (!admin) throw new RequestError(403, 'Administrator required for conversation history');
         const workspace = requiredText(url.searchParams.get('workspace'), 'workspace', 128);
-        const turns = store.recentConversation(owner, workspace).map(({ text, decision }) => ({
+        const linked = url.searchParams.get('links') === '1';
+        const turns = store.recentConversation(owner, workspace, 'admin', linked).map(({ text, decision, id, taskId }) => ({
+          ...(linked && { id, ...(taskId && canReadTask(taskId) && { taskId }) }),
           text, reply: decision.kind === 'create_task' ? 'Task created.' : decision.text,
         }));
         reply(response, 200, { turns });
@@ -458,6 +521,12 @@ export function routerServer(store: TaskStore, config: { owner: string; token: s
         reply(response, result.status, result.body);
         return;
       }
+      const retryWorkers = /^\/v1\/tasks\/([a-f0-9-]{36})\/retry-workers$/.exec(url.pathname);
+      if (request.method === 'GET' && retryWorkers) {
+        if (!admin || !canReadTask(retryWorkers[1])) throw new RequestError(403, 'Worker reassignment is unavailable');
+        reply(response, 200, { workers: store.retryWorkers(owner, retryWorkers[1]) });
+        return;
+      }
       const taskCommand = /^\/v1\/tasks\/([a-f0-9-]+)\/commands$/.exec(url.pathname);
       if (request.method === 'POST' && (url.pathname === '/v1/events' || taskCommand)) {
         const key = requiredText(request.headers['idempotency-key'], 'Idempotency-Key', 128);
@@ -480,10 +549,12 @@ export function routerServer(store: TaskStore, config: { owner: string; token: s
         let command: Parameters<TaskStore['command']>[3];
         if (action === 'append') command = { action, text: requiredText(data.text, 'text', 32_000) };
         else if (action === 'cancel' || action === 'pause' || action === 'resume' || action === 'retry' || action === 'accept_result' || action === 'reject_result') command = { action };
-        else if (action === 'approve' || action === 'deny') {
+        else if (action === 'retry_on_worker' && admin) {
+          command = { action, deviceId: requiredText(data.deviceId, 'device ID', 36) };
+        } else if (action === 'approve' || action === 'deny') {
           command = { action, approvalId: requiredText(data.approvalId, 'approval ID', 36) };
         } else throw new RequestError(400, 'Invalid action');
-        if (['approve', 'accept_result', 'append', 'resume', 'retry'].includes(command.action)) {
+        if (['approve', 'accept_result', 'append', 'resume', 'retry', 'retry_on_worker'].includes(command.action)) {
           if (!workerMemoryAvailable(store, config.memory, owner, current.workspace, taskId)) {
             flushStopNotifications();
             throw new RequestError(409, 'Task memory access changed');
@@ -501,7 +572,8 @@ export function routerServer(store: TaskStore, config: { owner: string; token: s
         return;
       }
       if (config.memory && await handleMemory(request, response, url, owner, config.memory, admission,
-        config.documents, config.answerMemory, config.draftMemory, admin ? config.applicationWrites : undefined)) {
+        config.documents, config.answerMemory, config.draftMemory, admin ? config.applicationWrites : undefined,
+        (pageId, revisionId) => store.completeWikiReminder(owner, pageId, revisionId))) {
         if (request.method !== 'GET') flushStopNotifications();
         return;
       }

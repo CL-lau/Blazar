@@ -79,8 +79,12 @@ fn allowed(method: &Method, path: &str) -> bool {
             ["", "app-connections", id, "capabilities", "connection.health" | "document.test" | "document.read" | "document.import"
             | "document.refresh" | "document.search" | "document.discover"],
         ) => identifier(id),
+        ("GET", ["", "tasks", id, "retry-workers"]) => identifier(id),
+        ("POST", ["", "artifacts", id, "git-delivery" | "git-compare"])
+        | ("POST", ["", "artifacts", id, "git-delivery", "push" | "pull-request"]) => identifier(id),
         ("PATCH" | "DELETE", ["", "app-connections" | "memory", id]) => identifier(id),
         ("POST", ["", "wiki", "draft"]) => true,
+        ("GET", ["", "wiki", id, "revision"]) => identifier(id),
         ("PUT", ["", "wiki", id, "watch"]) => identifier(id),
         ("GET" | "POST", ["", "admin", "workflow-schedules"]) => true,
         ("DELETE", ["", "admin", "workflow-schedules", id]) => identifier(id),

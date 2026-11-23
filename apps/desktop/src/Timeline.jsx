@@ -5,6 +5,12 @@ const labels = {
   'task.created': 'Task created',
   'task.instruction_added': 'Instruction added',
   'task.cancel_requested': 'Cancellation requested',
+  'task.git_pushed': 'Branch pushed',
+  'task.git_pull_request': 'Pull request opened',
+  'task.worker_reassigned': 'Worker reassigned',
+  'wiki.review_completed': 'Wiki revision published',
+  'wiki.review_requested': 'Wiki source changed',
+  'task.git_delivered': 'Local commit created',
   'task.cancelled': 'Task cancelled',
   'run.started': 'Run started',
   'run.progress': 'Progress',
@@ -18,7 +24,7 @@ const labels = {
   'workflow.result_outdated': 'An upstream result changed',
 };
 
-export function Timeline({ taskId, token, cursor }) {
+export function Timeline({ taskId, token, cursor, reviewWiki }) {
   const [latest, setLatest] = useState(null);
   const [older, setOlder] = useState(null);
   const [error, setError] = useState('');
@@ -48,18 +54,28 @@ export function Timeline({ taskId, token, cursor }) {
     <section aria-label="Task activity">
       <h3>Activity</h3>
       {error && <p className="error" role="alert">{error}</p>}
-      <ul>{events.map(event => {
+      {!events.length && !error && <p className="muted" role="status">{latest ? 'No activity yet.' : 'Loading activity…'}</p>}
+      <ol className="activity-log">{events.map(event => {
         const { data } = event;
         const detail = data?.waitingReason === 'worker_question' ? data.result : data?.message ?? data?.text ?? data?.summary ?? data?.decision ?? data?.name ?? data?.status;
         return <li key={event.seq}>
-          <strong>{data?.waitingReason === 'worker_question' ? 'Worker asked a question' : labels[event.type] ?? event.type}</strong>
+          <div className="activity-event-heading">
+            <strong>{data?.waitingReason === 'worker_question' ? 'Worker asked a question' : labels[event.type] ?? event.type}</strong>
+            <small aria-label={'Event ' + event.seq}>#{event.seq}</small>
+          </div>
           {detail && <p>{detail}</p>}
+          {event.type.startsWith('task.git_') && <p><code>{data.branch}</code> · <code>{data.commit}</code>
+            {data.remote && <> · {data.remote}</>}{data.url && <> · {data.url}</>}
+          </p>}
+          {event.type === 'task.worker_reassigned' && <p><code>{data.deviceId}</code></p>}
+          {event.type === 'wiki.review_requested' && data.pageId && reviewWiki &&
+            <button type="button" onClick={() => reviewWiki(data.pageId)}>Review Wiki sources</button>}
           {data?.waitingReason === 'git_patch_inputs' && data.runId && <p>
             Inspect the retained Git checkout for run <code>{data.runId}</code>.
           </p>}
           {data?.copiedFromTask && <p>Copied goal from task <code>{data.copiedFromTask}</code></p>}
         </li>;
-      })}</ul>
+      })}</ol>
       {(older ? older.before : latest?.before) && <button disabled={loading} onClick={loadOlder}>Load older activity</button>}
     </section>
   );

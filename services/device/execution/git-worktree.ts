@@ -115,14 +115,15 @@ export async function gitRunWorktrees(workspace: string, stateDirectory: string,
       let patch: string | undefined;
       try {
         patch = await command('diff', '--no-ext-diff', '--no-textconv', '--no-color',
-          '--src-prefix=a/', '--dst-prefix=b/', '--patch', baseCommit, '--');
+          '--src-prefix=a/', '--dst-prefix=b/', '--patch', '--binary', baseCommit, '--');
         const untracked = (await command('ls-files', '--others', '--exclude-standard', '-z')).split('\0').filter(Boolean);
         for (const file of untracked) {
           signal.throwIfAborted();
           const path = join(checkout.root, file);
-          if (!(await lstat(path)).isFile()) continue;
+          const metadata = await lstat(path);
+          if (!metadata.isFile() && !metadata.isSymbolicLink()) continue;
           const addition = await command('diff', '--no-index', '--no-ext-diff', '--no-textconv', '--no-color',
-            '--src-prefix=a/', '--dst-prefix=b/', '--patch', '--', '/dev/null', file);
+            '--src-prefix=a/', '--dst-prefix=b/', '--patch', '--binary', '--', '/dev/null', file);
           patch = [patch, addition].filter(Boolean).join('\n');
           if (Buffer.byteLength(patch) > maxTextArtifactBytes) {
             patch = undefined;

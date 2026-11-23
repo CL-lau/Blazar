@@ -1,11 +1,21 @@
-import React, { useEffect, useState } from 'react';
+import { useDesktopLanguage } from './DesktopLanguage.jsx';
+import { DesktopIcon } from './DesktopIcon.jsx';
+import { PageHeading } from './PageHeading.jsx';
+import { LingerCredit } from './LingerCredit.jsx';
+import React, { useEffect, useRef, useState } from 'react';
+import { ApplicationCatalog, ApplicationMark } from './ApplicationCatalog.jsx';
 import { ApplicationWrite } from './ApplicationWrite.jsx';
 import { callRouter } from './router.js';
+import './applications.css';
 
-export function Knowledge({ token }) {
+export function Knowledge({ token, initialPanel = 'applications' }) {
+  const { t } = useDesktopLanguage();
   const [connections, setConnections] = useState([]);
   const [definitions, setDefinitions] = useState([]);
   const [appName, setAppName] = useState('');
+  const [panel, setPanel] = useState(initialPanel);
+  const [managedApp, setManagedApp] = useState(null);
+  const [loadState, setLoadState] = useState('loading');
   const [documentSync, setDocumentSync] = useState([]);
   const [results, setResults] = useState(null);
   const [searchQuery, setSearchQuery] = useState('');
@@ -24,6 +34,16 @@ export function Knowledge({ token }) {
   const [answer, setAnswer] = useState(null);
   const [usage, setUsage] = useState(null);
   const [history, setHistory] = useState(null);
+  const managementOrigin = useRef(null);
+  const managementHeading = useRef(null);
+
+  useEffect(() => {
+    if (managedApp !== null) managementHeading.current?.focus();
+    else if (managementOrigin.current?.isConnected) {
+      managementOrigin.current.focus();
+      managementOrigin.current = null;
+    }
+  }, [managedApp]);
 
   const request = (path, options) => callRouter(token, path, options);
 
@@ -46,14 +66,18 @@ export function Knowledge({ token }) {
     setDocumentMatches(null);
     setDiscovered(null);
     let current = true;
+    setLoadState('loading');
     callRouter(token, '/app-connections')
       .then(data => {
         if (!current) return;
         setConnections(data.connections);
         setDefinitions(data.definitions ?? []);
         setDocumentSync(data.documentSync ?? []);
+        setLoadState('ready');
       })
-      .catch(failure => { if (current) setError(failure.message); });
+      .catch(failure => {
+        if (current) { setError(failure.message); setLoadState('failed'); }
+      });
     return () => { current = false; };
   }, [token]);
 
@@ -64,13 +88,26 @@ export function Knowledge({ token }) {
   const documentAliases = discovery?.aliases ?? importSource?.documentAliases;
   const canDiscover = importSource?.capabilities?.some(capability =>
     capability.id === 'document.discover' && capability.state === 'configured');
-  const accountName = connection => `${connection.app} · ${connection.account}`;
+  const appLabel = id => definitions.find(app => app.id === id)?.label ?? id;
+  const accountName = connection => `${appLabel(connection.app)} · ${connection.account}`;
+  const managing = managedApp !== null;
+  const managedAccounts = connections.filter(connection => connection.app === managedApp);
+
+  function manageApp(id, origin) {
+    if (origin) managementOrigin.current = origin;
+    setManagedApp(id);
+    setAppName(id ?? '');
+    setUsage(null);
+    setError('');
+    setNotice('');
+  }
 
   async function refreshConnections() {
     const data = await request('/app-connections');
     setConnections(data.connections);
     setDefinitions(data.definitions ?? []);
     setDocumentSync(data.documentSync ?? []);
+    setLoadState('ready');
   }
 
   function saveAccount(event) {
@@ -80,8 +117,10 @@ export function Knowledge({ token }) {
     void perform(async () => {
       await request('/app-connections', { method: 'POST', body: { app, account, workspace: workspace.trim() || undefined } });
       form.reset();
-      setAppName('');
       await refreshConnections();
+      setManagedApp(app);
+      setAppName(app);
+      setNotice('Source account registered.');
     });
   }
 
@@ -151,30 +190,57 @@ export function Knowledge({ token }) {
   }
 
   return (
-    <section className="detail knowledge">
-      <h2>Apps and memory</h2>
-      {notice && <p role="status">{notice}</p>}
+    <section className="knowledge applications-page" aria-labelledby="applications-title">
+      <PageHeading id="applications-title" title="Applications"
+        description="Manage accounts, documents, and memory available to your workspaces."
+        actions={panel === 'applications' && <button className="primary" type="button" onClick={event => manageApp('', event.currentTarget)}>{t('Add account', '添加账号')}</button>} />
+      <nav className="apps-navigation" aria-label={t('Applications sections', '应用页面导航')}>
+        {[['applications', 'Connected apps'], ['documents', 'Documents'], ['memory', 'Memory']].map(([id, label]) =>
+          <button key={id} type="button" aria-current={panel === id ? 'page' : undefined}
+            onClick={() => { setPanel(id); setError(''); setNotice(''); }}>{t(label)}</button>)}
+      </nav>
+      {notice && <p className="apps-notice" role="status">{notice}</p>}
       {error && <p className="error" role="alert">{error}</p>}
-      <fieldset disabled={busy}>
-        <legend>Source accounts</legend>
-        <form onSubmit={saveAccount}>
-          <label>App<input name="app" required maxLength={128} list="blazar-app-definitions" value={appName}
-            onChange={event => setAppName(event.target.value)} /></label>
-          <datalist id="blazar-app-definitions">{definitions.map(app =>
-            <option key={app.id} value={app.id}>{app.label}</option>)}</datalist>
-          <label>Account<input name="account" required maxLength={256} list="blazar-app-accounts" /></label>
-          <datalist id="blazar-app-accounts">{definitions.find(app => app.id === appName)?.accounts.map(account =>
-            <option key={account} value={account} />)}</datalist>
-          <label>Limit to workspace<input name="workspace" maxLength={128} /></label>
-          <button>Register source account</button>
-        </form>
-        <ul>{connections.map(connection => (
+      <div className="apps-layout" data-managing={managing} hidden={panel !== 'applications'}>
+        <ApplicationCatalog definitions={definitions} connections={connections} selected={managedApp}
+          select={manageApp} loading={loadState === 'loading'} failed={loadState === 'failed'}
+          retry={() => perform(refreshConnections)} />
+        {managing && <section className="apps-management" aria-labelledby="app-management-heading"
+          onKeyDown={event => {
+            if (event.key !== 'Escape' || event.defaultPrevented) return;
+            event.preventDefault();
+            const help = event.target.closest('.apps-scope-help[open]');
+            if (help) help.open = false;
+            else manageApp(null);
+          }}>
+          <div className="apps-management-heading">
+            {managedApp && <ApplicationMark id={managedApp} label={appLabel(managedApp)} />}
+            <h2 id="app-management-heading" tabIndex={-1} ref={managementHeading}>{managedApp ? appLabel(managedApp) : t('Add source account', '添加来源账号')}</h2>
+            <button type="button" aria-label={t('Close account management', '关闭账号管理')} onClick={() => manageApp(null)}><DesktopIcon name="close" /></button>
+          </div>
+          {managedApp && <h3>Accounts <span>{managedAccounts.length}</span></h3>}
+          {managedApp && managedAccounts.length === 0 && <p className="apps-empty">{t('No accounts registered.', '暂无已登记的账号。')}</p>}
+          <ul className="apps-accounts">{managedAccounts.map(connection => (
           <li key={connection.id}>
-            <span>{accountName(connection)}{connection.workspace && ` · ${connection.workspace}`}</span>
-            {connection.capabilities?.length > 0 && <ul aria-label="Connection capabilities">
+            <details>
+            <summary>
+              <span className="apps-account-icon"><DesktopIcon name="account" /></span>
+              <span className="apps-account-name"><strong>{connection.account}</strong>
+                <small>{connection.workspace ?? t('All workspaces')}</small></span>
+              <span className="component-status" data-tone={connection.active ? 'connected' : 'neutral'}>
+                {connection.active ? t('Active', '有效') : t('Disconnected', '已断开')}
+              </span>
+              <DesktopIcon name="chevron" />
+            </summary>
+            <fieldset disabled={busy}>
+            {connection.capabilities?.length > 0 && <ul className="apps-capabilities" aria-label="Connection capabilities">
               {connection.capabilities.map(capability => <li key={capability.id}>
-                {capability.label} · {{ configured: 'Configured', configuration_required: 'Configuration required',
-                  disconnected: 'Disconnected' }[capability.state]}
+                <span>{capability.label}</span>
+                <span className="component-status" data-tone={{ configured: 'connected', configuration_required: 'attention' }[capability.state]}>
+                  {t({ configured: 'Configured', configuration_required: 'Setup required',
+                    disconnected: 'Disconnected' }[capability.state] ?? capability.state,
+                  { configured: '已配置', configuration_required: '待配置', disconnected: '已断开' }[capability.state])}
+                </span>
               </li>)}
             </ul>}
             {connection.lastDocumentTest && <small>
@@ -192,8 +258,8 @@ export function Knowledge({ token }) {
               {' · '}{new Date(connection.lastHealthCheck.started).toLocaleString()}
             </small>}
             {connection.active && <form onSubmit={event => changeWorkspace(event, connection)}>
-              <label>Limit to workspace<input name="workspace" defaultValue={connection.workspace ?? ''} maxLength={128} /></label>
-              <button>Save scope</button>
+              <label>{t('Limit to workspace', '限定工作区')}<input name="workspace" defaultValue={connection.workspace ?? ''} maxLength={128} /></label>
+              <button>{t('Save scope', '保存范围')}</button>
             </form>}
             {connection.active && connection.capabilities?.some(capability => capability.id === 'connection.health' &&
               capability.state === 'configured') && <form onSubmit={event => {
@@ -208,23 +274,61 @@ export function Knowledge({ token }) {
                   failed: 'Source could not be reached or returned an error.' }[status]);
               });
             }}>
-              {!connection.workspace && <label>Workspace<input name="workspace" required maxLength={128} /></label>}
-              <button>Check connection</button>
+              {!connection.workspace && <label>{t('Workspace', '工作区')}<input name="workspace" required maxLength={128} /></label>}
+              <button>{t('Check connection', '检查连接')}</button>
             </form>}
             {(connection.writeCapabilities?.length > 0 || connection.hasWriteHistory) &&
               <ApplicationWrite key={token} connection={connection} request={request} />}
-            {connection.active ? <button onClick={() => perform(async () => {
-              await request('/app-connections/' + connection.id, { method: 'DELETE' });
-              setResults(null);
-              if (selected === connection.id) setSelected('');
-              await refreshConnections();
-            })}>Disconnect</button> : <small>Disconnected</small>}
+            <div className="apps-account-actions">
+            {connection.active && <button className="apps-disconnect" type="button" onClick={() => {
+              if (!window.confirm('Disconnect this source account?')) return;
+              void perform(async () => {
+                await request('/app-connections/' + connection.id, { method: 'DELETE' });
+                setResults(null);
+                if (selected === connection.id) setSelected('');
+                await refreshConnections();
+                setNotice('Source account disconnected.');
+              });
+            }}>{t('Disconnect', '断开连接')}</button>}
             <button type="button" onClick={() => perform(async () => {
               const data = await request('/app-connections/' + connection.id + '/usage');
               setUsage({ id: connection.id, account: accountName(connection), items: data.usage });
-            })}>View usage</button>
+            })}>{t('View usage', '查看使用记录')}</button>
+            {connection.canImportDocument && <button type="button" onClick={() => {
+              setImportAccount(connection.id);
+              setDocumentMatches(null);
+              setDocumentPreview(null);
+              setDiscovered(null);
+              setPanel('documents');
+            }}>{t('Open documents', '打开文档')}</button>}
+            </div>
+            </fieldset>
+            </details>
           </li>
         ))}</ul>
+          <details className="apps-register" key={managedApp} open={!managedAccounts.length}>
+            <summary><DesktopIcon name="add" /> Register a source account <DesktopIcon name="chevron" /></summary>
+          <fieldset disabled={busy}>
+            <form key={managedApp} onSubmit={saveAccount}>
+              {managedApp ? <input type="hidden" name="app" value={managedApp} /> :
+                <label>{t('Application', '应用')}<input name="app" required maxLength={128} list="blazar-app-definitions" value={appName}
+                  onChange={event => setAppName(event.target.value)} /></label>}
+              <datalist id="blazar-app-definitions">{definitions.map(app =>
+                <option key={app.id} value={app.id}>{app.label}</option>)}</datalist>
+              <label>{t('Account', '账号')}<input name="account" required maxLength={256} list="blazar-app-accounts" /></label>
+              <datalist id="blazar-app-accounts">{[...new Set(definitions.find(app => app.id === appName)?.accounts ?? [])].map(account =>
+                <option key={account} value={account} />)}</datalist>
+              <div className="apps-scope-field">
+                <label>{t('Limit to workspace', '限定工作区')}<input name="workspace" maxLength={128} placeholder={t('All workspaces', '所有工作区')} /></label>
+                <details className="apps-scope-help">
+                  <summary aria-label={t('About workspace access', '关于工作区访问范围')}><DesktopIcon name="help" /></summary>
+                  <p>{t('Enter a workspace name to restrict this account to that workspace. Leave the field blank to allow all workspaces.', '填写工作区名称后，此账号仅在该工作区可用。留空可用于所有工作区。')}</p>
+                </details>
+              </div>
+              <button className="primary">{t('Register source account', '登记来源账号')}</button>
+            </form>
+          </fieldset>
+          </details>
         {usage && <section aria-label="Application connection usage">
           <h3>{usage.account}</h3>
           <p>Connection ID <code>{usage.id}</code></p>
@@ -237,11 +341,14 @@ export function Knowledge({ token }) {
             </li>
           ))}</ul>}
         </section>}
-      </fieldset>
+        </section>}
+      </div>
 
+      <div className="apps-tools" hidden={panel !== 'documents'}>
+      {!importSource && <p className="apps-empty">{t('Register an account with a configured document connector to use Documents.', '请先登记已配置文档连接器的账号。')}</p>}
       {importSource && (
         <fieldset disabled={busy}>
-          <legend>Documents</legend>
+          <legend>{t('Documents', '文档')}</legend>
           <form onChange={() => {
             setDocumentPreview(null);
             setRefreshConflicts([]);
@@ -286,7 +393,7 @@ export function Knowledge({ token }) {
                 <option key={item.id} value={item.id}>{accountName(item)}</option>
               ))}
             </select></label>
-            <label>Workspace<input name="workspace" key={importSource.id + (importSource.workspace ?? '')}
+            <label>{t('Workspace', '工作区')}<input name="workspace" key={importSource.id + (importSource.workspace ?? '')}
               defaultValue={importSource.workspace ?? ''} readOnly={Boolean(importSource.workspace)}
               onChange={() => setDiscovered(null)} required maxLength={128} /></label>
             {canDiscover && <button type="button" onClick={event => {
@@ -305,11 +412,11 @@ export function Knowledge({ token }) {
               {!discovery.complete && ' The server listing was only partially checked.'}
               {' '}<button type="button" onClick={() => setDiscovered(null)}>Show configured documents</button>
             </p>}
-            {documentAliases ? <label>Document<select name="document" key={importSource.id + (discovery ? '-discovered' : '')} required>
+            {documentAliases ? <label>{t('Document', '文档')}<select name="document" key={importSource.id + (discovery ? '-discovered' : '')} required>
               <option value="">Choose a document</option>
               {documentAliases.map(alias => <option key={alias} value={alias}>{alias}</option>)}
             </select></label> : <label>Document ID or repository path<input name="document" required maxLength={128} /></label>}
-            <button>Import into memory</button>
+            <button>{t('Import into memory', '导入记忆')}</button>
             <button type="submit" value="preview">Preview document</button>
             <button type="submit" value="test">Test document access</button>
             <button type="button" onClick={event => {
@@ -422,35 +529,37 @@ export function Knowledge({ token }) {
           ))}
         </fieldset>
       )}
+      </div>
 
+      <div className="apps-tools" hidden={panel !== 'memory'}>
       <fieldset disabled={busy}>
-        <legend>Save memory</legend>
+        <legend>{t('Save memory', '保存记忆')}</legend>
         <form onSubmit={saveMemory}>
-          <label>Workspace<input name="workspace" required maxLength={128} /></label>
-          <label>Memory<textarea name="body" required maxLength={16000} /></label>
-          <label>Source<select value={selected} onChange={event => setSelected(event.target.value)}>
-            <option value="">Personal note</option>
+          <label>{t('Workspace', '工作区')}<input name="workspace" required maxLength={128} /></label>
+          <label>{t('Memory', '记忆')}<textarea name="body" required maxLength={16000} /></label>
+          <label>{t('Source', '来源')}<select value={selected} onChange={event => setSelected(event.target.value)}>
+            <option value="">{t('Personal note', '个人笔记')}</option>
             {active.map(connection => <option key={connection.id} value={connection.id}>{accountName(connection)}</option>)}
           </select></label>
           {selected && <>
-            <label>Resource ID<input name="resource" required maxLength={512} /></label>
-            <label>Revision<input name="revision" required maxLength={256} /></label>
+            <label>{t('Resource ID', '资源 ID')}<input name="resource" required maxLength={512} /></label>
+            <label>{t('Revision', '版本')}<input name="revision" required maxLength={256} /></label>
           </>}
           <label>Expires at <input type="datetime-local" name="expires" /></label>
-          <button>Save memory</button>
+          <button>{t('Save memory', '保存记忆')}</button>
         </form>
       </fieldset>
 
       <fieldset disabled={busy}>
-        <legend>Search memory</legend>
+        <legend>{t('Search memory', '搜索记忆')}</legend>
         <form onSubmit={search}>
-          <label>Workspace<input name="workspace" required maxLength={128} /></label>
+          <label>{t('Workspace', '工作区')}<input name="workspace" required maxLength={128} /></label>
           <label>Search terms<input name="q" required maxLength={256} /></label>
           <label>Source accounts<select name="source" multiple disabled={!active.length}>
             {active.map(connection => <option key={connection.id} value={connection.id}>{accountName(connection)}</option>)}
           </select></label>
           <label>Question for Blazar<textarea name="question" maxLength={4000} /></label>
-          <button>Search memory</button>
+          <button>{t('Search memory', '搜索记忆')}</button>
           <button type="submit" value="disabled">Find disabled memory</button>
           <button type="submit" value="ask">Ask Blazar with selected sources</button>
           <small>Asking Blazar sends matching excerpts to the configured model.</small>
@@ -547,6 +656,8 @@ export function Knowledge({ token }) {
           </li>;
         })}</ul>}
       </fieldset>
+      </div>
+      <LingerCredit />
     </section>
   );
 }

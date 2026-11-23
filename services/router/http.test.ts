@@ -669,7 +669,12 @@ test('Router authenticates, deduplicates commands and replays task changes over 
   assert.equal(decisions, 1);
   const followUp = await post('/v1/conversation', 'follow-up', { workspace: 'demo', text: 'The design project' });
   assert.equal(followUp.status, 202);
-  assert.equal((await followUp.json()).task.goal, 'Help with the design project');
+  const linkedTask = (await followUp.json()).task;
+  assert.equal(linkedTask.goal, 'Help with the design project');
+  const linkedHistory = await (await fetch(historyPath + 'demo&links=1', { headers })).json();
+  assert.deepEqual(linkedHistory.turns.at(-1), {
+    id: 'follow-up', text: 'The design project', reply: 'Task created.', taskId: linkedTask.id,
+  });
   assert.equal(store.recentConversation('another-owner', 'demo').length, 0);
   assert.equal(store.recentConversation('test', 'another-workspace').length, 0);
   const routed = await post('/v1/conversation', 'route', { workspace: 'demo', text: 'Draft a reply' });
@@ -1259,4 +1264,17 @@ test('Wiki drafts and published pages preserve source access and require an admi
   assert.equal(tasks[0].status, 'waiting_user');
   assert.equal(store.claim('owner', 'project', 'worker', Date.now(), 45_000), undefined);
   assert.doesNotMatch(JSON.stringify(store.timeline('owner', tasks[0].id)), /style\.md|cobalt|Banner/);
+  const revisionPath = origin + '/v1/wiki/' + id + '/revision';
+  const adminHeaders = { Authorization: 'Bearer admin-secret' };
+  assert.equal((await fetch(revisionPath, { headers: { Authorization: 'Bearer ' + phone.token } })).status, 403);
+  const revision = await (await fetch(revisionPath, { headers: adminHeaders })).json();
+  assert.deepEqual(revision, { id, workspace: 'project', title: '', sources: [{ state: 'unavailable' }] });
+  const replacement = memory.remember('owner', 'project', 'Choose green.', {
+    connection, resource: 'updated-style.md', revision: 'commit-b',
+  });
+  const revised = await post('/v1/wiki', { ...input, body: '# Banner\nUse green.', replaces: id,
+    sources: [{ id: replacement, version: 1 }] });
+  assert.equal(revised.status, 201);
+  assert.equal(store.get('owner', tasks[0].id)?.status, 'succeeded');
+  assert.equal((await (await list()).json()).pages[0].watched, true);
 });
