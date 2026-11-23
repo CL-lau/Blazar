@@ -2,8 +2,11 @@ import { createInterface } from 'node:readline';
 import { spawnWorker, type WorkerCommand } from './process.ts';
 import { jobPrompt, type JobContext, type OnSteerReady } from './prompt.ts';
 
+export class CodexSessionRestoreError extends Error {}
+
 export async function runCodex(worker: WorkerCommand, root: string, job: JobContext, signal: AbortSignal,
-                               onSteerReady?: OnSteerReady) {
+                               onSteerReady?: OnSteerReady,
+                               session?: { resumeId?: string; onCompleted: (id: string) => void }) {
   const active = AbortSignal.any([signal, AbortSignal.timeout(10 * 60_000)]);
   active.throwIfAborted();
   const { child, closed, stop } = spawnWorker(worker, root);
@@ -12,6 +15,7 @@ export async function runCodex(worker: WorkerCommand, root: string, job: JobCont
   let nextId = 0;
   let threadId: string | undefined;
   let turnId: string | undefined;
+  let attemptedSteer = false;
   let clearSteer: (() => void) | undefined;
   const turns = new Map<string, { text: string; status?: string }>();
   const pending = new Map<number, (value: any) => void>();
@@ -36,7 +40,10 @@ export async function runCodex(worker: WorkerCommand, root: string, job: JobCont
     send({ method, id, params });
     try {
       const packet = await Promise.race([response, interrupted]);
-      if (packet.error || !packet.result) throw new Error('Codex rejected ' + method);
+      if (packet.error || !packet.result) {
+        if (method === 'thread/resume') throw new CodexSessionRestoreError('Codex rejected the saved thread');
+        throw new Error('Codex rejected ' + method);
+      }
       return packet.result;
     } finally {
       pending.delete(id);
@@ -79,13 +86,19 @@ export async function runCodex(worker: WorkerCommand, root: string, job: JobCont
   try {
     await request('initialize', { clientInfo: { name: 'blazar', title: 'Blazar', version: '0.1.0' } });
     send({ method: 'initialized' });
-    const started = await request('thread/start', {
+    const settings = {
       cwd: root, sandbox: job.writableWorktreeRequired ? 'workspace-write' : 'read-only',
-      approvalPolicy: 'never', ephemeral: true,
+      approvalPolicy: 'never',
       ...(job.writableWorktreeRequired && { config: { sandbox_workspace_write: {
         writable_roots: [], network_access: false, exclude_tmpdir_env_var: true, exclude_slash_tmp: true,
       } } }),
-    });
+    };
+    const started = session?.resumeId
+      ? await request('thread/resume', { ...settings, threadId: session.resumeId })
+      : await request('thread/start', { ...settings, ephemeral: !session });
+    if (session?.resumeId && (started.cwd !== root || started.thread?.id !== session.resumeId)) {
+      throw new Error('Codex did not confirm the saved session and workspace');
+    }
     if (job.writableWorktreeRequired) {
       const sandbox = started.sandbox;
       if (started.cwd !== root || started.approvalPolicy !== 'never' || sandbox?.type !== 'workspaceWrite' ||
@@ -100,7 +113,8 @@ export async function runCodex(worker: WorkerCommand, root: string, job: JobCont
       throw new Error('Codex did not confirm that tool network access is disabled');
     }
     if (typeof started.thread?.id !== 'string') throw new Error('Codex returned no thread ID');
-    threadId = started.thread.id;
+    const currentThread: string = started.thread.id;
+    threadId = currentThread;
     const turn = await request('turn/start', {
       threadId,
       input: [{ type: 'text', text: jobPrompt(job), text_elements: [] }],
@@ -110,6 +124,7 @@ export async function runCodex(worker: WorkerCommand, root: string, job: JobCont
     turnId = currentTurn;
     clearSteer = onSteerReady?.(async (text, messageId) => {
       if (active.aborted || turns.get(currentTurn)?.status !== undefined || !text.trim()) return false;
+      attemptedSteer = true;
       try {
         const result = await request('turn/steer', {
           threadId, expectedTurnId: currentTurn, clientUserMessageId: messageId,
@@ -126,6 +141,8 @@ export async function runCodex(worker: WorkerCommand, root: string, job: JobCont
     if (output?.status !== 'completed' || !output.text.trim()) {
       throw new Error('Codex did not return a completed response');
     }
+    // The Router acknowledges live instructions separately from the initial prompt snapshot.
+    if (!attemptedSteer) session?.onCompleted(currentThread);
     return output.text.toWellFormed();
   } finally {
     clearSteer?.();

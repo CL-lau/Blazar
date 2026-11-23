@@ -6,6 +6,17 @@ export function initializeMemorySchema(db: DatabaseSync): boolean {
     PRAGMA journal_mode=WAL;
     PRAGMA foreign_keys=ON;
     PRAGMA busy_timeout=5000;
+    CREATE TABLE IF NOT EXISTS wiki_page (
+      id TEXT PRIMARY KEY, owner TEXT NOT NULL, workspace TEXT NOT NULL,
+      title TEXT NOT NULL, body TEXT NOT NULL, evidence TEXT NOT NULL, created INTEGER NOT NULL,
+      UNIQUE(owner,workspace,title,body,evidence)
+    );
+    CREATE INDEX IF NOT EXISTS wiki_page_recent ON wiki_page(owner,workspace,created DESC);
+    CREATE TABLE IF NOT EXISTS wiki_watch (
+      page_id TEXT PRIMARY KEY REFERENCES wiki_page(id) ON DELETE CASCADE,
+      next_check INTEGER NOT NULL, notified INTEGER NOT NULL DEFAULT 0
+    );
+    CREATE INDEX IF NOT EXISTS wiki_watch_due ON wiki_watch(next_check) WHERE notified=0;
     CREATE TABLE IF NOT EXISTS app_connection (
       id TEXT PRIMARY KEY, owner TEXT NOT NULL, app TEXT NOT NULL,
       account TEXT NOT NULL, active INTEGER NOT NULL DEFAULT 1, workspace TEXT, scope_version INTEGER NOT NULL DEFAULT 1

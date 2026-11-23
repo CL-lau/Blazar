@@ -112,11 +112,24 @@ export class TaskReadRepository {
   }
 
   findRouterTasks(owner: string, workspace: string, query: string, includeAppEvidence = false) {
-    return this.db.prepare(`SELECT id,substr(goal,1,320) AS goal,status,version FROM task WHERE owner=? AND workspace=?
+    return this.db.prepare(`SELECT id,substr(goal,1,320) AS goal,status,version,
+      (SELECT workflow_id FROM workflow_step WHERE task_id=task.id) AS workflow_id,
+      (SELECT step_key FROM workflow_step WHERE task_id=task.id) AS step_key,
+      (SELECT json_group_array(protocol ORDER BY protocol) FROM task_worker_protocol WHERE task_id=task.id) AS protocols
+      FROM task WHERE owner=? AND workspace=?
       AND (?='' OR id=? OR instr(lower(goal),lower(?))>0)
       AND (? OR NOT EXISTS(SELECT 1 FROM task_app_evidence e WHERE e.task_id=task.id))
       ORDER BY rowid DESC LIMIT 8`).all(owner, workspace, query, query, query, Number(includeAppEvidence))
-      .map(row => ({ id: String(row.id), goal: String(row.goal).toWellFormed(), status: String(row.status), version: Number(row.version) }));
+      .map(row => {
+        const workerProtocols = JSON.parse(String(row.protocols)) as string[];
+        return {
+          id: String(row.id), goal: String(row.goal).toWellFormed(),
+          status: String(row.status), version: Number(row.version),
+          ...(typeof row.workflow_id === 'string' && typeof row.step_key === 'string' &&
+            { workflowId: row.workflow_id, stepKey: row.step_key }),
+          ...(workerProtocols.length && { workerProtocols }),
+        };
+      });
   }
 
   recentConversation(owner: string, workspace: string, caller = 'admin'): ConversationTurn[] {

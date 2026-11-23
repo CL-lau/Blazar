@@ -77,6 +77,13 @@ export function initializeTaskSchema(db: DatabaseSync, runLimitMs: number) {
       id TEXT PRIMARY KEY, owner TEXT NOT NULL, request_key TEXT NOT NULL,
       fingerprint TEXT NOT NULL, UNIQUE(owner,request_key)
     );
+    CREATE TABLE IF NOT EXISTS workflow_schedule (
+      id TEXT PRIMARY KEY, owner TEXT NOT NULL, workspace TEXT NOT NULL,
+      label TEXT NOT NULL, steps TEXT NOT NULL, interval_ms INTEGER,
+      next_at INTEGER, last_workflow_id TEXT REFERENCES workflow(id), enabled INTEGER NOT NULL DEFAULT 1,
+      request_key TEXT NOT NULL, fingerprint TEXT NOT NULL, UNIQUE(owner,request_key)
+    );
+    CREATE INDEX IF NOT EXISTS workflow_schedule_due ON workflow_schedule(next_at) WHERE enabled=1;
     CREATE TABLE IF NOT EXISTS workflow_source (
       workflow_id TEXT NOT NULL REFERENCES workflow(id) ON DELETE CASCADE,
       task_id TEXT NOT NULL, version INTEGER NOT NULL, PRIMARY KEY(workflow_id,task_id)
@@ -203,6 +210,9 @@ export function initializeTaskSchema(db: DatabaseSync, runLimitMs: number) {
     );
     CREATE TABLE IF NOT EXISTS task_app_evidence (
       task_id TEXT PRIMARY KEY REFERENCES task(id), refs TEXT NOT NULL
+    );
+    CREATE TABLE IF NOT EXISTS task_worker_device (
+      task_id TEXT PRIMARY KEY REFERENCES task(id), device_id TEXT NOT NULL REFERENCES device(id)
     );
     CREATE TABLE IF NOT EXISTS task_desktop_device (
       task_id TEXT PRIMARY KEY REFERENCES task(id), device_id TEXT NOT NULL REFERENCES device(id)

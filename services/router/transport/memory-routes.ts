@@ -7,7 +7,7 @@ import type { ModelAdmission } from '../application/model-admission.ts';
 import { answerFromMemory } from '../application/memory-answer.ts';
 import { requestMemoryDraft } from '../application/memory-draft.ts';
 import type { MemoryAnswer, MemoryDraft } from '../harness.ts';
-import type { MemoryStore, ResourceRef } from '../memory.ts';
+import type { MemoryStore, MemoryReference, ResourceRef } from '../memory.ts';
 import { RequestError, requiredText } from '../protocol/request.ts';
 import { jsonObject, reply } from './json.ts';
 
@@ -126,6 +126,69 @@ export async function handleMemory(
     return true;
   }
 
+  if (pathname === '/v1/wiki' && method === 'GET') {
+    const workspace = requiredText(searchParams.get('workspace'), 'workspace', 128);
+    const query = searchParams.has('q') ? requiredText(searchParams.get('q'), 'query', 256) : '';
+    reply(response, 200, { pages: store.wikiPages(owner, workspace, query) });
+    return true;
+  }
+
+  if (pathname === '/v1/wiki' && method === 'POST') {
+    const data = await jsonObject(request);
+    const workspace = requiredText(data.workspace, 'workspace', 128);
+    const title = requiredText(data.title, 'title', 160);
+    const body = requiredText(data.body, 'body', 16_000);
+    const references = wikiReferences(data.sources);
+    const id = store.saveWikiPage(owner, workspace, title, body, references);
+    if (!id) throw new RequestError(409, 'A Wiki source changed or is no longer available');
+    reply(response, 201, { id });
+    return true;
+  }
+
+  const wikiWatch = /^\/v1\/wiki\/([a-f0-9-]{36})\/watch$/.exec(pathname);
+  if (wikiWatch && method === 'PUT') {
+    const { enabled } = await jsonObject(request);
+    if (typeof enabled !== 'boolean') throw new RequestError(400, 'Invalid Wiki watch setting');
+    if (!store.watchWikiPage(owner, wikiWatch[1], enabled)) throw new RequestError(404, 'Wiki page unavailable');
+    reply(response, 200, { enabled });
+    return true;
+  }
+
+  if (pathname === '/v1/wiki/draft' && method === 'POST') {
+    if (!answerMemory) throw new RequestError(503, 'Blazar has no Router model configured');
+    const data = await jsonObject(request);
+    const workspace = requiredText(data.workspace, 'workspace', 128);
+    const title = requiredText(data.title, 'title', 160);
+    const references = wikiReferences(data.sources);
+    await replyWhileConnected(response, async signal => {
+      const evidence = store.resolveAppEvidence(owner, workspace, references);
+      if (!evidence) throw new RequestError(409, 'A Wiki source changed or is no longer available');
+      const checkSources = () => {
+        signal.throwIfAborted();
+        const current = store.resolveAppEvidence(owner, workspace, references);
+        if (!current || current.some((item, index) => item.scopeVersion !== evidence[index].scopeVersion)) {
+          throw new RequestError(409, 'A Wiki source changed while drafting');
+        }
+      };
+      const release = await reserve(signal);
+      let body: string;
+      try {
+        checkSources();
+        body = (await answerMemory(`Write a concise Markdown Wiki page about this title: ${title}`,
+          evidence, AbortSignal.any([signal, AbortSignal.timeout(30_000)]))).trim();
+        if (!body || body.length > 8_000) throw new Error('Invalid Wiki draft');
+      } catch {
+        checkSources();
+        throw new RequestError(503, 'Blazar could not draft the Wiki page. Please retry.');
+      } finally {
+        release();
+      }
+      checkSources();
+      return { body };
+    });
+    return true;
+  }
+
   if (pathname === '/v1/memory/draft' && method === 'POST') {
     if (!draftMemory) throw new RequestError(503, 'Blazar has no Router model configured');
     const data = await jsonObject(request);
@@ -232,6 +295,16 @@ export async function handleMemory(
   return false;
 }
 
+
+function wikiReferences(value: unknown): MemoryReference[] {
+  if (!Array.isArray(value) || !value.length || value.length > 6 ||
+      value.some(ref => !ref || typeof ref.id !== 'string' || !/^[a-f0-9-]{36}$/.test(ref.id) ||
+        !Number.isSafeInteger(ref.version) || ref.version < 1) ||
+      new Set(value.map(ref => ref.id)).size !== value.length) {
+    throw new RequestError(400, 'Choose between one and six distinct versioned Wiki sources');
+  }
+  return value.map(({ id, version }) => ({ id, version }));
+}
 
 async function replyWhileConnected(response: ServerResponse, operation: (signal: AbortSignal) => Promise<unknown>) {
   const controller = new AbortController();

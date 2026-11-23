@@ -14,7 +14,7 @@ import { executeDesktopAction } from './execution/desktop.ts';
 import { applyGitPatchInputs, GitPatchInputError, type gitRunWorktrees } from './execution/git-worktree.ts';
 import { completeInputArtifacts } from './execution/input-artifacts.ts';
 import { WorkerQuestion } from '../../packages/workers/custom-jsonl.ts';
-import { executeWorker } from './execution/worker.ts';
+import { workerSessionKey, executeWorker } from './execution/worker.ts';
 
 type Assignment = { desktopText?: { field: string; value: string }; clickExpectedText?: string; observationExpectedText?: string; observationWaitSeconds?: number; fullInputRequired?: boolean; readOnlyRequired?: boolean; offlineToolsRequired?: boolean; writableWorktreeRequired?: boolean; gitPatchInputsRequired?: boolean; run: Run; task: Task; instructions: string[]; predecessors: PredecessorInput[]; runHistory?: RunHistoryEntry[]; previousQuestion?: string; expectedArtifact?: string; acceptanceCriteria?: string[]; memoryInputs?: TaskMemoryInput[]; attachments?: TaskAttachment[] };
 
@@ -55,12 +55,12 @@ export class DeviceClient {
       const capabilities: WorkerCapability[] = [];
       if (worktrees) capabilities.push('git-worktree');
       if (worktrees?.applyInputs) capabilities.push('git-patch-inputs');
-      if (protocol === 'codex') {
+      if (protocol === 'codex' || protocol === 'codex-cli') {
         capabilities.push('read-only', 'offline-tools');
         if (worktrees?.allowCodexWrite) capabilities.push('writable-worktree');
       }
       if (protocol === 'codex' || protocol === 'pi') capabilities.push('steer');
-      if (worker.protocol === 'jsonl' && worker.includeFullInputArtifacts) capabilities.push('full-input-artifacts');
+      if (protocol === 'claude-cli' || (worker.protocol === 'jsonl' && worker.includeFullInputArtifacts)) capabilities.push('full-input-artifacts');
       this.workerConfiguration = { label: worker.label, protocol, adapterVersion, revision,
         ...(capabilities.length && { capabilities }) };
     }
@@ -188,11 +188,13 @@ export class DeviceClient {
       let outcome: RunOutcome;
       let checkpoint: SessionCheckpoint | undefined;
       try {
-        if ((assignment.readOnlyRequired || assignment.offlineToolsRequired) && this.worker?.protocol !== 'codex') {
+        const protocol = this.worker?.protocol;
+        const codexSandbox = protocol === 'codex' || protocol === 'codex-cli';
+        if ((assignment.readOnlyRequired || assignment.offlineToolsRequired) && !codexSandbox) {
           throw new Error('This device cannot enforce the required Worker sandbox');
         }
         if (assignment.writableWorktreeRequired &&
-            (assignment.readOnlyRequired || this.worker?.protocol !== 'codex' || !this.worktrees?.allowCodexWrite)) {
+            (assignment.readOnlyRequired || !codexSandbox || !this.worktrees?.allowCodexWrite)) {
           throw new Error('This device cannot enforce the required worktree write sandbox');
         }
         if (assignment.gitPatchInputsRequired && (!this.worker || !this.worktrees?.applyInputs)) {
@@ -206,7 +208,26 @@ export class DeviceClient {
               return () => this.consumeApproval(prefix, decision.id, signal);
             }, assignment.clickExpectedText ?? assignment.observationExpectedText, assignment.observationWaitSeconds, assignment.desktopText);
         } else if (this.worker) {
-          const root = this.worktrees ? await this.worktrees.prepare(assignment.run.id, active) : this.root;
+          const job = {
+            goal: assignment.task.goal, instructions: assignment.instructions, predecessors: assignment.predecessors,
+            offlineToolsRequired: assignment.offlineToolsRequired, writableWorktreeRequired: assignment.writableWorktreeRequired,
+            runHistory: assignment.runHistory, previousQuestion: assignment.previousQuestion, expectedArtifact: assignment.expectedArtifact,
+            acceptanceCriteria: assignment.acceptanceCriteria, memoryInputs: assignment.memoryInputs, attachments: assignment.attachments,
+          };
+          const identity = { scope: this.scope, workspaceIdentity: this.workspaceIdentity, revision: this.workerConfiguration?.revision };
+          const resumable = protocol === 'codex' || protocol === 'codex-cli' || protocol === 'claude-cli';
+          const key = resumable && !job.memoryInputs?.length && !assignment.gitPatchInputsRequired
+            ? workerSessionKey(identity, assignment.task.id, job, protocol) : undefined;
+          let previous = key ? this.ledger.takeSession(key, job.instructions.length) : undefined;
+          let root = this.root;
+          if (this.worktrees) {
+            const last = assignment.runHistory?.at(-1);
+            const continued = previous?.runId && last?.runId === previous.runId &&
+              (last.outcome === 'succeeded' || last.outcome === 'review_required')
+              ? await this.worktrees.continueCheckout(assignment.run.id, previous.runId, active) : undefined;
+            if (!continued) previous = undefined;
+            root = continued ?? await this.worktrees.prepare(assignment.run.id, active);
+          }
           active.throwIfAborted();
           if (assignment.gitPatchInputsRequired) {
             await completeInputArtifacts((path, body, signal) => this.post(path, body, signal),
@@ -214,18 +235,13 @@ export class DeviceClient {
             await applyGitPatchInputs(root, assignment.predecessors, active);
           }
           const { result, artifact: workerArtifact, checkpoint: session } = await executeWorker({
-            root, scope: this.scope, workspaceIdentity: this.worktrees ? root : this.workspaceIdentity,
-            revision: this.workerConfiguration?.revision, ledger: this.ledger,
+            ...identity, root, workspaceIdentity: this.worktrees ? root : identity.workspaceIdentity,
+            ledger: this.ledger, workerSession: key ? { key, previous } : undefined,
             post: (path, data, signal) => this.post(path, data, signal),
             approve: (path, summary, signal) => this.approve(path, summary, signal),
             consumeApproval: (path, id, signal) => this.consumeApproval(path, id, signal),
-          }, this.worker, prefix, assignment.task.id, {
-            goal: assignment.task.goal, instructions: assignment.instructions, predecessors: assignment.predecessors,
-            offlineToolsRequired: assignment.offlineToolsRequired, writableWorktreeRequired: assignment.writableWorktreeRequired,
-            runHistory: assignment.runHistory, previousQuestion: assignment.previousQuestion, expectedArtifact: assignment.expectedArtifact,
-            acceptanceCriteria: assignment.acceptanceCriteria, memoryInputs: assignment.memoryInputs, attachments: assignment.attachments,
-          }, stop, active, assignment.fullInputRequired);
-          checkpoint = this.worktrees ? undefined : session;
+          }, this.worker, prefix, assignment.task.id, job, stop, active, assignment.fullInputRequired);
+          checkpoint = this.worktrees && !resumable ? undefined : session;
           let artifact = workerArtifact ?? (assignment.expectedArtifact ? undefined : { name: 'worker-result.txt', text: result });
           if (this.worktrees) {
             try {

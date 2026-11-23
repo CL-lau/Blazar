@@ -93,6 +93,7 @@ test('isolated Worker runs keep their changes in independent retained worktrees'
   assert.deepEqual(JSON.parse(report.text), {
     version: 1, baseCommit: initial.head, head: changed.head, commits: [changed.head],
     trackedFiles: ['M\tnotes.txt'], changes: ['?? untracked.txt'],
+    fileStats: [{ path: 'notes.txt', additions: 1, deletions: 1 }],
   });
   await assert.rejects(prepare(firstId), /Unable to prepare the run Git worktree/);
 
@@ -122,7 +123,7 @@ test('isolated Worker runs keep their changes in independent retained worktrees'
     store.close();
   };
   store.createWorkflow('owner', 'git-handoff', 'project', [
-    { key: 'a', goal: 'Parallel A', needs: [], workerCapability: 'git-worktree', outputArtifact: 'report.md', workerProtocols: ['jsonl'] },
+    { key: 'a', goal: 'Parallel A', needs: [], requireReview: true, workerCapability: 'git-worktree', outputArtifact: 'report.md', workerProtocols: ['jsonl'] },
     { key: 'b', goal: 'Parallel B', needs: [], workerCapability: 'git-worktree', outputArtifact: 'report.md', workerProtocols: ['jsonl'] },
     { key: 'review', goal: 'Review changes', needs: ['a', 'b'] },
     { key: 'apply', goal: 'Read patched A', needs: ['a'], workerCapability: 'git-patch-inputs' },
@@ -132,6 +133,10 @@ test('isolated Worker runs keep their changes in independent retained worktrees'
     { key: 'blocked', goal: 'Read merged changes', needs: ['conflict'] },
   ]);
   assert.deepEqual(await Promise.all(clients.map(client => client.runOnce(AbortSignal.timeout(5_000)))), [true, true]);
+  const pendingReview = store.snapshot('owner').tasks.find(task => task.goal === 'Parallel A')!;
+  assert.equal(pendingReview.status, 'waiting_review');
+  assert.equal(store.claim('owner', 'project', 'reviewer', Date.now(), 45_000), undefined);
+  assert.equal(store.command('owner', pendingReview.id, pendingReview.version, { action: 'accept_result' })?.status, 'succeeded');
   const receiver = store.claim('owner', 'project', 'reviewer', Date.now(), 45_000)!;
   assert.equal(receiver.task.goal, 'Review changes');
   assert.deepEqual(receiver.predecessors.map(input => input.result), ['Parallel A', 'Parallel B']);

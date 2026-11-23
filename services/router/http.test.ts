@@ -629,8 +629,8 @@ test('Router authenticates, deduplicates commands and replays task changes over 
   const catalog = await (await fetch(url + '/v1/admin/workers', { headers })).json();
   assert.deepEqual(catalog.extensionProtocols, ['acp', 'jsonl']);
   assert.deepEqual(catalog.presets.map(item => item.id).sort(), [
-    'aider', 'amp', 'antigravity', 'auggie', 'claude', 'cline', 'codex', 'copilot', 'cursor',
-    'deepseek', 'droid', 'gemini', 'goose', 'kimi', 'kiro', 'opencode', 'pi', 'qwen',
+    'aider', 'amp', 'antigravity', 'auggie', 'claude', 'claude-cli', 'cline', 'codex', 'codex-cli', 'copilot', 'cursor',
+    'deepseek', 'droid', 'gemini', 'goose', 'kimi', 'kiro', 'omp', 'opencode', 'pi', 'qwen',
   ]);
   assert.deepEqual(catalog.presets.find(item => item.id === 'deepseek'), {
     id: 'deepseek', label: 'DeepSeek Harness', protocol: 'acp',
@@ -1172,4 +1172,78 @@ test('memory answers, drafts, and desktop conversation routing share model admis
   assert.equal(admitted.status, 200);
   await admitted.arrayBuffer();
   assert.deepEqual(await (await draft()).json(), { body: 'Use one finding per line.' });
+});
+
+test('Wiki drafts and published pages preserve source access and require an admin', async t => {
+  const store = new TaskStore(':memory:');
+  const memory = new MemoryStore(':memory:');
+  const connection = memory.connect('owner', 'github', 'repository', 'project');
+  const source = memory.remember('owner', 'project', 'Choose cobalt for the banner.', {
+    connection, resource: 'style.md', revision: 'commit-a',
+  });
+  const phone = store.redeemPairing(store.createPairing('owner', Date.now()).code, 'Phone', Date.now())!;
+  let revokeDuringDraft = false;
+  const server = routerServer(store, {
+    owner: 'owner', token: 'admin-secret', memory,
+    async answerMemory(_question, evidence) {
+      assert.equal(evidence[0].resource, 'style.md');
+      if (revokeDuringDraft) memory.revokeResource('owner', connection, 'style.md');
+      return '# Banner\nUse cobalt.';
+    },
+  });
+  server.listen(0, '127.0.0.1');
+  await once(server, 'listening');
+  const address = server.address();
+  assert(address && typeof address !== 'string');
+  const origin = 'http://127.0.0.1:' + address.port;
+  t.after(async () => {
+    server.closeDeviceSockets();
+    await new Promise<void>(resolve => server.close(() => resolve()));
+    memory.close();
+    store.close();
+  });
+  const post = (path: string, data: object, token = 'admin-secret') => fetch(origin + path, {
+    method: 'POST', headers: { Authorization: 'Bearer ' + token, 'Content-Type': 'application/json' },
+    body: JSON.stringify(data),
+  });
+  const list = (token = 'admin-secret') => fetch(origin + '/v1/wiki?workspace=project&q=banner',
+    { headers: { Authorization: 'Bearer ' + token } });
+  const input = { workspace: 'project', title: 'Banner', sources: [{ id: source, version: 1 }] };
+  assert.equal((await post('/v1/wiki/draft', input, phone.token)).status, 403);
+  const draft = await post('/v1/wiki/draft', input);
+  assert.equal(draft.status, 200);
+  const { body } = await draft.json() as { body: string };
+  assert.deepEqual(await (await list()).json(), { pages: [] });
+  const published = await post('/v1/wiki', { ...input, body });
+  assert.equal(published.status, 201);
+  const { id } = await published.json() as { id: string };
+  const watch = (token: string, enabled: boolean) => fetch(origin + '/v1/wiki/' + id + '/watch', {
+    method: 'PUT', headers: { Authorization: 'Bearer ' + token, 'Content-Type': 'application/json' },
+    body: JSON.stringify({ enabled }),
+  });
+  assert.equal((await watch(phone.token, true)).status, 403);
+  assert.equal((await watch('admin-secret', true)).status, 200);
+  const now = Date.now();
+  assert.deepEqual(memory.dueWikiReminders(now), []);
+  assert.equal((await list(phone.token)).status, 403);
+  const data = await (await list()).json() as { pages: { sources: unknown[] }[] };
+  assert.deepEqual(data.pages[0].sources, [{
+    id: source, version: 1, connection, resource: 'style.md', revision: 'commit-a',
+  }]);
+  revokeDuringDraft = true;
+  assert.equal((await post('/v1/wiki/draft', input)).status, 409);
+  assert.deepEqual(await (await list()).json(), { pages: [] });
+  assert.equal((await post('/v1/wiki', { ...input, body })).status, 409);
+  const [notice] = memory.dueWikiReminders(now + 60_000);
+  assert.deepEqual(notice, { id, owner: 'owner', workspace: 'project' });
+  store.createWikiReminder(notice.owner, notice.workspace, notice.id);
+  // A restart before acknowledgement can repeat delivery, but not create another task.
+  store.createWikiReminder(notice.owner, notice.workspace, notice.id);
+  memory.acknowledgeWikiReminder(notice.id);
+  assert.deepEqual(memory.dueWikiReminders(now + 120_000), []);
+  const tasks = store.snapshot('owner').tasks;
+  assert.equal(tasks.length, 1);
+  assert.equal(tasks[0].status, 'waiting_user');
+  assert.equal(store.claim('owner', 'project', 'worker', Date.now(), 45_000), undefined);
+  assert.doesNotMatch(JSON.stringify(store.timeline('owner', tasks[0].id)), /style\.md|cobalt|Banner/);
 });

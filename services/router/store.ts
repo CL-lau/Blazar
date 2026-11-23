@@ -6,7 +6,7 @@ import { TaskReadRepository } from './persistence/task-read-repository.ts';
 import { initializeTaskSchema } from './persistence/task-schema.ts';
 import { IdempotencyConflict, StaleRoutingEvidence } from './domain/idempotency.ts';
 import { MobileRepository } from './persistence/mobile-repository.ts';
-import { orderWorkflow, workflowActionGoal, workflowSteps } from './domain/workflow.ts';
+import { InvalidWorkflow, orderWorkflow, workflowActionGoal, workflowSteps } from './domain/workflow.ts';
 import type { Decision, RouteRequest } from './harness.ts';
 import { createHash, randomBytes, randomUUID } from 'node:crypto';
 import { DatabaseSync } from 'node:sqlite';
@@ -142,7 +142,7 @@ export class TaskStore {
       this.updateWorkflowReadiness(taskId);
     }
     const terminal = new Set(['run.finished', 'task.cancelled', 'run.lease_expired', 'run.device_revoked', 'approval.expired', 'run.inputs_changed', 'run.device_interrupted', 'run.deadline_exceeded', 'task.result_accepted', 'task.result_rejected', 'workflow.result_outdated']);
-    if (!terminal.has(type) && type !== 'task.cancel_requested') return;
+    if (!terminal.has(type) && type !== 'task.cancel_requested' && type !== 'wiki.review_requested') return;
     const task = this.db.prepare('SELECT owner,status FROM task WHERE id=?').get(taskId);
     const status = String(task?.status);
     const notices: Record<string, string> = {
@@ -661,6 +661,15 @@ export class TaskStore {
       memoryInputs, appEvidence, attachments, copiedFromTask));
   }
 
+  createWikiReminder(owner: string, workspace: string, pageId: string) {
+    return this.transaction(() => {
+      if (this.db.prepare("SELECT 1 FROM receipt WHERE owner=? AND source='wiki-watch' AND key=?").get(owner, pageId)) return;
+      const task = this.createTask(owner, 'wiki-watch', pageId, workspace, 'Review a Wiki page with changed or unavailable sources');
+      this.db.prepare("UPDATE task SET status='waiting_user' WHERE id=?").run(task.id);
+      this.event(task.id, 'wiki.review_requested', { status: 'waiting_user', pageId });
+    });
+  }
+
   private createTask(owner: string, source: string, key: string, workspace: string, goal: string, desktopDevice?: string,
          memoryInputs?: TaskMemoryInput[], appEvidence?: AppEvidence, attachments?: TaskAttachment[], copiedFromTask?: string): Task {
     const parameters: unknown[] = appEvidence
@@ -794,82 +803,145 @@ export class TaskStore {
   }
 
   createWorkflow(owner: string, key: string, workspace: string, steps: WorkflowStep[], appEvidence?: AppEvidence, caller?: string, proposalKey?: string) {
-    const ordered = orderWorkflow(steps);
     // Mobile keys exceed the public 128-character limit to preserve existing administrator receipts.
     const requestKey = proposalKey ? 'proposal:' + createHash('sha512').update(JSON.stringify([caller ?? 'admin', proposalKey])).digest('hex')
       : caller ? 'mobile:' + createHash('sha512').update(JSON.stringify([caller, key])).digest('hex') : key;
 
+    return this.transaction(() => this.persistWorkflow(owner, requestKey, workspace, steps, appEvidence, caller, proposalKey));
+  }
+
+  private persistWorkflow(owner: string, requestKey: string, workspace: string, steps: WorkflowStep[],
+                          appEvidence?: AppEvidence, caller?: string, proposalKey?: string) {
+    const ordered = orderWorkflow(steps);
+    const fingerprint = JSON.stringify(appEvidence
+      ? [workspace, steps, { query: appEvidence.query, sources: appEvidence.sources }]
+      : [workspace, steps]);
+    const existing = this.db.prepare('SELECT id,fingerprint FROM workflow WHERE owner=? AND request_key=?')
+      .get(owner, requestKey);
+    if (existing) {
+      if (existing.fingerprint !== fingerprint) throw new IdempotencyConflict();
+      return { id: String(existing.id), steps: this.workflowSteps(String(existing.id)) };
+    }
+    if (proposalKey) {
+      const identity = caller ?? 'admin';
+      const proposal = this.db.prepare(`SELECT decision FROM routing_decision WHERE owner=? AND caller=? AND key=?
+        AND json_extract(request,'$[0]')=?`).get(owner, identity, proposalKey, workspace);
+      const saved = proposal ? JSON.parse(String(proposal.decision)) as Decision : undefined;
+      if (saved?.kind !== 'propose_workflow' || JSON.stringify(workflowSteps(saved.steps)) !== JSON.stringify(steps)) {
+        throw new IdempotencyConflict();
+      }
+      this.assertRoutingEvidence(owner, identity, proposalKey);
+    }
+    const visibleDevices = steps.some(step => step.workerDeviceId) ? this.devices(owner) : [];
+    for (const step of steps) {
+      if (step.workerDeviceId && !visibleDevices.some(device =>
+        device.id === step.workerDeviceId && device.workspace === workspace && !device.revoked &&
+        typeof device.workerProtocol === 'string' &&
+        (!step.workerProtocols || step.workerProtocols.includes(device.workerProtocol)))) {
+        throw new InvalidWorkflow('Workflow Worker must be registered in the selected workspace and match the step protocol');
+      }
+    }
+    const id = randomUUID();
+    this.db.prepare('INSERT INTO workflow VALUES(?,?,?,?)').run(id, owner, requestKey, fingerprint);
+    if (proposalKey) this.db.prepare(`INSERT INTO workflow_source
+      SELECT ?,task_id,version FROM routing_task_evidence WHERE owner=? AND caller=? AND request_key=?`)
+      .run(id, owner, caller ?? 'admin', proposalKey);
+    const tasks = new Map<string, string>();
+    for (const step of ordered) {
+      const name = step.key;
+      const taskId = randomUUID();
+      tasks.set(name, taskId);
+      const status = step.needs.length ? 'waiting_dependency' : 'queued';
+      const goal = step.action ? workflowActionGoal(step.action) : step.goal;
+      this.db.prepare('INSERT INTO task(id,owner,workspace,goal,status) VALUES(?,?,?,?,?)')
+        .run(taskId, owner, workspace, goal, status);
+      if (step.action) {
+        this.db.prepare('INSERT INTO task_desktop_device VALUES(?,?)').run(taskId, step.action.deviceId);
+        if (step.action.kind === 'desktop.observe') this.db.prepare('INSERT INTO workflow_observation(task_id) VALUES(?)').run(taskId);
+      }
+      this.db.prepare('INSERT INTO workflow_step VALUES(?,?,?)').run(id, name, taskId);
+      if (step.requireReview) this.db.prepare('INSERT INTO task_review VALUES(?)').run(taskId);
+      if (step.runLimitSeconds !== undefined) {
+        this.db.prepare('INSERT INTO task_run_budget VALUES(?,?)').run(taskId, step.runLimitSeconds);
+      }
+      if (step.workerDeviceId) this.db.prepare('INSERT INTO task_worker_device VALUES(?,?)').run(taskId, step.workerDeviceId);
+      if (step.workerCapability) this.db.prepare('INSERT INTO task_worker_capability VALUES(?,?)').run(taskId, step.workerCapability);
+      for (const protocol of step.workerProtocols ?? []) {
+        this.db.prepare('INSERT INTO task_worker_protocol VALUES(?,?)').run(taskId, protocol);
+      }
+      for (const [position, criterion] of (step.acceptanceCriteria ?? []).entries()) {
+        this.db.prepare('INSERT INTO task_criterion VALUES(?,?,?)').run(taskId, position, criterion);
+      }
+      const predecessors = [...new Set(step.needs)].map(dependency => tasks.get(dependency)!);
+      for (const predecessor of predecessors) {
+        this.db.prepare('INSERT INTO workflow_dependency VALUES(?,?)').run(taskId, predecessor);
+      }
+      for (const [dependency, filename] of Object.entries(step.inputArtifacts ?? {})) {
+        this.db.prepare('INSERT INTO workflow_artifact_input VALUES(?,?,?)').run(taskId, tasks.get(dependency)!, filename);
+      }
+      if (appEvidence) {
+        this.db.prepare('INSERT INTO task_app_evidence VALUES(?,?)').run(taskId, JSON.stringify(appEvidence.refs));
+      }
+      this.event(taskId, 'task.created', { goal: step.goal, workspace, workflowId: id, stepKey: name, predecessors, status,
+        ...(step.action && { action: step.action }),
+        ...(step.runLimitSeconds !== undefined && { runLimitSeconds: step.runLimitSeconds }),
+        ...(step.workerCapability && { workerCapability: step.workerCapability }),
+        ...(step.workerDeviceId && { workerDeviceId: step.workerDeviceId }),
+        ...(step.workerProtocols && { workerProtocols: step.workerProtocols }),
+        ...(step.inputArtifacts && { inputArtifacts: step.inputArtifacts }),
+        ...(step.outputArtifact && { outputArtifact: step.outputArtifact }),
+        ...(appEvidence && { appEvidence: appEvidence.refs }),
+      });
+    }
+    return { id, steps: this.workflowSteps(id) };
+  }
+
+  addWorkflowSchedule(owner: string, key: string, workspace: string, label: string, steps: WorkflowStep[],
+                      nextAt: number, intervalMs: number | null) {
+    orderWorkflow(steps);
+    const fingerprint = JSON.stringify([workspace, label, steps, nextAt, intervalMs]);
     return this.transaction(() => {
-      const fingerprint = JSON.stringify(appEvidence
-        ? [workspace, steps, { query: appEvidence.query, sources: appEvidence.sources }]
-        : [workspace, steps]);
-      const existing = this.db.prepare('SELECT id,fingerprint FROM workflow WHERE owner=? AND request_key=?')
-        .get(owner, requestKey);
+      const existing = this.db.prepare('SELECT id,fingerprint FROM workflow_schedule WHERE owner=? AND request_key=?')
+        .get(owner, key);
       if (existing) {
         if (existing.fingerprint !== fingerprint) throw new IdempotencyConflict();
-        return { id: String(existing.id), steps: this.workflowSteps(String(existing.id)) };
-      }
-      if (proposalKey) {
-        const identity = caller ?? 'admin';
-        const proposal = this.db.prepare(`SELECT decision FROM routing_decision WHERE owner=? AND caller=? AND key=?
-          AND json_extract(request,'$[0]')=?`).get(owner, identity, proposalKey, workspace);
-        const saved = proposal ? JSON.parse(String(proposal.decision)) as Decision : undefined;
-        if (saved?.kind !== 'propose_workflow' || JSON.stringify(workflowSteps(saved.steps)) !== JSON.stringify(steps)) {
-          throw new IdempotencyConflict();
-        }
-        this.assertRoutingEvidence(owner, identity, proposalKey);
+        return String(existing.id);
       }
       const id = randomUUID();
-      this.db.prepare('INSERT INTO workflow VALUES(?,?,?,?)').run(id, owner, requestKey, fingerprint);
-      if (proposalKey) this.db.prepare(`INSERT INTO workflow_source
-        SELECT ?,task_id,version FROM routing_task_evidence WHERE owner=? AND caller=? AND request_key=?`)
-        .run(id, owner, caller ?? 'admin', proposalKey);
-      const tasks = new Map<string, string>();
-      for (const step of ordered) {
-        const name = step.key;
-        const taskId = randomUUID();
-        tasks.set(name, taskId);
-        const status = step.needs.length ? 'waiting_dependency' : 'queued';
-        const goal = step.action ? workflowActionGoal(step.action) : step.goal;
-        this.db.prepare('INSERT INTO task(id,owner,workspace,goal,status) VALUES(?,?,?,?,?)')
-          .run(taskId, owner, workspace, goal, status);
-        if (step.action) {
-          this.db.prepare('INSERT INTO task_desktop_device VALUES(?,?)').run(taskId, step.action.deviceId);
-          if (step.action.kind === 'desktop.observe') this.db.prepare('INSERT INTO workflow_observation(task_id) VALUES(?)').run(taskId);
-        }
-        this.db.prepare('INSERT INTO workflow_step VALUES(?,?,?)').run(id, name, taskId);
-        if (step.requireReview) this.db.prepare('INSERT INTO task_review VALUES(?)').run(taskId);
-        if (step.runLimitSeconds !== undefined) {
-          this.db.prepare('INSERT INTO task_run_budget VALUES(?,?)').run(taskId, step.runLimitSeconds);
-        }
-        if (step.workerCapability) this.db.prepare('INSERT INTO task_worker_capability VALUES(?,?)').run(taskId, step.workerCapability);
-        for (const protocol of step.workerProtocols ?? []) {
-          this.db.prepare('INSERT INTO task_worker_protocol VALUES(?,?)').run(taskId, protocol);
-        }
-        for (const [position, criterion] of (step.acceptanceCriteria ?? []).entries()) {
-          this.db.prepare('INSERT INTO task_criterion VALUES(?,?,?)').run(taskId, position, criterion);
-        }
-        const predecessors = [...new Set(step.needs)].map(dependency => tasks.get(dependency)!);
-        for (const predecessor of predecessors) {
-          this.db.prepare('INSERT INTO workflow_dependency VALUES(?,?)').run(taskId, predecessor);
-        }
-        for (const [dependency, filename] of Object.entries(step.inputArtifacts ?? {})) {
-          this.db.prepare('INSERT INTO workflow_artifact_input VALUES(?,?,?)').run(taskId, tasks.get(dependency)!, filename);
-        }
-        if (appEvidence) {
-          this.db.prepare('INSERT INTO task_app_evidence VALUES(?,?)').run(taskId, JSON.stringify(appEvidence.refs));
-        }
-        this.event(taskId, 'task.created', { goal: step.goal, workspace, workflowId: id, stepKey: name, predecessors, status,
-          ...(step.action && { action: step.action }),
-          ...(step.runLimitSeconds !== undefined && { runLimitSeconds: step.runLimitSeconds }),
-          ...(step.workerCapability && { workerCapability: step.workerCapability }),
-          ...(step.workerProtocols && { workerProtocols: step.workerProtocols }),
-          ...(step.inputArtifacts && { inputArtifacts: step.inputArtifacts }),
-          ...(step.outputArtifact && { outputArtifact: step.outputArtifact }),
-          ...(appEvidence && { appEvidence: appEvidence.refs }),
-        });
+      this.db.prepare(`INSERT INTO workflow_schedule(id,owner,workspace,label,steps,interval_ms,next_at,request_key,fingerprint)
+        VALUES(?,?,?,?,?,?,?,?,?)`).run(id, owner, workspace, label, JSON.stringify(steps), intervalMs, nextAt, key, fingerprint);
+      return id;
+    });
+  }
+
+  workflowSchedules(owner: string) {
+    return this.db.prepare(`SELECT id,workspace,label,steps,interval_ms AS intervalMs,next_at AS nextAt,
+      last_workflow_id AS lastWorkflowId,enabled FROM workflow_schedule WHERE owner=? ORDER BY rowid`).all(owner)
+      .map(row => ({ ...row, steps: JSON.parse(String(row.steps)) as WorkflowStep[], enabled: Boolean(row.enabled) }));
+  }
+
+  disableWorkflowSchedule(owner: string, id: string) {
+    return Boolean(this.db.prepare('UPDATE workflow_schedule SET enabled=0 WHERE owner=? AND id=?').run(owner, id).changes);
+  }
+
+  dispatchDueWorkflows(now: number) {
+    return this.transaction(() => {
+      const schedules = this.db.prepare(`SELECT id,owner,workspace,steps,next_at,interval_ms FROM workflow_schedule s
+        WHERE enabled=1 AND next_at<=? AND NOT EXISTS (
+          SELECT 1 FROM workflow_step w JOIN task t ON t.id=w.task_id WHERE w.workflow_id=s.last_workflow_id
+          AND t.status NOT IN ('succeeded','failed','cancelled')
+        ) ORDER BY next_at,id LIMIT 8`).all(now);
+      for (const row of schedules) {
+        const due = Number(row.next_at);
+        const interval = row.interval_ms === null ? null : Number(row.interval_ms);
+        const next = interval === null ? null : due + (Math.floor((now - due) / interval) + 1) * interval;
+        const key = 'schedule:' + createHash('sha512').update(JSON.stringify([row.id, due])).digest('hex');
+        const result = this.persistWorkflow(String(row.owner), key,
+          String(row.workspace), JSON.parse(String(row.steps)) as WorkflowStep[]);
+        this.db.prepare('UPDATE workflow_schedule SET next_at=?,last_workflow_id=? WHERE id=?')
+          .run(next, result.id, row.id!);
       }
-      return { id, steps: this.workflowSteps(id) };
+      return schedules.length;
     });
   }
 
@@ -1537,6 +1609,7 @@ export class TaskStore {
             NOT EXISTS(SELECT 1 FROM task_app_evidence e WHERE e.task_id=t.id)
             AND NOT EXISTS(SELECT 1 FROM task_memory_input m WHERE m.task_id=t.id)
             AND NOT EXISTS(SELECT 1 FROM task_attachment a WHERE a.task_id=t.id)))
+          AND NOT EXISTS(SELECT 1 FROM task_worker_device target WHERE target.task_id=t.id AND (target.device_id<>d.id OR p.capability<>'agent.acp'))
           AND NOT EXISTS(SELECT 1 FROM task_desktop_device target WHERE target.task_id=t.id AND target.device_id<>d.id)
           AND ${desktopTextEntitlement('t', 'd.id')}
           AND (a.aliases IS NULL OR EXISTS(SELECT 1 FROM json_each(a.aliases) j WHERE

@@ -55,6 +55,7 @@ export class DispatchRepository {
           AND (?=0 OR NOT EXISTS(SELECT 1 FROM task_worker_capability wc WHERE wc.task_id=t.id AND wc.capability='writable-worktree'))
           AND NOT EXISTS(SELECT 1 FROM task_worker_capability wc WHERE wc.task_id=t.id
             AND NOT EXISTS(SELECT 1 FROM json_each(?) WHERE value=wc.capability))
+          AND NOT EXISTS(SELECT 1 FROM task_worker_device target WHERE target.task_id=t.id AND (target.device_id<>r.device OR ? IS NULL))
           AND NOT EXISTS(SELECT 1 FROM run_evidence_stop s WHERE s.run_id=r.id)
           AND (NOT EXISTS(SELECT 1 FROM task_worker_protocol wp WHERE wp.task_id=t.id) OR
             EXISTS(SELECT 1 FROM task_worker_protocol wp WHERE wp.task_id=t.id AND wp.protocol=?))
@@ -64,7 +65,7 @@ export class DispatchRepository {
             AND NOT EXISTS(SELECT 1 FROM task_memory_input m WHERE m.task_id=t.id)
             AND NOT EXISTS(SELECT 1 FROM task_attachment a WHERE a.task_id=t.id)))`)
           .get(assignment.run.id, device, now, Number(policy?.require_read_only === 1), capabilities,
-            worker?.protocol ?? null, Number(Boolean(workerPermitted)), Number(allowWorkerInputs));
+            worker?.protocol ?? null, worker?.protocol ?? null, Number(Boolean(workerPermitted)), Number(allowWorkerInputs));
         if (!current) return undefined;
         assignment.run.expires = Number(current.expires);
         return { kind: 'replay' as const, assignment: assignment as unknown };
@@ -109,6 +110,7 @@ export class DispatchRepository {
         EXISTS(SELECT 1 FROM task_worker_protocol wp WHERE wp.task_id=task.id AND wp.protocol=?))
       AND NOT EXISTS(SELECT 1 FROM task_question_worker q WHERE q.task_id=task.id
         AND (q.device_id<>? OR ? IS NOT 'jsonl' OR q.revision IS NOT ?))
+      AND NOT EXISTS(SELECT 1 FROM task_worker_device target WHERE target.task_id=task.id AND (target.device_id<>? OR ? IS NULL))
       AND NOT EXISTS(SELECT 1 FROM task_desktop_device target WHERE target.task_id=task.id AND target.device_id<>?)
       AND ${desktopTextEntitlement('task', '?')}
       AND (? OR substr(task.goal,1,9) IN ('/observe ','/preview ') OR substr(task.goal,1,7) IN ('/click ','/write '))
@@ -129,7 +131,7 @@ export class DispatchRepository {
       ON d.owner=eligible.owner AND d.workspace=eligible.workspace AND d.channel=eligible.origin_channel
       AND d.goal_prefix=? AND d.excluding_prefix=?
     ORDER BY COALESCE(d.last_dispatch,0), eligible.queue_order LIMIT 1`).get(
-      owner, workspace, goalPrefix, goalPrefix, goalPrefix, excludingPrefix, excludingPrefix, excludingPrefix, now, Number(policy?.require_read_only === 1), capabilities, worker?.protocol ?? null, device, worker?.protocol ?? null, worker?.revision ?? null, device, device, Number(Boolean(workerPermitted) && workerHasCapacity), Number(allowWorkerInputs),
+      owner, workspace, goalPrefix, goalPrefix, goalPrefix, excludingPrefix, excludingPrefix, excludingPrefix, now, Number(policy?.require_read_only === 1), capabilities, worker?.protocol ?? null, device, worker?.protocol ?? null, worker?.revision ?? null, device, worker?.protocol ?? null, device, device, Number(Boolean(workerPermitted) && workerHasCapacity), Number(allowWorkerInputs),
       desktopApps ? JSON.stringify(desktopApps) : null, desktopApps ? JSON.stringify(desktopApps) : null,
       goalPrefix, excludingPrefix) as unknown as (Task & { origin_channel: string }) | undefined;
     if (!task) {

@@ -110,6 +110,19 @@ const cleanupBatch = 1_000;
 const watchdog = setInterval(() => {
   const now = Date.now();
   server.expireRuns(now);
+  try {
+    store.dispatchDueWorkflows(now);
+  } catch {
+    console.error('Scheduled workflows could not be dispatched');
+  }
+  try {
+    for (const { owner, workspace, id } of memory.dueWikiReminders(now)) {
+      store.createWikiReminder(owner, workspace, id);
+      memory.acknowledgeWikiReminder(id);
+    }
+  } catch {
+    console.error('Wiki reminders could not be dispatched');
+  }
   store.watchSilentRuns(now);
   store.updateDeviceReadiness(now);
   server.flushStopNotifications();

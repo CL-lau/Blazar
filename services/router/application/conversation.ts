@@ -171,6 +171,7 @@ export function createConversationRouter(store: ConversationTasks, config: Conve
                     })),
                   devices: store.devices(owner).filter(device => device.workspace === input.workspace && !device.revoked)
                     .slice(0, 16).map(device => ({
+                      ...(device.workerProtocol && { id: String(device.id), workerProtocol: String(device.workerProtocol), workerLabel: String(device.workerLabel) }),
                       name: String(device.name), capability: String(device.capability ?? 'unreported'),
                       online: Boolean(device.online),
                       available: Boolean(device.online && !device.paused && !device.workerPolicyBlocked && !device.interruptedRunId),

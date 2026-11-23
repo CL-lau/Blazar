@@ -107,6 +107,7 @@ test('a local ACP manifest launches through the same adapter and cannot opt into
 test('built-in ACP presets retain their protocol arguments with an explicit executable path', async () => {
   const expected = {
     deepseek: ['--profile', 'acp'],
+    omp: ['acp'],
     opencode: ['acp'],
     copilot: ['--acp', '--stdio'],
     droid: ['exec', '--output-format', 'acp-daemon'],

@@ -25,9 +25,14 @@ export function workflowSteps(input: unknown): WorkflowStep[] {
     const action = value.action === undefined ? undefined : workflowAction(value.action);
     const protocols = value.workerProtocols;
     if (protocols !== undefined && (action || /^\/(observe|click|preview) /.test(value.goal) ||
-        !Array.isArray(protocols) || !protocols.length || protocols.length > 6 ||
-        protocols.some(protocol => !['acp', 'codex', 'claude', 'pi', 'aider', 'jsonl'].includes(protocol)))) {
+        !Array.isArray(protocols) || !protocols.length || protocols.length > 8 ||
+        protocols.some(protocol => !['acp', 'codex', 'codex-cli', 'claude', 'claude-cli', 'pi', 'aider', 'jsonl'].includes(protocol)))) {
       throw new InvalidWorkflow('Invalid workflow Worker protocols');
+    }
+    const workerDeviceId = value.workerDeviceId;
+    if (workerDeviceId !== undefined && (typeof workerDeviceId !== 'string' ||
+        !/^[a-f0-9-]{36}$/.test(workerDeviceId) || action || /^\/(observe|click|write|preview) /.test(value.goal))) {
+      throw new InvalidWorkflow('Invalid workflow Worker device');
     }
     const capability = workerCapabilities.find(item => item === value.workerCapability);
     if (value.workerCapability !== undefined && (!capability || action || /^\/(observe|click|preview) /.test(value.goal))) {
@@ -68,6 +73,7 @@ export function workflowSteps(input: unknown): WorkflowStep[] {
     return { key: value.key as string, goal: value.goal as string, needs: [...new Set<string>(value.needs)],
       ...(action && { action }),
       ...(runLimitSeconds !== undefined && { runLimitSeconds }),
+      ...(workerDeviceId && { workerDeviceId }),
       ...(capability && { workerCapability: capability }),
       ...(inputArtifacts && { inputArtifacts }),
       ...(outputArtifact && { outputArtifact }),

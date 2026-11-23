@@ -85,3 +85,44 @@ test('Pi only acknowledges steering after the queued message enters the run', as
   assert.equal(await accepted.promise, true);
   assert.equal(result, 'Use the latest instructions');
 });
+
+test('structured Agent CLIs confirm the explicit session and reject mismatches', async () => {
+  const { runCodexCli } = await import('../../packages/workers/codex-cli.ts');
+  const { runClaudeCli } = await import('../../packages/workers/claude-cli.ts');
+  const fixture = `
+    const args = process.argv.slice(1);
+    const codex = args.includes('exec');
+    const emit = record => console.log(JSON.stringify(record));
+    let input = '';
+    process.stdin.setEncoding('utf8').on('data', chunk => { input += chunk; }).on('end', () => {
+      const { goal } = JSON.parse(input);
+      const session = 'fixture-session';
+      if (codex) {
+        emit({type:'thread.started',thread_id:session});
+        emit({type:'item.completed',item:{type:'agent_message',text:goal}});
+        emit({type:'turn.completed'});
+      } else {
+        emit({type:'system',subtype:'init',session_id:session});
+        emit({type:'result',subtype:'success',is_error:false,session_id:session,result:goal});
+      }
+    });
+  `;
+  const worker = { label: 'fixture', executable: process.execPath, args: ['-e', fixture, '--'] };
+  for (const run of [
+    (signal: AbortSignal, progress: () => Promise<void>, resumeId?: string) =>
+      runCodexCli({ ...worker, protocol: 'codex-cli' }, process.cwd(), job, signal, progress, resumeId),
+    (signal: AbortSignal, progress: () => Promise<void>, resumeId?: string) =>
+      runClaudeCli({ ...worker, protocol: 'claude-cli' }, process.cwd(), job, signal, progress, resumeId),
+  ]) {
+    let updates = 0;
+    const progress = async () => { updates++; };
+    const first = await run(AbortSignal.timeout(3_000), progress);
+    assert.equal(first.result, job.goal);
+    assert.ok(updates > 0);
+    assert.deepEqual(await run(AbortSignal.timeout(3_000), progress, first.sessionId), first);
+    await assert.rejects(run(AbortSignal.timeout(3_000), progress, 'wrong-session'), /requested session/);
+    const controller = new AbortController();
+    await assert.rejects(run(controller.signal, async () => controller.abort(new Error('Fixture cancelled'))),
+      /Fixture cancelled/);
+  }
+});

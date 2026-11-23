@@ -202,7 +202,8 @@ export function routerServer(store: TaskStore, config: { owner: string; token: s
         ...task, ...(!admin && store.appEvidence(task.id) && { goal: protectedTaskLabel }), result: null,
       };
       if (!admin && (url.pathname.startsWith('/v1/admin/') || url.pathname === '/v1/pairings' ||
-          url.pathname.startsWith('/v1/app-connections') || url.pathname.startsWith('/v1/memory'))) {
+          url.pathname.startsWith('/v1/app-connections') || url.pathname.startsWith('/v1/memory') ||
+          url.pathname === '/v1/wiki' || url.pathname.startsWith('/v1/wiki/'))) {
         throw new RequestError(403, 'Administrator required');
       }
       if (url.pathname === '/v1/mobile/push' && request.method === 'POST') {

@@ -39,7 +39,7 @@ export function deviceOperation(store: DeviceTasks, bearer: string, pathname: st
       }
       const reported = data.worker as Record<string, unknown>;
       const protocol = requiredText(reported.protocol, 'Worker protocol', 16);
-      if (!['acp', 'codex', 'claude', 'pi', 'aider', 'jsonl'].includes(protocol)) {
+      if (!['acp', 'codex', 'codex-cli', 'claude', 'claude-cli', 'pi', 'aider', 'jsonl'].includes(protocol)) {
         throw new RequestError(400, 'Unknown Worker protocol');
       }
       const label = requiredText(reported.label, 'Worker label', 128);
@@ -48,8 +48,8 @@ export function deviceOperation(store: DeviceTasks, bearer: string, pathname: st
       if (reported.capabilities !== undefined) {
         const supported = ['git-worktree', 'git-patch-inputs'];
         if (protocol === 'codex' || protocol === 'pi') supported.push('steer');
-        if (protocol === 'codex') supported.push('read-only', 'offline-tools', 'writable-worktree');
-        if (protocol === 'jsonl') supported.push('full-input-artifacts');
+        if (protocol === 'codex' || protocol === 'codex-cli') supported.push('read-only', 'offline-tools', 'writable-worktree');
+        if (protocol === 'jsonl' || protocol === 'claude-cli') supported.push('full-input-artifacts');
         if (!Array.isArray(reported.capabilities) || new Set(reported.capabilities).size !== reported.capabilities.length ||
             reported.capabilities.some(capability => !supported.includes(capability)) ||
             ((reported.capabilities.includes('git-patch-inputs') || reported.capabilities.includes('writable-worktree')) &&

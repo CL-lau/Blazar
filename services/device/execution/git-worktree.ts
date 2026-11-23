@@ -1,3 +1,4 @@
+import { parseTurnDiffFilesFromNumstat } from './git-numstat.ts';
 import { createHash } from 'node:crypto';
 import { execFile } from 'node:child_process';
 import { lstat, mkdir, mkdtemp, readFile, realpath, rm, writeFile } from 'node:fs/promises';
@@ -56,7 +57,7 @@ export async function gitRunWorktrees(workspace: string, stateDirectory: string,
           await delay(50, undefined, { signal: active });
         }
       }
-      // A repeated run must never reuse an earlier checkout.
+      // Allocate a run path only once. A continuation has its own reservation.
       await mkdir(root, { mode: 0o700 });
       const commit = await git('rev-parse', '--verify', 'HEAD^{commit}');
       await writeFile(root + '.base', commit + '\n', { flag: 'wx', mode: 0o600 });
@@ -71,6 +72,16 @@ export async function gitRunWorktrees(workspace: string, stateDirectory: string,
     }
     return root;
   };
+  const continueCheckout = async (runId: string, previousRunId: string, signal: AbortSignal) => {
+    const previous = await inspectRunWorktree(workspace, storage, previousRunId, signal);
+    if (previous.state !== 'ready' || !previous.baseCommit) return undefined;
+    const original = previous.root.slice(storage.length + 1);
+    const destination = runPath(storage, runId);
+    signal.throwIfAborted();
+    await mkdir(destination, { mode: 0o700 });
+    await writeFile(destination + '.continuation', original + '\n', { flag: 'wx', mode: 0o600 });
+    return previous.root;
+  };
   const artifact = async (runId: string, signal: AbortSignal) => {
     const checkout = await inspectRunWorktree(workspace, storage, runId, signal);
     if (checkout.state !== 'ready' || !checkout.baseCommit) throw new Error('Run checkout evidence is unavailable');
@@ -79,7 +90,19 @@ export async function gitRunWorktrees(workspace: string, stateDirectory: string,
     const trackedFiles = await command('diff', '--no-ext-diff', '--no-textconv', '--name-status', baseCommit, '--');
     signal.throwIfAborted();
     const evidence = { version: 1, baseCommit, head, commits, trackedFiles: trackedFiles ? trackedFiles.split('\n') : [], changes };
-    let text = JSON.stringify(evidence, null, 2);
+    let fileStats: ReturnType<typeof parseTurnDiffFilesFromNumstat> | undefined;
+    try {
+      fileStats = parseTurnDiffFilesFromNumstat(await command(
+        'diff', '--no-ext-diff', '--no-textconv', '--numstat', '-z', baseCommit, '--'));
+    } catch (error) {
+      signal.throwIfAborted();
+      if ((error as NodeJS.ErrnoException).code !== 'ERR_CHILD_PROCESS_STDIO_MAXBUFFER') throw error;
+    }
+    const serialize = (report: object) => {
+      const detailed = JSON.stringify({ ...report, fileStats }, null, 2);
+      return Buffer.byteLength(detailed) <= maxTextArtifactBytes ? detailed : JSON.stringify(report, null, 2);
+    };
+    let text = serialize(evidence);
     if (includePatch) {
       let patch: string | undefined;
       try {
@@ -90,14 +113,14 @@ export async function gitRunWorktrees(workspace: string, stateDirectory: string,
         if ((error as NodeJS.ErrnoException).code !== 'ERR_CHILD_PROCESS_STDIO_MAXBUFFER') throw error;
       }
       const withPatch = patch === undefined ? undefined :
-        JSON.stringify({ ...evidence, patch: patch ? patch + '\n' : '' }, null, 2);
+        serialize({ ...evidence, patch: patch ? patch + '\n' : '' });
       text = withPatch !== undefined && Buffer.byteLength(withPatch) <= maxTextArtifactBytes ? withPatch :
-        JSON.stringify({ ...evidence, patchOmitted: 'size_limit' }, null, 2);
+        serialize({ ...evidence, patchOmitted: 'size_limit' });
     }
     if (Buffer.byteLength(text) > maxTextArtifactBytes) throw new Error('Run checkout evidence exceeds the artifact limit');
     return { name: 'git-changes.json', text };
   };
-  return { prepare, artifact, includePatch, applyInputs, allowCodexWrite };
+  return { prepare, continueCheckout, artifact, includePatch, applyInputs, allowCodexWrite };
 }
 
 export class GitPatchInputError extends Error {}
@@ -142,7 +165,12 @@ export async function applyGitPatchInputs(root: string, inputs: PredecessorInput
 }
 
 export async function inspectRunWorktree(workspace: string, storage: string, runId: string, signal?: AbortSignal) {
-  const root = runPath(storage, runId);
+  const entry = runPath(storage, runId);
+  const continuation = await readFile(entry + '.continuation', 'utf8').then(value => value.trim(), error => {
+    if (error.code === 'ENOENT') return undefined;
+    throw error;
+  });
+  const root = continuation ? runPath(storage, continuation) : entry;
   const path = await lstat(root).catch(error => {
     if (error.code === 'ENOENT') return undefined;
     throw error;

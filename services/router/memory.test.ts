@@ -339,3 +339,27 @@ test('an answer from selected documents is discarded if source scope changes dur
   }, 'owner', 'project', 'What changed?', [{ connection, resource: 'review.md', revision: 'v1' }]),
   /Document access changed while preparing the answer/);
 });
+
+test('Wiki pages retain multi-source citations and disappear when any evidence changes', t => {
+  const store = new MemoryStore(':memory:');
+  t.after(() => store.close());
+  const github = store.connect('owner', 'github', 'repository', 'project');
+  const docs = store.connect('owner', 'docs', 'team', 'project');
+  const specification = { connection: github, resource: 'specification.md', revision: 'commit-a' };
+  const releaseNotes = { connection: docs, resource: 'release notes', revision: 'revision-a' };
+  const first = store.importDocument('owner', 'project', 'Use a staged rollout.', specification)!;
+  const second = store.importDocument('owner', 'project', 'Check every region before widening.', releaseNotes)!;
+  const sources = [{ id: first, version: 1 }, { id: second, version: 1 }];
+  const id = store.saveWikiPage('owner', 'project', 'Rollout guide', '# Rollout\nVerify every region.', sources);
+  assert.ok(id);
+  assert.equal(store.saveWikiPage('owner', 'project', 'Rollout guide', '# Rollout\nVerify every region.', sources.toReversed()), id);
+  assert.deepEqual(store.wikiPages('another', 'project', ''), []);
+  assert.deepEqual(store.wikiPages('owner', 'other', ''), []);
+  const [page] = store.wikiPages('owner', 'project', 'rollout');
+  assert.equal(page.id, id);
+  assert.deepEqual(page.sources.map(({ resource, revision }) => [resource, revision]).sort(),
+    [['release notes', 'revision-a'], ['specification.md', 'commit-a']]);
+  assert.ok(store.importDocument('owner', 'project', 'Change the rollout procedure.', { ...specification, revision: 'commit-b' }));
+  assert.deepEqual(store.wikiPages('owner', 'project', ''), []);
+  assert.equal(store.saveWikiPage('owner', 'project', 'Stale', 'Old evidence', sources), undefined);
+});

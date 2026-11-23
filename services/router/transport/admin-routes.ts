@@ -4,11 +4,46 @@ import { workerCatalog } from '../../../packages/workers/registry.ts';
 import { RequestError, requiredText } from '../protocol/request.ts';
 import type { TaskStore } from '../store.ts';
 import { jsonObject, reply } from './json.ts';
+import { workflowSteps } from '../domain/workflow.ts';
 
 export async function handleAdmin(request: IncomingMessage, response: ServerResponse, url: URL,
                                   owner: string, store: TaskStore, registry: ReturnType<typeof createWorkerRegistry>): Promise<boolean> {
   if (url.pathname === '/v1/pairings' && request.method === 'POST') {
     reply(response, 201, store.createPairing(owner, Date.now()));
+    return true;
+  }
+  if (url.pathname === '/v1/admin/workflow-schedules') {
+    if (request.method === 'GET') {
+      reply(response, 200, { schedules: store.workflowSchedules(owner) });
+      return true;
+    }
+    if (request.method === 'POST') {
+      const key = requiredText(request.headers['idempotency-key'], 'Idempotency-Key', 128);
+      const data = await jsonObject(request);
+      const workspace = requiredText(data.workspace, 'workspace', 128);
+      const label = requiredText(data.label, 'schedule label', 160);
+      const steps = workflowSteps(data.steps);
+      const { nextAt, intervalMinutes = null } = data;
+      if (typeof nextAt !== 'number' || !Number.isSafeInteger(nextAt) || nextAt < 0 || nextAt > 8_640_000_000_000_000) {
+        throw new RequestError(400, 'Invalid first workflow time');
+      }
+      if (intervalMinutes !== null && (typeof intervalMinutes !== 'number' || !Number.isInteger(intervalMinutes) ||
+          intervalMinutes < 1 || intervalMinutes > 43_200)) {
+        throw new RequestError(400, 'Invalid workflow interval');
+      }
+      if (steps.some(step => step.action || /^\/(observe|click|write)(?: |$)/.test(step.goal))) {
+        throw new RequestError(400, 'Scheduled workflows require Worker steps');
+      }
+      const id = store.addWorkflowSchedule(owner, key, workspace, label, steps, nextAt,
+        intervalMinutes === null ? null : intervalMinutes * 60_000);
+      reply(response, 201, { id });
+      return true;
+    }
+  }
+  const schedule = /^\/v1\/admin\/workflow-schedules\/([a-f0-9-]{36})$/.exec(url.pathname);
+  if (schedule && request.method === 'DELETE') {
+    if (!store.disableWorkflowSchedule(owner, schedule[1])) throw new RequestError(404, 'Workflow schedule not found');
+    reply(response, 200, { disabled: true });
     return true;
   }
   if (url.pathname === '/v1/admin/mobile-pairings' && request.method === 'GET') {

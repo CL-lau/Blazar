@@ -11,6 +11,8 @@ export interface ResourceRef {
   revision: string;
 }
 
+export type MemoryReference = { id: string; version: number };
+
 export class DocumentRevisionConflict extends Error {}
 
 const memoryWords = new Intl.Segmenter(undefined, { granularity: 'word' });
@@ -351,7 +353,7 @@ export class MemoryStore {
   }
 
   resolveAppEvidence(owner: string, workspace: string, references: { id: string; version: number }[]) {
-    const rows = this.db.prepare(`SELECT m.id,m.connection,substr(m.body,1,1200) AS body,COALESCE(s.version,1) AS version
+    const rows = this.db.prepare(`SELECT m.id,m.connection,m.resource,m.revision,a.scope_version,substr(m.body,1,1200) AS body,COALESCE(s.version,1) AS version
       FROM memory m JOIN app_connection a ON a.id=m.connection AND a.owner=m.owner
       LEFT JOIN memory_state s ON s.id=m.id
       JOIN json_each(?) ref ON json_extract(ref.value,'$.id')=m.id
@@ -367,8 +369,85 @@ export class MemoryStore {
       ORDER BY CAST(ref.key AS INTEGER)`).all(JSON.stringify(references), owner, workspace, Date.now());
     if (rows.length !== references.length) return undefined;
     return rows.map(row => ({
-      connection: String(row.connection), id: String(row.id), body: String(row.body).toWellFormed(), version: Number(row.version),
+      connection: String(row.connection), resource: String(row.resource), revision: String(row.revision),
+      scopeVersion: Number(row.scope_version), id: String(row.id), body: String(row.body).toWellFormed(), version: Number(row.version),
     }));
+  }
+
+  saveWikiPage(owner: string, workspace: string, title: string, body: string, references: MemoryReference[]) {
+    return sqliteTransaction(this.db, () => {
+      const evidence = this.resolveAppEvidence(owner, workspace, references);
+      if (!references.length || !evidence) return undefined;
+      const encoded = JSON.stringify(evidence.map(({ id, version, scopeVersion }) => ({ id, version, scopeVersion }))
+        .sort((left, right) => left.id.localeCompare(right.id)));
+      const id = randomUUID();
+      const inserted = this.db.prepare(`INSERT INTO wiki_page VALUES(?,?,?,?,?,?,?)
+        ON CONFLICT(owner,workspace,title,body,evidence) DO NOTHING`)
+        .run(id, owner, workspace, title, body, encoded, Date.now());
+      if (inserted.changes) return id;
+      return String(this.db.prepare(`SELECT id FROM wiki_page WHERE owner=? AND workspace=?
+        AND title=? AND body=? AND evidence=?`).get(owner, workspace, title, body, encoded)!.id);
+    });
+  }
+
+  private resolveWikiEvidence(owner: string, workspace: string, encoded: string) {
+    const references = JSON.parse(encoded) as (MemoryReference & { scopeVersion: number })[];
+    const evidence = this.resolveAppEvidence(owner, workspace, references);
+    return evidence?.every((source, index) => source.scopeVersion === references[index].scopeVersion) ? evidence : undefined;
+  }
+
+  watchWikiPage(owner: string, id: string, enabled: boolean, now = Date.now()) {
+    return sqliteTransaction(this.db, () => {
+      const page = this.db.prepare('SELECT workspace,evidence FROM wiki_page WHERE owner=? AND id=?').get(owner, id);
+      if (!page) return false;
+      if (enabled) {
+        if (!this.resolveWikiEvidence(owner, String(page.workspace), String(page.evidence))) return false;
+        this.db.prepare('INSERT OR IGNORE INTO wiki_watch(page_id,next_check) VALUES(?,?)').run(id, now);
+      } else {
+        this.db.prepare('DELETE FROM wiki_watch WHERE page_id=?').run(id);
+      }
+      return true;
+    });
+  }
+
+  dueWikiReminders(now: number) {
+    return sqliteTransaction(this.db, () => {
+      const rows = this.db.prepare(`SELECT p.id,p.owner,p.workspace,p.evidence FROM wiki_watch w
+        JOIN wiki_page p ON p.id=w.page_id WHERE w.notified=0 AND w.next_check<=? ORDER BY w.next_check,p.id LIMIT 25`).all(now);
+      const reminders = [];
+      for (const row of rows) {
+        const id = String(row.id);
+        const owner = String(row.owner);
+        const workspace = String(row.workspace);
+        this.db.prepare('UPDATE wiki_watch SET next_check=? WHERE page_id=?').run(now + 60_000, id);
+        if (!this.resolveWikiEvidence(owner, workspace, String(row.evidence))) reminders.push({ id, owner, workspace });
+      }
+      return reminders;
+    });
+  }
+
+  acknowledgeWikiReminder(id: string) {
+    this.db.prepare('UPDATE wiki_watch SET notified=1 WHERE page_id=?').run(id);
+  }
+
+  wikiPages(owner: string, workspace: string, query: string) {
+    return sqliteTransaction(this.db, () => {
+      const rows = this.db.prepare(`SELECT p.id,p.title,p.body,p.evidence,p.created,(w.page_id IS NOT NULL AND w.notified=0) AS watched
+        FROM wiki_page p LEFT JOIN wiki_watch w ON w.page_id=p.id WHERE p.owner=? AND p.workspace=?
+        AND (instr(lower(title),lower(?))>0 OR instr(lower(body),lower(?))>0)
+        ORDER BY p.created DESC,p.rowid DESC`).iterate(owner, workspace, query, query);
+      const pages = [];
+      for (const row of rows) {
+        const evidence = this.resolveWikiEvidence(owner, workspace, String(row.evidence));
+        if (!evidence) continue;
+        const sources = evidence.map(({ id, version, connection, resource, revision }) =>
+          ({ id, version, connection, resource, revision }));
+        pages.push({ id: String(row.id), title: String(row.title), body: String(row.body),
+          created: Number(row.created), watched: Boolean(row.watched), sources });
+        if (pages.length === 25) break;
+      }
+      return pages;
+    });
   }
 
   history(owner: string, id: string, now = Date.now()) {

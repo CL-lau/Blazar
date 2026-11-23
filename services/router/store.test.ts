@@ -1174,3 +1174,25 @@ test('desktop writes bind to a current allowed field and require verified eviden
   const follow = db.claim('owner', 'project', 'worker', now, 45_000)!;
   assert.equal(follow.task.id, workflow.steps[2].taskId);
 });
+
+test('a workflow can select one custom Agent among devices sharing a protocol', t => {
+  const store = new TaskStore(':memory:');
+  t.after(() => store.close());
+  const owner = 'owner';
+  const workspace = 'project';
+  const now = Date.now();
+  const selected = store.registerDevice(owner, 'Custom reviewer', workspace);
+  const competing = store.registerDevice(owner, 'Custom editor', workspace);
+  const worker = { label: 'Custom Agent', protocol: 'jsonl' };
+  for (const device of [selected, competing]) {
+    store.recordDeviceActivity(device.id, now, 'agent.acp');
+    store.recordDeviceWorker(device.id, worker);
+  }
+  const step = { key: 'review', goal: 'Review the changes', needs: [], workerProtocols: ['jsonl'], workerDeviceId: selected.id };
+  assert.throws(() => store.createWorkflow(owner, 'wrong-workspace', 'other', [step]), /selected workspace/);
+  const workflow = store.createWorkflow(owner, 'custom-agent', workspace, [step]);
+  assert.equal(store.claim(owner, workspace, competing.id, now, 45_000, '', '/preview ', undefined, worker), undefined);
+  const claim = () => store.claim(owner, workspace, selected.id, now, 45_000, '', '/preview ', 'chosen-agent', worker);
+  assert.equal(claim()?.task.id, workflow.steps[0].taskId);
+  assert.equal(claim()?.task.id, workflow.steps[0].taskId);
+});

@@ -24,7 +24,7 @@ export class DeviceLedger {
         PRIMARY KEY(scope,run_id)
       );
       CREATE TABLE IF NOT EXISTS worker_session (
-        key TEXT PRIMARY KEY, session_id TEXT NOT NULL, instruction_count INTEGER NOT NULL
+        key TEXT PRIMARY KEY, session_id TEXT NOT NULL, instruction_count INTEGER NOT NULL, run_id TEXT
       );
     `);
     if (!this.db.prepare("SELECT 1 FROM pragma_table_info('pending_result') WHERE name='expires'").get()) {
@@ -35,6 +35,19 @@ export class DeviceLedger {
             ALTER TABLE pending_result ADD COLUMN expires INTEGER;
             DELETE FROM pending_result WHERE json_extract(outcome,'$.artifact.mime')='image/png';
           `);
+        }
+        this.db.exec('COMMIT');
+      } catch (error) {
+        this.db.exec('ROLLBACK');
+        this.db.close();
+        throw error;
+      }
+    }
+    if (!this.db.prepare("SELECT 1 FROM pragma_table_info('worker_session') WHERE name='run_id'").get()) {
+      this.db.exec('BEGIN IMMEDIATE');
+      try {
+        if (!this.db.prepare("SELECT 1 FROM pragma_table_info('worker_session') WHERE name='run_id'").get()) {
+          this.db.exec('ALTER TABLE worker_session ADD COLUMN run_id TEXT');
         }
         this.db.exec('COMMIT');
       } catch (error) {
@@ -103,9 +116,9 @@ export class DeviceLedger {
   }
 
   takeSession(key: string, instructionCount: number) {
-    const row = this.db.prepare('DELETE FROM worker_session WHERE key=? RETURNING session_id,instruction_count').get(key);
+    const row = this.db.prepare('DELETE FROM worker_session WHERE key=? RETURNING session_id,instruction_count,run_id').get(key);
     if (!row || Number(row.instruction_count) >= instructionCount) return undefined;
-    return { id: String(row.session_id), instructionCount: Number(row.instruction_count) };
+    return { id: String(row.session_id), instructionCount: Number(row.instruction_count), runId: typeof row.run_id === 'string' ? row.run_id : undefined };
   }
 
   acknowledge(scope: string, runId: string, accepted = false) {
@@ -115,7 +128,7 @@ export class DeviceLedger {
         .get(scope, runId);
       if (accepted && pending) {
         const { key, id, instructionCount } = JSON.parse(String(pending.checkpoint)) as SessionCheckpoint;
-        this.db.prepare('INSERT OR REPLACE INTO worker_session VALUES(?,?,?)').run(key, id, instructionCount);
+        this.db.prepare('INSERT OR REPLACE INTO worker_session(key,session_id,instruction_count,run_id) VALUES(?,?,?,?)').run(key, id, instructionCount, runId);
       }
       this.db.prepare('DELETE FROM pending_result WHERE scope=? AND run_id=?').run(scope, runId);
       this.db.exec('COMMIT');

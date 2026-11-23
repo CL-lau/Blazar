@@ -1,20 +1,25 @@
 import type { CustomJsonlWorker } from './custom-jsonl.ts';
 import type { PiWorker } from './pi.ts';
+import type { CodexCliWorker } from './codex-cli.ts';
+import type { ClaudeCliWorker } from './claude-cli.ts';
 import type { ClaudeWorker } from './claude.ts';
 import type { WorkerCommand } from './process.ts';
 import { access, constants, readFile, stat } from 'node:fs/promises';
 import { delimiter, isAbsolute, join } from 'node:path';
 import { deepSeekWorker, type AcpWorker } from './acp.ts';
 
-export type Worker = (WorkerCommand & { protocol: 'codex' | 'aider' }) | (AcpWorker & { protocol?: 'acp' }) | ClaudeWorker | PiWorker | CustomJsonlWorker;
+export type Worker = (WorkerCommand & { protocol: 'codex' | 'aider' }) | (AcpWorker & { protocol?: 'acp' }) | ClaudeWorker | ClaudeCliWorker | CodexCliWorker | PiWorker | CustomJsonlWorker;
 
 const builtInWorkers = new Map<string, Worker>([
+  ['codex-cli', { executable: 'codex', args: [], label: 'Codex CLI', protocol: 'codex-cli', env: ['OPENAI_API_KEY', 'CODEX_HOME'] }],
   ['codex', { executable: 'codex', args: ['app-server'], label: 'Codex', protocol: 'codex', env: ['OPENAI_API_KEY', 'CODEX_HOME'] }],
   ['aider', { executable: 'aider', label: 'Aider', protocol: 'aider',
     args: ['--chat-mode', 'ask', '--no-stream', '--no-pretty', '--no-git', '--dry-run',
       '--no-auto-commits', '--no-auto-lint', '--no-auto-test', '--no-suggest-shell-commands',
       '--no-check-update', '--no-analytics'],
     env: ['ANTHROPIC_API_KEY', 'OPENAI_API_KEY', 'OPENROUTER_API_KEY', 'AIDER_MODEL', 'AIDER_OPENAI_API_BASE'] }],
+  ['claude-cli', { executable: 'claude', label: 'Claude Code CLI', protocol: 'claude-cli', args: [],
+    env: ['ANTHROPIC_API_KEY', 'CLAUDE_CODE_OAUTH_TOKEN', 'CLAUDE_CONFIG_DIR'] }],
   ['claude', { executable: 'claude', label: 'Claude Code', protocol: 'claude',
     args: [],
     env: ['ANTHROPIC_API_KEY', 'CLAUDE_CODE_OAUTH_TOKEN', 'CLAUDE_CONFIG_DIR'] }],
@@ -23,6 +28,8 @@ const builtInWorkers = new Map<string, Worker>([
       '--no-context-files', '--no-prompt-templates', '--no-skills'],
     env: ['ANTHROPIC_API_KEY', 'OPENAI_API_KEY', 'OPENROUTER_API_KEY', 'PI_CODING_AGENT_DIR'] }],
   ['deepseek', deepSeekWorker],
+  ['omp', { executable: 'omp', args: ['acp'], label: 'Oh My Pi',
+    env: ['ANTHROPIC_API_KEY', 'OPENAI_API_KEY', 'OPENROUTER_API_KEY', 'PI_CODING_AGENT_DIR'] }],
   ['opencode', { executable: 'opencode', args: ['acp'], label: 'OpenCode',
     env: ['OPENAI_API_KEY', 'ANTHROPIC_API_KEY', 'DEEPSEEK_API_KEY', 'OPENROUTER_API_KEY',
       'XDG_STATE_HOME', 'XDG_CACHE_HOME', 'OPENCODE_DISABLE_MODELS_FETCH', 'OPENCODE_DISABLE_DEFAULT_PLUGINS',

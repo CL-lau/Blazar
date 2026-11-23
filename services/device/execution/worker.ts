@@ -2,8 +2,10 @@ import { createHash } from 'node:crypto';
 import { setTimeout as delay } from 'node:timers/promises';
 import { AcpSessionRestoreError, runAcp } from '../../../packages/workers/acp.ts';
 import { runAider } from '../../../packages/workers/aider.ts';
+import { runCodexCli } from '../../../packages/workers/codex-cli.ts';
+import { runClaudeCli } from '../../../packages/workers/claude-cli.ts';
 import { runClaude } from '../../../packages/workers/claude.ts';
-import { runCodex } from '../../../packages/workers/codex.ts';
+import { CodexSessionRestoreError, runCodex } from '../../../packages/workers/codex.ts';
 import { runCustomJsonl } from '../../../packages/workers/custom-jsonl.ts';
 import { runPi } from '../../../packages/workers/pi.ts';
 import type { JobContext, WorkerSteer } from '../../../packages/workers/prompt.ts';
@@ -17,6 +19,7 @@ interface WorkerExecution {
   scope: string;
   workspaceIdentity: string;
   revision?: string;
+  workerSession?: { key: string; previous?: ReturnType<DeviceLedger['takeSession']> };
   ledger: Pick<DeviceLedger, 'takeSession'>;
   post: ArtifactPost;
   approve: (prefix: string, summary: string, signal: AbortSignal) =>
@@ -39,8 +42,40 @@ export async function executeWorker(
       if (worker.includeFullInputArtifacts) await completeInputArtifacts(context.post, job.predecessors, prefix, active, fullInputRequired);
       return runCustomJsonl(worker, context.root, job, active, report);
     case 'pi':
-    case 'codex':
       return { result: await runSteerableWorker(context, worker, prefix, job, stop, active) };
+    case 'codex': {
+      if (!context.workerSession) {
+        return { result: await runSteerableWorker(context, worker, prefix, job, stop, active) };
+      }
+      const { key, previous } = context.workerSession;
+      const instructionCount = job.instructions.length;
+      let checkpoint: SessionCheckpoint | undefined;
+      const run = (input: JobContext, resumeId?: string) => runSteerableWorker(
+        context, worker, prefix, input, stop, active,
+        { resumeId, onCompleted: id => { checkpoint = { key, id, instructionCount }; } });
+      let result: string;
+      try {
+        result = previous ? await run({ ...job, instructions: job.instructions.slice(previous.instructionCount) }, previous.id)
+          : await run(job);
+      } catch (error) {
+        if (!(error instanceof CodexSessionRestoreError)) throw error;
+        result = await run(job);
+      }
+      return { result, checkpoint };
+    }
+    case 'codex-cli':
+    case 'claude-cli': {
+      if (worker.protocol === 'claude-cli') {
+        await completeInputArtifacts(context.post, job.predecessors, prefix, active, fullInputRequired);
+      }
+      const previous = context.workerSession?.previous;
+      const input = previous ? { ...job, instructions: job.instructions.slice(previous.instructionCount) } : job;
+      const { result, sessionId } = worker.protocol === 'codex-cli'
+        ? await runCodexCli(worker, context.root, input, active, report, previous?.id)
+        : await runClaudeCli(worker, context.root, input, active, report, previous?.id);
+      const checkpoint = context.workerSession && { key: context.workerSession.key, id: sessionId, instructionCount: job.instructions.length };
+      return { result, checkpoint };
+    }
     case 'claude':
       return { result: await runClaude(worker, context.root, job, active) };
     case 'aider':
@@ -83,7 +118,7 @@ async function steerWorker(context: WorkerExecution, prefix: string, steer: Work
 }
 
 async function runSteerableWorker(context: WorkerExecution, worker: Worker, prefix: string, job: JobContext,
-                             stop: AbortController, active: AbortSignal) {
+                             stop: AbortController, active: AbortSignal, session?: Parameters<typeof runCodex>[5]) {
   const finished = new AbortController();
   let steering: Promise<void> | undefined;
   try {
@@ -91,21 +126,32 @@ async function runSteerableWorker(context: WorkerExecution, worker: Worker, pref
     return await run(worker, context.root, job, active, steer => {
       steering = steerWorker(context, prefix, steer, finished.signal, stop, active);
       return () => finished.abort();
-    });
+    }, session);
   } finally {
     finished.abort();
     await steering;
   }
 }
 
-async function runAcpWorker(execution: WorkerExecution, worker: Worker, prefix: string, taskId: string, job: JobContext, active: AbortSignal,
-                           report: (message: string, signal: AbortSignal) => Promise<void>) {
-  const key = createHash('sha256').update(JSON.stringify([
+export function workerSessionKey(execution: SessionIdentity, taskId: string, job: JobContext, protocol: 'codex' | 'codex-cli' | 'claude-cli') {
+  return sessionKey(execution, taskId, job, protocol);
+}
+
+type SessionIdentity = Pick<WorkerExecution, 'scope' | 'workspaceIdentity' | 'revision'>;
+
+function sessionKey(execution: SessionIdentity, taskId: string, job: JobContext, protocol?: 'codex' | 'codex-cli' | 'claude-cli') {
+  return createHash('sha256').update(JSON.stringify([
     execution.scope, execution.workspaceIdentity, execution.revision, taskId, job.goal,
     job.acceptanceCriteria, job.memoryInputs?.map(({ id, version }) => [id, version]),
     job.predecessors.map(({ taskId, version }) => [taskId, version]),
+    ...(protocol ? [protocol, job.offlineToolsRequired === true, job.writableWorktreeRequired === true] : []),
     ...(job.attachments?.length ? [job.attachments] : []),
   ])).digest('hex');
+}
+
+async function runAcpWorker(execution: WorkerExecution, worker: Worker, prefix: string, taskId: string, job: JobContext, active: AbortSignal,
+                           report: (message: string, signal: AbortSignal) => Promise<void>) {
+  const key = sessionKey(execution, taskId, job);
   const instructionCount = job.instructions.length;
   const previous = execution.ledger.takeSession(key, instructionCount);
   let checkpoint: SessionCheckpoint | undefined;

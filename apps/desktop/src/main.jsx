@@ -3,6 +3,9 @@ import { createRoot } from 'react-dom/client';
 import { PairingCode } from './PairingCode.jsx';
 import { Timeline } from './Timeline.jsx';
 import { Knowledge } from './Knowledge.jsx';
+import { Wiki } from './Wiki.jsx';
+import { Schedules } from './Schedules.jsx';
+import { ArtifactPreview } from './ArtifactPreview.jsx';
 import { ChannelLinks } from './ChannelLinks.jsx';
 import { DesktopControl } from './DesktopControl.jsx';
 import { Devices } from './Devices.jsx';
@@ -38,6 +41,8 @@ function App() {
   const [attachments, setAttachments] = useState([]);
   const [usePersonalMemory, setUsePersonalMemory] = useState(false);
   const [answer, setAnswer] = useState('');
+  const [conversation, setConversation] = useState({});
+  const turns = conversation[workspace.trim()] ?? [];
   const [savedResult, setSavedResult] = useState(null);
   const [phoneGrants, setPhoneGrants] = useState(null);
   const [memoryAnswer, setMemoryAnswer] = useState(null);
@@ -151,12 +156,25 @@ function App() {
   }
 
   const task = snapshot?.tasks.find(item => item.id === selected);
+  const tasksByWorkspace = new Map();
+  for (const item of snapshot?.tasks ?? []) {
+    const group = tasksByWorkspace.get(item.workspace);
+    if (group) group.push(item);
+    else tasksByWorkspace.set(item.workspace, [item]);
+  }
   const memoryUnavailable = task?.appMemoryUnavailable || task?.personalMemoryUnavailable;
   const dependencies = (snapshot?.workflowSteps ?? [])
     .filter(link => link.taskId === selected && link.predecessorId)
     .map(link => snapshot.tasks.find(item => item.id === link.predecessorId)).filter(Boolean);
+  const workflowId = snapshot?.workflowSteps?.find(link => link.taskId === selected)?.workflowId;
+  const workflowTasks = workflowId ? [...new Set(snapshot.workflowSteps
+    .filter(link => link.workflowId === workflowId).map(link => link.taskId))]
+    .map(id => snapshot.tasks.find(item => item.id === id)).filter(Boolean) : [];
   const artifacts = snapshot?.artifacts.filter(item => item.taskId === selected) ?? [];
   const taskAttachments = snapshot?.attachments?.filter(item => item.taskId === selected) ?? [];
+  const visiblePreview = preview?.taskId === task?.id && preview && (preview.attachmentPosition === undefined
+    ? preview.artifactIds.every(id => artifacts.some(item => item.id === id))
+    : taskAttachments.some(item => item.position === preview.attachmentPosition));
   const criteria = snapshot?.criteria?.filter(item => item.taskId === selected) ?? [];
   const progress = snapshot?.progress?.find(item => item.taskId === selected);
   const availableSources = memoryAccounts.filter(account =>
@@ -198,13 +216,15 @@ function App() {
   });
 
   return (
-    <main>
-      <header>
+    <main className={connected ? 'app-shell' : 'connection-shell'}>
+      <header className="app-bar">
         <h1>Blazar</h1>
         {connected && (
           <nav aria-label="Workspace views">
-            <button onClick={() => setSettings('tasks')}>Tasks</button>
+            <button aria-current={settings === 'tasks' ? 'page' : undefined} onClick={() => setSettings('tasks')}>Assistant</button>
             <button onClick={() => { setMemoryAnswer(null); setPreview(null); setSettings('knowledge'); }}>Apps and memory</button>
+            <button aria-current={settings === 'wiki' ? 'page' : undefined} onClick={() => setSettings('wiki')}>Wiki</button>
+            <button aria-current={settings === 'schedules' ? 'page' : undefined} onClick={() => setSettings('schedules')}>Schedules</button>
             <button onClick={() => setSettings('devices')}>Execution devices</button>
             <button onClick={() => setSettings('desktop-control')}>Desktop control</button>
             <button onClick={() => setSettings('router-status')}>Router status</button>
@@ -231,11 +251,19 @@ function App() {
             ready: 'The local Router is ready.',
             unavailable: 'The local Router is unavailable. Start the Router service, then try again.',
           }[localRouter]}</p>
-          <label>Access token<input type="password" value={token} onChange={event => setToken(event.target.value)} required /></label>
+          <label>Access token<input type="password" autoComplete="off" value={token} onChange={event => setToken(event.target.value)} required /></label>
           <button className="primary" disabled={busy}>Connect</button>
         </form>
       ) : settings === 'knowledge' ? (
         <Knowledge token={connected} />
+      ) : settings === 'wiki' || settings === 'schedules' ? (
+        <>
+          <label className="workbench-workspace">Workspace<input value={workspace} onChange={event => setWorkspace(event.target.value)} /></label>
+          {workspace.trim() && (settings === 'wiki'
+            ? <Wiki key={workspace.trim()} token={connected} workspace={workspace.trim()} />
+            : <Schedules key={workspace.trim()} token={connected} workspace={workspace.trim()} workflowSteps={snapshot?.workflowSteps ?? []}
+                showTask={id => { setSelected(id); setInstruction(''); setPreview(null); setSettings('tasks'); }} />)}
+        </>
       ) : settings === 'devices' ? (
         <Devices token={connected} />
       ) : settings === 'desktop-control' ? (
@@ -283,22 +311,44 @@ function App() {
           </li>)}</ul>
         </section>
       ) : (
-        <div className="workspace">
-          <aside aria-label="Tasks">
-            <h2>Tasks</h2>
-            <button className="primary" onClick={() => { setSelected(''); setPreview(null); }}>New task</button>
-            <ul>{snapshot?.tasks.map(item => (
-              <li key={item.id}><button className="task-link" aria-current={item.id === selected ? 'true' : undefined}
-                onClick={() => { setSelected(item.id); setInstruction(''); setPreview(null); }}>
-                <span>{item.goal}</span><small>{item.status.replaceAll('_', ' ')}</small>
-              </button></li>
-            ))}</ul>
+        <div className={visiblePreview ? 'workspace with-preview' : 'workspace'}>
+          <aside className="task-sidebar" aria-label="Tasks">
+            <button className="primary new-task" onClick={() => { setSelected(''); setPreview(null); }}>
+              <span aria-hidden="true">+</span> New task
+            </button>
+            {Array.from(tasksByWorkspace, ([name, tasks]) => (
+              <section key={name} className="task-group">
+                <h2>{name}</h2>
+                <ul>{tasks.map(item => (
+                  <li key={item.id}>
+                    <button className="task-link" aria-current={item.id === selected ? 'true' : undefined}
+                      onClick={() => { setSelected(item.id); setWorkspace(item.workspace); setInstruction(''); setPreview(null); }}>
+                      <span>{item.goal}</span><small>{item.status.replaceAll('_', ' ')}</small>
+                    </button>
+                  </li>
+                ))}</ul>
+              </section>
+            ))}
           </aside>
           <section className="detail">
-            {task ? (
+            <section className="assistant-conversation" aria-label="Blazar conversation">
+              <h2>{workspace.trim() || 'Blazar'}</h2>
+              {turns.length > 0 && <ol aria-live="polite">{turns.map(turn => <li key={turn.id}>
+                <div className="assistant-user"><strong>You</strong><p>{turn.text}</p></div>
+                <div><strong>Blazar</strong><p>{turn.reply}</p></div>
+              </li>)}</ol>}
+            </section>
+            {task && (
               <>
                 <h2>{task.goal}</h2>
                 <p className="status">{task.status.replaceAll('_', ' ')}</p>
+                {workflowTasks.length > 1 && <nav aria-label="Workflow steps">
+                  {workflowTasks.map(item => <button type="button" key={item.id}
+                    aria-current={item.id === selected ? 'step' : undefined}
+                    onClick={() => { setSelected(item.id); setInstruction(''); setPreview(null); }}>
+                    {item.goal} · {item.status.replaceAll('_', ' ')}
+                  </button>)}
+                </nav>}
                 {dependencies.length > 0 && <section aria-label="Dependencies">
                   <h3>Dependencies</h3>
                   <ul>{dependencies.map(item => <li key={item.id}>
@@ -388,17 +438,10 @@ function App() {
                     })}>{item.name}{latest?.id === item.id && hasOlderVersion ? ' (latest)' : ''}</button>
                     {latest && latest.id !== item.id && !item.mime && <button disabled={busy} onClick={() => submit(async () => {
                       const diff = await api('/artifacts/' + latest.id + '/diff?base=' + item.id);
-                      setPreview({ taskId: item.taskId, artifactIds: [item.id, latest.id], name: 'Changes from ' + item.name, text: diff.text });
+                      setPreview({ taskId: item.taskId, artifactIds: [item.id, latest.id], name: 'Changes from ' + item.name, text: diff.text, diff: true });
                     })}>Compare with latest</button>}
                   </div>;
                 })}
-                {preview?.taskId === task.id && (preview.attachmentPosition === undefined
-                  ? preview.artifactIds.every(id => artifacts.some(item => item.id === id))
-                  : taskAttachments.some(item => item.position === preview.attachmentPosition)) &&
-                  <section><h3>{preview.name}</h3>
-                  {preview.png ? <img className="window-image" src={'data:image/png;base64,' + preview.png} alt="Captured window" /> :
-                    <pre>{preview.text}</pre>}
-                </section>}
                 {(task.status === 'waiting_review' || task.desktopReconciliationRequired) && <section className="approval" aria-label="Result review">
                   <h3>Review result</h3>
                   <button disabled={busy} onClick={() => command('accept_result')}>{task.desktopReconciliationRequired ? 'Confirm click took effect' : 'Accept result'}</button>
@@ -429,11 +472,11 @@ function App() {
                   </form>
                 )}
               </>
-            ) : (
-              <form onSubmit={event => {
+            )}
+              <form className="task-composer" onSubmit={event => {
                 event.preventDefault();
                 const action = event.nativeEvent.submitter?.value;
-                const ask = action === 'ask';
+                const ask = !action || action === 'ask';
                 submit(async () => {
                   setMemoryAnswer(null);
                   setFollowUp(null);
@@ -456,6 +499,14 @@ function App() {
                       ...(!ask && copiedFromTask && { copiedFromTask: copiedFromTask.id }),
                     },
                   });
+                  if (ask) {
+                    const thread = workspace.trim();
+                    setConversation(previous => ({ ...previous, [thread]: [
+                      ...(previous[thread] ?? []), { id: key, text: goal, reply: result.text ?? 'Task created.' },
+                    ].slice(-50) }));
+                    setGoal('');
+                    setKey(crypto.randomUUID());
+                  }
                   if (ask && result.kind !== 'create_task') {
                     setAnswer(result.text);
                     if (result.kind === 'append_task') setFollowUp({ ...result, key: crypto.randomUUID() });
@@ -474,7 +525,7 @@ function App() {
                   await reload();
                 });
               }}>
-                <h2>New task</h2>
+                <h2>Message Blazar</h2>
                 {copiedFromTask && <p>{copiedFromTask.requiresAppMemory
                   ? 'Goal copied from an application-backed task. Select current app sources to create the new task.'
                   : 'Goal copied from another task. Select any current memory sources to include.'}</p>}
@@ -484,7 +535,7 @@ function App() {
                   setMemoryAnswer(null);
                   setKey(crypto.randomUUID());
                 }} required /></label>
-                <label>Task<textarea value={goal} onChange={event => {
+                <label>Message<textarea placeholder="Describe what you want to get done" value={goal} onChange={event => {
                   setGoal(event.target.value);
                   setMemoryAnswer(null);
                   setKey(crypto.randomUUID());
@@ -506,7 +557,8 @@ function App() {
                       setKey(crypto.randomUUID());
                     }}>Remove</button>
                   </li>)}</ul>}
-                <button className="primary" disabled={busy || copiedFromTask?.requiresAppMemory || !workspace.trim() || !goal.trim()}>Create task</button>
+                <button className="primary" type="submit" value="ask" disabled={busy || Boolean(copiedFromTask) || attachments.length > 0 || !workspace.trim() || !goal.trim()}>Ask Blazar</button>
+                <button type="submit" value="create" disabled={busy || copiedFromTask?.requiresAppMemory || !workspace.trim() || !goal.trim()}>Create task</button>
                 {copiedFromTask && <button type="button" disabled={busy} onClick={() => {
                   setCopiedFromTask(null);
                   setGoal('');
@@ -519,7 +571,6 @@ function App() {
                   setUsePersonalMemory(event.target.checked);
                   setKey(crypto.randomUUID());
                 }} /> Include personal memory</label>
-                <button type="submit" value="ask" disabled={busy || Boolean(copiedFromTask) || attachments.length > 0 || !workspace.trim() || !goal.trim()}>Ask Blazar</button>
                 {availableSources.length > 0 && <details>
                   <summary>Ask with app memory</summary>
                   <label>Search terms<input value={memoryQuery} maxLength={256} onChange={event => {
@@ -547,7 +598,7 @@ function App() {
                     return <li key={source.id}>{account ? account.app + ' · ' + account.account + ' · ' + source.resource : 'Personal note'}</li>;
                   })}</ul>
                 </section>}
-                {answer && <p className="conversation-reply" role="status">{answer}</p>}
+                {answer && !turns.length && <p className="conversation-reply" role="status">{answer}</p>}
                 {followUp && <section className="approval" aria-label="Proposed follow-up">
                   <h3>Proposed follow-up</h3>
                   <p>{snapshot.tasks.find(item => item.id === followUp.taskId)?.goal ?? followUp.taskId}</p>
@@ -579,6 +630,7 @@ function App() {
                       <li key={source}>{filename} from {source}</li>)}</ul>}
                     {step.runLimitSeconds && <p>Time limit: {step.runLimitSeconds} seconds</p>}
                     {step.workerCapability && <p>Requires {({ steer: 'live instructions', 'full-input-artifacts': 'full input artifacts', 'git-worktree': 'an isolated Git checkout', 'writable-worktree': 'an isolated writable Git checkout', 'git-patch-inputs': 'applying predecessor Git patches in an isolated checkout', 'read-only': 'a read-only Worker', 'offline-tools': 'a Worker with tool network access disabled' })[step.workerCapability] ?? step.workerCapability}</p>}
+                    {step.workerDeviceId && <p>Agent device: {step.workerDeviceId}</p>}
                     {step.workerProtocols?.length > 0 && <p>Worker protocols: {step.workerProtocols.join(', ')}</p>}
                     {step.action?.expectedText && <p>Expected text: {step.action.expectedText}
                       {step.action.waitSeconds && ` (wait up to ${step.action.waitSeconds} seconds)`}</p>}
@@ -595,8 +647,8 @@ function App() {
                   <button type="button" disabled={busy} onClick={() => { setPlan(null); setAnswer(''); }}>Discard plan</button>
                 </section>}
               </form>
-            )}
           </section>
+          {visiblePreview && <ArtifactPreview preview={preview} close={() => setPreview(null)} />}
         </div>
       )}
     </main>

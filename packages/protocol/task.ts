@@ -67,6 +67,7 @@ export interface WorkflowStep {
   requireReview?: boolean;
   action?: WorkflowAction;
   workerProtocols?: string[];
+  workerDeviceId?: string;
   workerCapability?: WorkerCapability;
   inputArtifacts?: Record<string, string>;
   outputArtifact?: string;

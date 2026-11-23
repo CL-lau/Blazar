@@ -10,9 +10,11 @@ Use Node.js 22.19 or newer, then run `npm ci` and `npm test`. Start the Router w
 
 Register an execution device through `POST /v1/admin/devices` with the Router token and a JSON body containing `name` and `workspace`. Use the returned device token as `BLAZAR_DEVICE_TOKEN`, set `BLAZAR_WORKSPACE_PATH` to the local workspace directory, and run `npm run device`. The default executor supports `/preview relative-file.md`.
 
-Set `BLAZAR_WORKER_GIT_WORKTREE=1` on a Worker device to start each run in a separate detached checkout from the configured repository's committed HEAD. Configure the repository root as its workspace. Checkouts are retained at `~/.blazar-device/run-worktrees/<run-id>`, including after a failed or interrupted run. Review the changes there and remove the checkout with `git worktree remove` from the source repository after saving anything you need. The Worker runs with the device account's OS permissions. The checkout isolates ordinary relative-path edits. Successful runs publish a `git-changes.json` artifact with base and final commit IDs, changed paths, and working tree status. Dependent workflow steps can read the report through the usual artifact handoff. Set `BLAZAR_WORKER_GIT_PATCH=1` to include a tracked text patch in the Router artifact. This shares changed lines with authorized artifact readers and dependent steps. If the patch exceeds the artifact size limit, the report records the omission and the checkout retains the change. The patch excludes untracked files and files Git classifies as binary. The Router only gives a workspace concurrent Worker leases when all participating devices use isolated checkouts, subject to any configured workspace limit. Each device executes one run at a time. Multiple independently registered devices may share a local repository, provided they all use isolated worktrees. Stop devices using that repository before running reconciliation.
+Set `BLAZAR_WORKER_GIT_WORKTREE=1` on a Worker device to start new runs in detached checkouts from the configured repository's committed HEAD. A Codex follow-up can reuse the previous checkout as described below. Configure the repository root as its workspace. Checkouts are retained at `~/.blazar-device/run-worktrees/<run-id>`, including after a failed or interrupted run. Review the changes there and remove the checkout with `git worktree remove` from the source repository after saving anything you need. The Worker runs with the device account's OS permissions. The checkout isolates ordinary relative-path edits. Successful runs publish a `git-changes.json` artifact with base and final commit IDs, changed paths, per-file addition and deletion counts when they fit, and working tree status. Dependent workflow steps can read the report through the usual artifact handoff. Set `BLAZAR_WORKER_GIT_PATCH=1` to include a tracked text patch in the Router artifact. This shares changed lines with authorized artifact readers and dependent steps. If the patch exceeds the artifact size limit, the report records the omission and the checkout retains the change. The patch excludes untracked files and files Git classifies as binary. The Router only gives a workspace concurrent Worker leases when all participating devices use isolated checkouts, subject to any configured workspace limit. Each device executes one run at a time. Multiple independently registered devices may share a local repository, provided they all use isolated worktrees. Stop devices using that repository before running reconciliation.
 
 Set `BLAZAR_CODEX_WORKTREE_WRITE=1` on a worktree-enabled Codex App Server device to accept workflow steps that require `writable-worktree`. The workspace must permit writes. Blazar verifies that Codex reports the detached checkout as its sole writable root and tool networking is disabled before starting the turn. Use the Git change report to review the edits.
+
+After the Router acknowledges a completed Codex result, the device records the thread ID for follow-up instructions. Codex stores the thread history on the device. Follow-ups resume the thread when its task inputs, workspace, and Worker configuration still match. In worktree mode, the same device also reuses the checkout of the latest acknowledged run, so uncommitted changes carry forward. Both run IDs resolve to that live checkout when inspected. Each published Git report preserves the changes recorded at its own run's completion. If the server rejects the saved thread, Blazar starts a new thread with the available instructions. Runs with protected memory inputs or Git patch inputs use ephemeral Codex threads.
 
 Set `BLAZAR_WORKER_GIT_APPLY_INPUTS=1` on a worktree-enabled device to let explicitly configured workflow steps apply upstream text patches before the Worker starts. The step capability is `git-patch-inputs`. Blazar verifies the artifact hashes and base commit, then checks all patches with Git before applying them to the new worktree. A missing, incomplete, or conflicting patch puts the step in Waiting for user. Find its run ID in the task timeline and inspect the retained checkout with `npm run device:reconcile -- --inspect RUN_ID` on the Worker host. Correct the upstream input before retrying the step.
 
@@ -21,6 +23,36 @@ The Router holds an exclusive lock in the database directory. Set `BLAZAR_DB` to
 The local administrator can query `GET /v1/admin/metrics` for task counts by status, device availability, routing counts, and latency summaries for direct event submissions, supported webhook intake, and model routing. Latency counters reset after restart. Each reported p95 is a histogram bucket upper bound in milliseconds.
 
 Run `npm run router:benchmark` to test a temporary local SQLite database with 300 submissions, including retries, and 10 concurrent WebSocket preview workers. The run checks local acknowledgement and first-claim p95, task duplication, and assignment accuracy across desktop and paired mobile HTTP clients. Run `npm run router:benchmark -- --mixed` for simulated model routing, ten isolated Worker fixtures, and mobile approval and cancellation latency. Add `--pi` to exercise the production Pi harness with locally simulated OpenAI streaming responses. The report counts conversation rate limits and includes retry delay in receipt latency.
+
+## Local Router inference
+
+Start a local model server with an OpenAI-compatible streaming Chat Completions API. Set these values in the Router environment and restart it:
+
+```sh
+BLAZAR_MODEL_PROVIDER=local
+BLAZAR_MODEL=your-installed-model-id
+BLAZAR_LOCAL_MODEL_URL=http://127.0.0.1:11434/v1
+```
+
+The URL defaults to the loopback address shown above. If your local server requires a bearer token, set `BLAZAR_LOCAL_MODEL_KEY`. Pick a model that supports tool calling for task routing and can return structured JSON for routing decisions. The Router runs one model operation at a time per configured model. Conversation and memory questions are admitted ahead of queued memory drafts. In-progress calls keep their slot until they end or are cancelled.
+
+## Source-backed Wiki
+
+Use the administrator token to draft, publish, and search Wiki pages through the Router. Select between one and six app-backed memory items and their versions from `GET /v1/memory`.
+
+- `POST /v1/wiki/draft` accepts `workspace`, `title`, and `sources` (an array of `{id, version}` objects). It returns a Markdown draft for review.
+- `POST /v1/wiki` accepts the same fields plus the reviewed Markdown `body`. Retrying the same publication returns the existing page ID.
+- `GET /v1/wiki?workspace=project&q=rollout` searches page titles and bodies and returns each page's source IDs, versions, connections, resources, and revisions. Omit `q` to list recent pages.
+
+A published page is visible only while all source versions and connection scopes are current. In the desktop Wiki view, choose **Remind me when sources change** or use `PUT /v1/wiki/<id>/watch` with `{"enabled":true}`. If a source changes or access is revoked, the Router creates a single task in Waiting for user and sends the usual task notification when configured. The reminder carries the page ID in its timeline and excludes source content. Draft a new page from current evidence and enable its watch to receive another reminder.
+
+## Scheduled workflows
+
+Use the administrator token to create a one-time or recurring Worker workflow with `POST /v1/admin/workflow-schedules`. Supply an `Idempotency-Key` header and a JSON body with `label`, `workspace`, `steps` (the normal workflow step format), and `nextAt` (Unix milliseconds). Omit `intervalMinutes` for a one-time workflow or use a whole number from 1 to 43,200 to repeat.
+
+Schedules survive Router restarts. A recurring schedule waits for all steps of its previous workflow to finish or be cancelled, including required review. If several intervals pass, the Router enqueues one workflow and advances to the next future interval. Task progress and artifacts are available through the standard workflow APIs, including existing mobile update notifications when configured.
+
+List schedules and their latest workflow IDs with `GET /v1/admin/workflow-schedules`. Disable future runs with `DELETE /v1/admin/workflow-schedules/<id>`. Already dispatched workflows can be managed through the normal task commands.
 
 ## Native desktop build
 
@@ -96,8 +128,11 @@ Set `BLAZAR_DEVICE_WORKER` to choose the locally installed executable for a devi
 | Preset | Executable |
 | --- | --- |
 | `codex`, `pi` | `codex`, `pi` |
+| `codex-cli` | Codex `exec --json`, with saved sessions and worktree continuation |
+| `claude-cli` | Claude Code `--print --output-format stream-json`, with saved sessions and patch review via input artifacts |
 | `claude` | Claude Agent SDK, with its bundled Claude Code executable |
 | `deepseek`, `opencode`, `copilot` | `dsh`, `opencode`, `copilot` |
+| `omp` | Oh My Pi, via `omp acp` |
 | `droid`, `qwen`, `kimi`, `kiro`, `auggie` | `droid`, `qwen`, `kimi`, `kiro-cli`, `auggie` |
 | `gemini`, `cursor`, `antigravity` | `gemini`, `cursor-agent`, Antigravity ACP server |
 | `cline`, `goose`, `amp`, `aider` | `cline`, `goose`, Amp ACP wrapper, `aider` |
@@ -122,6 +157,8 @@ Use `BLAZAR_DEVICE_WORKER=custom` and `BLAZAR_WORKER_MANIFEST` to point to an ab
 ```
 
 Browse the stable ACP Registry in **Execution devices → ACP Registry** or run `npm run device:acp-registry -- list`. The desktop install command includes the displayed version and will stop if the registry has changed. Generate an ACP manifest on the execution device with `npm run device:acp-registry -- import ID npx /absolute/worker.json`. The command pins the registry version and writes a private manifest for review. Launching or probing an imported package-based Worker may download that pinned package. To install first, use `npm run device:acp-registry -- install ID /absolute/new-directory` for an npm distribution. Then set `BLAZAR_WORKER_MANIFEST` to the generated `worker.json` in that directory. The manifest launches the installed executable directly. For a binary distribution, pass `binary` and the absolute path to the separately installed executable. Set any required credential variables in the device environment and use the generated manifest with the custom Worker mode. Package-based manifests allow up to 60 seconds for the first ACP handshake. Other ACP manifests default to five seconds and can set `startupTimeoutSeconds` from 5 to 60.
+
+Pair each custom Agent as its own execution device and give it a distinct manifest label. After the device reports its Worker, ask Blazar to use that Agent by label or set `workerDeviceId` to its paired device ID on a workflow step. The Router dispatches that step only to the selected device, even when several devices share the same protocol.
 
 For a JSONL extension, set `"protocol": "jsonl"` in the same manifest. Blazar writes one UTF-8 line with `version: 1`, `type: "run"`, and an `input` containing `goal`, `instructions`, and `predecessorResults`, then closes standard input. The Worker can emit progress lines and must emit exactly one terminal line. Write any diagnostic output to standard error.
 
