@@ -34,7 +34,7 @@ fn allowed(method: &Method, path: &str) -> bool {
         .map_or((path, None), |(route, query)| (route, Some(query)));
     let segments: Vec<_> = route.split('/').collect();
     let accepts_query = method == Method::GET
-        && (matches!(route, "/memory" | "/wiki")
+        && (matches!(route, "/memory" | "/wiki" | "/conversation")
             || matches!(segments.as_slice(), ["", "tasks", id, "timeline"] | ["", "artifacts", id, "diff"] if identifier(id)));
     if query.is_some() && !accepts_query && route != "/stream" {
         return false;
@@ -52,7 +52,7 @@ fn allowed(method: &Method, path: &str) -> bool {
             .is_some_and(|cursor| {
                 !cursor.is_empty() && cursor.bytes().all(|byte| byte.is_ascii_digit())
             }),
-        ("GET", ["", "health" | "state" | "app-connections" | "memory" | "wiki"]) => true,
+        ("GET", ["", "health" | "state" | "app-connections" | "memory" | "wiki" | "conversation"]) => true,
         (
             "POST",
             ["", "events" | "conversation" | "workflows" | "pairings" | "app-connections" | "memory" | "wiki"],

@@ -430,6 +430,15 @@ export function routerServer(store: TaskStore, config: { owner: string; token: s
         reply(response, 202, submitWorkflow(store, config.memory, owner, key, data, admin, mobile?.id));
         return;
       }
+      if (request.method === 'GET' && url.pathname === '/v1/conversation') {
+        if (!admin) throw new RequestError(403, 'Administrator required for conversation history');
+        const workspace = requiredText(url.searchParams.get('workspace'), 'workspace', 128);
+        const turns = store.recentConversation(owner, workspace).map(({ text, decision }) => ({
+          text, reply: decision.kind === 'create_task' ? 'Task created.' : decision.text,
+        }));
+        reply(response, 200, { turns });
+        return;
+      }
       if (request.method === 'POST' && url.pathname === '/v1/conversation') {
         const key = requiredText(request.headers['idempotency-key'], 'Idempotency-Key', 128);
         const data = await jsonObject(request);

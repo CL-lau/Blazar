@@ -658,6 +658,12 @@ test('Router authenticates, deduplicates commands and replays task changes over 
   const question = { workspace: 'demo', text: 'Could you help?' };
   const asked = await post('/v1/conversation', 'ask', question);
   assert.deepEqual(await asked.json(), { kind: 'clarify', text: 'Which project?' });
+  const historyPath = url + '/v1/conversation?workspace=';
+  assert.deepEqual(await (await fetch(historyPath + 'demo', { headers })).json(), {
+    turns: [{ text: question.text, reply: 'Which project?' }],
+  });
+  assert.deepEqual(await (await fetch(historyPath + 'different-workspace', { headers })).json(), { turns: [] });
+  assert.equal((await fetch(historyPath + 'demo')).status, 401);
   assert.equal((await post('/v1/conversation', 'ask', question)).status, 200);
   assert.equal((await post('/v1/conversation', 'ask', { ...question, text: 'Another prompt' })).status, 409);
   assert.equal(decisions, 1);

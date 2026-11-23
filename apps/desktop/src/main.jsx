@@ -62,6 +62,21 @@ function App() {
   const [pairingRequests, setPairingRequests] = useState([]);
 
   useEffect(() => {
+    const thread = workspace.trim();
+    if (!connected || !thread) return;
+    const controller = new AbortController();
+    callRouter(connected, '/conversation?workspace=' + encodeURIComponent(thread), { signal: controller.signal })
+      .then(({ turns: history }) => {
+        if (!controller.signal.aborted) setConversation(current =>
+          Object.hasOwn(current, thread) ? current : { ...current, [thread]: history.map((turn, index) => ({
+            ...turn, id: 'history-' + index,
+          })) });
+      })
+      .catch(() => { /* The composer remains available if history could not be loaded. */ });
+    return () => controller.abort();
+  }, [connected, workspace]);
+
+  useEffect(() => {
     if (connected) return;
     const stop = new AbortController();
     let timer;
