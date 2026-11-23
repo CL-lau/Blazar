@@ -40,6 +40,9 @@ export function ArtifactPreview({ preview, close }) {
             <span>+{file.additions} / −{file.deletions}</span>
           </li>)}
       </ul>}
+      {report.changes.some(change => typeof change === 'string' && change.startsWith('?? ')) &&
+        <ul aria-label="New files">{report.changes.filter(change => typeof change === 'string' && change.startsWith('?? '))
+          .map(change => <li key={change}>{change.slice(3)}</li>)}</ul>}
       {report.patchOmitted === 'size_limit' && <p>The patch exceeds the artifact size limit. Inspect the retained checkout for the full diff.</p>}
     </>}
     {preview.png ? <img className="window-image" src={'data:image/png;base64,' + preview.png} alt="Captured window" /> :

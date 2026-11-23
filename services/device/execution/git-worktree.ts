@@ -15,9 +15,17 @@ const exec = promisify(execFile);
 function gitAt(workspace: string, signal?: AbortSignal) {
   const env = Object.fromEntries(Object.entries(process.env).filter(([key]) => !key.toUpperCase().startsWith('GIT_')));
   return async (...args: string[]) => {
-    const { stdout } = await exec('git', ['-c', 'core.hooksPath=/dev/null', '-c', 'core.fsmonitor=false', ...args],
-      { cwd: workspace, env, timeout: 15_000, maxBuffer: 64_000, windowsHide: true, signal });
-    return stdout.replace(/\r?\n$/, '');
+    try {
+      const { stdout } = await exec('git', ['-c', 'core.hooksPath=/dev/null', '-c', 'core.fsmonitor=false', ...args],
+        { cwd: workspace, env, timeout: 15_000, maxBuffer: 64_000, windowsHide: true, signal });
+      return stdout.replace(/\r?\n$/, '');
+    } catch (error) {
+      const result = error as { code?: number; stdout?: string };
+      if (args.includes('--no-index') && result.code === 1 && typeof result.stdout === 'string') {
+        return result.stdout.replace(/\r?\n$/, '');
+      }
+      throw error;
+    }
   };
 }
 
@@ -108,6 +116,19 @@ export async function gitRunWorktrees(workspace: string, stateDirectory: string,
       try {
         patch = await command('diff', '--no-ext-diff', '--no-textconv', '--no-color',
           '--src-prefix=a/', '--dst-prefix=b/', '--patch', baseCommit, '--');
+        const untracked = (await command('ls-files', '--others', '--exclude-standard', '-z')).split('\0').filter(Boolean);
+        for (const file of untracked) {
+          signal.throwIfAborted();
+          const path = join(checkout.root, file);
+          if (!(await lstat(path)).isFile()) continue;
+          const addition = await command('diff', '--no-index', '--no-ext-diff', '--no-textconv', '--no-color',
+            '--src-prefix=a/', '--dst-prefix=b/', '--patch', '--', '/dev/null', file);
+          patch = [patch, addition].filter(Boolean).join('\n');
+          if (Buffer.byteLength(patch) > maxTextArtifactBytes) {
+            patch = undefined;
+            break;
+          }
+        }
       } catch (error) {
         signal.throwIfAborted();
         if ((error as NodeJS.ErrnoException).code !== 'ERR_CHILD_PROCESS_STDIO_MAXBUFFER') throw error;
